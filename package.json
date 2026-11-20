@@ -1,16 +1,12 @@
 {
   "name": "darkp2p",
   "version": "1.0.0",
-  "private": true,
-  "description": "Darkp2p.com web server",
+  "description": "Zero-knowledge WebRTC dead-drop file transfer",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "engines": {
-    "node": ">=20"
-  },
   "dependencies": {
-    "express": "^5.1.0"
+    "ws": "^8.18.0"
   }
 }
