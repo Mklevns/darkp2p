@@ -62,9 +62,11 @@ function envInt(name, fallback, min, max) {
 const MB = 1024 * 1024;
 const HOSTNAME_RE =
   /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+const ONION_V3_RE = /^[a-z2-7]{56}\.onion$/;
 
 const PORT = envInt('PORT', 3000, 1, 65535);
 const DOMAIN = (envStr('DOMAIN') || 'darkp2p.com').toLowerCase();
+const ONION_HOST = envStr('ONION_HOST').toLowerCase();
 const TURN_HOST = envStr('TURN_HOST').toLowerCase();
 const TURN_SECRET = envStr('TURN_SECRET');
 const TURN_TTL = envInt('TURN_TTL', 3600, 60, 86400);
@@ -84,12 +86,15 @@ const TRUST_PROXY = envStr('TRUST_PROXY').toLowerCase() || 'auto';
 
 const MAX_TOTAL_CONNS = envInt('MAX_TOTAL_CONNS', 1000, 2, 100000);
 const MAX_CONNS_PER_IP = envInt('MAX_CONNS_PER_IP', 6, 1, 10000);
+const MAX_ONION_CONNS = envInt('MAX_ONION_CONNS', 100, 2, 10000);
 const CONN_WINDOW_MS = 60_000;
 const MAX_CONNS_PER_WINDOW = 20;
+const MAX_ONION_CONNS_PER_WINDOW = 120;
 const MSG_WINDOW_MS = 10_000;
 const MAX_MSGS_PER_WINDOW = 40; // JSON control messages only
 const CLAIM_WINDOW_MS = 60_000;
 const MAX_CLAIMS_PER_WINDOW = 30;
+const MAX_ONION_CLAIMS_PER_WINDOW = 120;
 
 const HEARTBEAT_MS = 30_000;
 const SWEEP_MS = 5 * 60 * 1000;
@@ -120,7 +125,8 @@ const BOOT_SALT = crypto.randomBytes(32);
 function parseTiers(raw) {
   const tiers = new Map();
   for (const pair of raw.split(',')) {
-    const [code, daysStr] = pair.split(':').map((s) => s.trim());
+    const [codeRaw, daysStr] = pair.split(':').map((s) => s.trim());
+    const code = (codeRaw || '').toLowerCase();
     const days = Number(daysStr);
     if (!code || !Number.isInteger(days) || days < 1 || days > 3650) {
       fatal(`PRO_TIERS entry "${pair}" is invalid (expected itemCode:days)`);
@@ -152,13 +158,16 @@ function parseOrigins(raw) {
     if (url.protocol !== 'https:' && url.protocol !== 'http:') {
       fatal(`ALLOWED_ORIGINS entry "${value}" must be http(s)`);
     }
-    origins.add(url.origin);
+    origins.add(url.origin.toLowerCase());
   }
   return origins;
 }
 
 function validateConfig() {
   if (!HOSTNAME_RE.test(DOMAIN)) fatal('DOMAIN is not a valid hostname');
+  if (ONION_HOST && !ONION_V3_RE.test(ONION_HOST)) {
+    fatal('ONION_HOST is not a valid v3 .onion hostname');
+  }
   if (TURN_HOST && !HOSTNAME_RE.test(TURN_HOST)) fatal('TURN_HOST is not a valid hostname');
   if (!['auto', '1', 'true', '0', 'false'].includes(TRUST_PROXY)) {
     fatal('TRUST_PROXY must be auto, 1 or 0');
@@ -201,6 +210,8 @@ function validateConfig() {
 validateConfig();
 
 const ALLOWED_ORIGINS = parseOrigins(envStr('ALLOWED_ORIGINS') || `https://${DOMAIN}`);
+if (ONION_HOST) ALLOWED_ORIGINS.add(`http://${ONION_HOST}`);
+
 const BTCPAY_LOOKUP_ENABLED = Boolean(BTCPAY_URL && BTCPAY_API_KEY && BTCPAY_STORE_ID);
 const TURN_ENABLED = Boolean(TURN_HOST && TURN_SECRET);
 const STUN_SERVERS = STUN_URLS
@@ -294,10 +305,11 @@ function respond(req, res, status, contentType, body, extraHeaders) {
   else res.end(buf);
 }
 
-function respondPage(req, res, status, page) {
+function respondPage(req, res, status, page, extraHeaders) {
   respond(req, res, status, TYPE_HTML, page.body, {
     'Content-Security-Policy': page.csp,
     'Cache-Control': 'no-cache',
+    ...extraHeaders,
   });
 }
 
@@ -364,9 +376,22 @@ function shouldTrustProxy(remote) {
   return remote !== null && PRIVATE_NETS.check(remote.ip, remote.family);
 }
 
-// Returns a salted hash identifying the client's address (or /64). The raw
-// address never leaves this function.
-function getClientKey(req) {
+function isOnionRequest(req) {
+  if (!ONION_HOST) return false;
+  const host = (req.headers.host || '').split(':')[0].trim().toLowerCase();
+  return host === ONION_HOST;
+}
+
+// Returns a salted hash identifying the client's address (or /64), plus whether
+// the request arrived via the Tor hidden service. The raw address never leaves
+// this function, and X-Forwarded-For is never trusted on .onion traffic because
+// Tor forwards raw TCP without appending a trusted proxy hop.
+function getClientIdentity(req) {
+  const isOnion = isOnionRequest(req);
+  if (isOnion) {
+    return { key: 'onion', isOnion: true };
+  }
+
   const remote = normalizeIp(req.socket.remoteAddress);
   let addr = remote;
 
@@ -382,25 +407,29 @@ function getClientKey(req) {
   }
 
   const bucket = !addr ? 'unknown' : addr.family === 'ipv4' ? addr.ip : ipv6Prefix64(addr.ip);
-  return crypto.createHmac('sha256', BOOT_SALT).update(bucket).digest('hex').slice(0, 16);
+  const key = crypto.createHmac('sha256', BOOT_SALT).update(bucket).digest('hex').slice(0, 16);
+  return { key, isOnion: false };
 }
 
 const ipState = new Map(); // clientKey -> { active, timestamps[] }
 const claimHits = new Map(); // clientKey -> { count, resetAt }
 let totalConns = 0;
 
-function allowConnection(clientKey) {
+function allowConnection({ key, isOnion }) {
   if (totalConns >= MAX_TOTAL_CONNS) return false;
 
+  const maxActive = isOnion ? MAX_ONION_CONNS : MAX_CONNS_PER_IP;
+  const maxWindow = isOnion ? MAX_ONION_CONNS_PER_WINDOW : MAX_CONNS_PER_WINDOW;
+
   const now = Date.now();
-  let state = ipState.get(clientKey);
+  let state = ipState.get(key);
   if (!state) {
     state = { active: 0, timestamps: [] };
-    ipState.set(clientKey, state);
+    ipState.set(key, state);
   }
 
   state.timestamps = state.timestamps.filter((t) => now - t < CONN_WINDOW_MS);
-  if (state.active >= MAX_CONNS_PER_IP || state.timestamps.length >= MAX_CONNS_PER_WINDOW) {
+  if (state.active >= maxActive || state.timestamps.length >= maxWindow) {
     return false;
   }
 
@@ -417,14 +446,15 @@ function releaseConnection(clientKey) {
   state.active = Math.max(0, state.active - 1);
 }
 
-function allowClaim(clientKey) {
+function allowClaim({ key, isOnion }) {
+  const maxClaims = isOnion ? MAX_ONION_CLAIMS_PER_WINDOW : MAX_CLAIMS_PER_WINDOW;
   const now = Date.now();
-  const entry = claimHits.get(clientKey);
+  const entry = claimHits.get(key);
   if (!entry || entry.resetAt <= now) {
-    claimHits.set(clientKey, { count: 1, resetAt: now + CLAIM_WINDOW_MS });
+    claimHits.set(key, { count: 1, resetAt: now + CLAIM_WINDOW_MS });
     return true;
   }
-  if (entry.count >= MAX_CLAIMS_PER_WINDOW) return false;
+  if (entry.count >= maxClaims) return false;
   entry.count += 1;
   return true;
 }
@@ -538,7 +568,7 @@ async function fetchInvoiceItemCode(invoiceId) {
   if (!res.ok) throw new Error(`BTCPay API responded ${res.status}`);
   const invoice = await res.json();
   const code = invoice && invoice.metadata && invoice.metadata.itemCode;
-  return typeof code === 'string' ? code : null;
+  return typeof code === 'string' ? code.trim().toLowerCase() : null;
 }
 
 async function handleBtcPayWebhook(req, res) {
@@ -583,8 +613,8 @@ async function handleBtcPayWebhook(req, res) {
   const key = invoiceKey(event.invoiceId);
   if (invoices.has(key)) return respond(req, res, 200, TYPE_TEXT, 'ok');
 
-  let itemCode =
-    event.metadata && typeof event.metadata.itemCode === 'string' ? event.metadata.itemCode : null;
+  const rawCode = event.metadata?.itemCode ?? event.data?.metadata?.itemCode;
+  let itemCode = typeof rawCode === 'string' && rawCode.trim() ? rawCode.trim().toLowerCase() : null;
   if (itemCode === null && BTCPAY_LOOKUP_ENABLED) {
     try {
       itemCode = await fetchInvoiceItemCode(event.invoiceId);
@@ -618,7 +648,7 @@ async function handleBtcPayWebhook(req, res) {
 }
 
 function handleClaim(req, res, url) {
-  if (!allowClaim(getClientKey(req))) {
+  if (!allowClaim(getClientIdentity(req))) {
     return respondJson(req, res, 429, { ready: false }, { 'Retry-After': '60' });
   }
 
@@ -648,7 +678,12 @@ async function handleRequest(req, res) {
   const { pathname } = url;
   const isRead = req.method === 'GET' || req.method === 'HEAD';
 
-  if (isRead && pathname === '/') return respondPage(req, res, 200, indexPage);
+  if (isRead && pathname === '/') {
+    const extra = ONION_HOST && !isOnionRequest(req)
+      ? { 'Onion-Location': `http://${ONION_HOST}/` }
+      : undefined;
+    return respondPage(req, res, 200, indexPage, extra);
+  }
   if (isRead && pathname === '/health') {
     return respond(req, res, 200, TYPE_TEXT, 'ok', { 'Cache-Control': 'no-store' });
   }
@@ -720,12 +755,12 @@ server.on('upgrade', (req, socket, head) => {
   if (pathname !== '/') return rejectUpgrade(socket, 404);
   if (!isOriginAllowed(req)) return rejectUpgrade(socket, 403);
 
-  const clientKey = getClientKey(req);
-  if (!allowConnection(clientKey)) return rejectUpgrade(socket, 429);
+  const client = getClientIdentity(req);
+  if (!allowConnection(client)) return rejectUpgrade(socket, 429);
 
   // Tied to the TCP socket, so the slot is returned exactly once however the
   // connection ends (failed handshake, clean close, terminate, reset).
-  socket.once('close', () => releaseConnection(clientKey));
+  socket.once('close', () => releaseConnection(client.key));
 
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 });
@@ -1087,7 +1122,7 @@ server.listen(PORT, () => {
   logInfo(
     `Signaling node listening on :${PORT} ` +
       `(turn=${TURN_ENABLED ? 'on' : 'off'}, pro=${PRO_TOKEN_SECRET ? 'on' : 'off'}, ` +
-      `webhook=${BTCPAY_WEBHOOK_SECRET ? 'on' : 'off'}, ` +
+      `onion=${ONION_HOST ? 'on' : 'off'}, webhook=${BTCPAY_WEBHOOK_SECRET ? 'on' : 'off'}, ` +
       `relay cap=${RELAY_CAP_FREE / MB}/${RELAY_CAP_PRO / MB} MB)`
   );
 });
