@@ -11,7 +11,7 @@ Live instance: [darkp2p.com](https://darkp2p.com)
 * **Zero Server Storage:** `server.js` is a stateless Node.js WebSocket signaling broker (`ws` only) that pairs two peers in RAM and relays SDP offers/answers and ICE candidates. File payloads never touch the server.
 * **Client-Side E2EE (Anti-MITM):** Standard WebRTC DTLS protects against passive observers, but a compromised signaling server could swap SDP certificate fingerprints. DARKP2P adds an application-layer **AES-256-GCM** stream using a 256-bit key generated locally in the URL fragment:
   ```text
-  [https://darkp2p.com/#](https://darkp2p.com/#)<32-hex-roomId>:<base64url-256bit-key>
+  https://darkp2p.com/#<32-hex-roomId>:<base64url-256bit-key>
   ```
   Browsers never transmit URL fragments (`#...`) over HTTP or WebSockets. Only `<roomId>` is sent to the signaling server.
 * **Low-RAM Disk Streaming:** Incoming chunks stream directly to disk via the browser's Origin Private File System (OPFS) when supported (falling back to in-memory `Blob` assembly otherwise), allowing multi-gigabyte transfers without crashing browser tabs.
@@ -54,7 +54,7 @@ Every control message (`meta`, `done`) and binary file chunk is encrypted indepe
 ### 1. Clone & Configure Environment
 
 ```bash
-git clone [https://github.com/YOUR_USERNAME/darkp2p.git](https://github.com/YOUR_USERNAME/darkp2p.git)
+git clone https://github.com/mklevns/darkp2p.git
 cd darkp2p
 
 cat <<EOF> .env
