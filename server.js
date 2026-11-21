@@ -102,8 +102,15 @@ const MAX_ONION_CLAIMS_PER_WINDOW = 120;
 const HEARTBEAT_MS = 30_000;
 const SWEEP_MS = 5 * 60 * 1000;
 const SHUTDOWN_GRACE_MS = 5_000;
-const CLAIM_TTL_MS = 15 * 60 * 1000;
+// How long a minted token stays claimable by invoice ID.
+const CLAIM_TTL_MS = envInt('CLAIM_TTL_HOURS', 48, 1, 168) * 3600e3;
 const INVOICE_DEDUPE_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_INVOICES = 20_000; // evicts the earliest forgetAt first
+const SETTLEMENT_GRACE_S = 6 * 3600; // added to deterministic token expiry
+const CLAIM_MISS_TTL_MS = 30_000; // negative cache for BTCPay lookups
+const MAX_CLAIM_MISSES = 5_000; // evicts the oldest entry first
+const CLAIM_RETRY_AFTER_S = 30;
+const WEBHOOK_MAX_AGE_S = 30 * 86400;
 const MAX_WEBHOOK_BYTES = 64 * 1024;
 const MAX_WS_PAYLOAD = 64 * 1024;
 const BTCPAY_API_TIMEOUT_MS = 5_000;
@@ -181,6 +188,9 @@ function validateConfig() {
   if (TURN_HOST && !HOSTNAME_RE.test(TURN_HOST)) fatal('TURN_HOST is not a valid hostname');
   if (!['auto', '1', 'true', '0', 'false'].includes(TRUST_PROXY)) {
     fatal('TRUST_PROXY must be auto, 1 or 0');
+  }
+  if (CLAIM_TTL_MS > INVOICE_DEDUPE_MS) {
+    fatal('CLAIM_TTL_HOURS must not exceed the invoice dedupe window');
   }
   if (BTCPAY_WEBHOOK_SECRET && !PRO_TOKEN_SECRET) {
     fatal('BTCPAY_WEBHOOK_SECRET is set but PRO_TOKEN_SECRET is not');
@@ -472,10 +482,14 @@ function allowClaim({ key, isOnion }) {
 // Pro tokens, TURN credentials, BTCPay
 // ---------------------------------------------------------------------------
 
-function mintProToken(days) {
-  const exp = String(Math.floor(Date.now() / 1000) + days * 86400);
+function mintProTokenAt(expUnix) {
+  const exp = String(expUnix);
   const sig = crypto.createHmac('sha256', PRO_TOKEN_SECRET).update(exp).digest('hex');
   return `${exp}.${sig}`;
+}
+
+function mintProToken(days) {
+  return mintProTokenAt(Math.floor(Date.now() / 1000) + days * 86400);
 }
 
 function verifyProToken(token) {
@@ -559,13 +573,65 @@ function readRawBody(req, limitBytes) {
 // invoiceKey -> { token: string|null, claimUntil, forgetAt }
 // The token can be read until claimUntil. The record itself is kept until
 // forgetAt so a webhook redelivery cannot mint a second token.
+// Capped at MAX_INVOICES; the entry with the earliest forgetAt is evicted.
 const invoices = new Map();
+
+// invoiceKey -> expiresAt. Recent BTCPay lookups that minted nothing, so a
+// polling client cannot turn every claim into an API call. Capped at
+// MAX_CLAIM_MISSES; Map order is insertion order, so the oldest goes first.
+const claimMisses = new Map();
 
 function invoiceKey(invoiceId) {
   return crypto.createHmac('sha256', BOOT_SALT).update(`invoice:${invoiceId}`).digest('hex');
 }
 
-async function fetchInvoiceItemCode(invoiceId) {
+function rememberInvoice(key, token) {
+  if (!invoices.has(key) && invoices.size >= MAX_INVOICES) {
+    let oldestKey = null;
+    let oldestAt = Infinity;
+    for (const [k, entry] of invoices) {
+      if (entry.forgetAt < oldestAt) {
+        oldestAt = entry.forgetAt;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey !== null) invoices.delete(oldestKey);
+  }
+  const now = Date.now();
+  invoices.set(key, { token, claimUntil: now + CLAIM_TTL_MS, forgetAt: now + INVOICE_DEDUPE_MS });
+}
+
+function rememberClaimMiss(key) {
+  claimMisses.delete(key);
+  while (claimMisses.size >= MAX_CLAIM_MISSES) {
+    claimMisses.delete(claimMisses.keys().next().value);
+  }
+  claimMisses.set(key, Date.now() + CLAIM_MISS_TTL_MS);
+}
+
+function isRecentClaimMiss(key) {
+  const expiresAt = claimMisses.get(key);
+  if (expiresAt === undefined) return false;
+  if (expiresAt > Date.now()) return true;
+  claimMisses.delete(key);
+  return false;
+}
+
+function btcPayError(code, status) {
+  return Object.assign(new Error('BTCPay lookup failed'), { name: 'BtcPayError', code, status });
+}
+
+// Safe to log: never the message, URL or cause (they can carry invoice IDs).
+function describeLookupError(err) {
+  const parts = [`name=${err && err.name ? err.name : 'Error'}`];
+  if (err && typeof err.code === 'string') parts.push(`code=${err.code}`);
+  if (err && Number.isInteger(err.status)) parts.push(`status=${err.status}`);
+  return parts.join(' ');
+}
+
+// Fetches an invoice from the BTCPay Greenfield API. Returns null when BTCPay
+// says it does not exist; throws when BTCPay cannot give a usable answer.
+async function fetchInvoice(invoiceId) {
   const url =
     `${BTCPAY_URL}/api/v1/stores/${encodeURIComponent(BTCPAY_STORE_ID)}` +
     `/invoices/${encodeURIComponent(invoiceId)}`;
@@ -574,10 +640,55 @@ async function fetchInvoiceItemCode(invoiceId) {
     redirect: 'error',
     signal: AbortSignal.timeout(BTCPAY_API_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`BTCPay API responded ${res.status}`);
-  const invoice = await res.json();
-  const code = invoice && invoice.metadata && invoice.metadata.itemCode;
-  return typeof code === 'string' ? code.trim().toLowerCase() : null;
+  if (res.status === 404) {
+    await res.body?.cancel();
+    return null;
+  }
+  if (!res.ok) {
+    await res.body?.cancel();
+    throw btcPayError('E_BTCPAY_STATUS', res.status);
+  }
+
+  let invoice;
+  try {
+    invoice = await res.json();
+  } catch {
+    throw btcPayError('E_BTCPAY_BODY');
+  }
+  if (
+    !isObject(invoice) ||
+    typeof invoice.status !== 'string' ||
+    !Number.isInteger(invoice.createdTime) ||
+    invoice.createdTime <= 0 ||
+    !optional(invoice.storeId, 'string') ||
+    (invoice.metadata !== undefined && invoice.metadata !== null && !isObject(invoice.metadata))
+  ) {
+    throw btcPayError('E_BTCPAY_BODY');
+  }
+  const code = invoice.metadata ? invoice.metadata.itemCode : undefined;
+  return {
+    status: invoice.status,
+    createdTime: invoice.createdTime,
+    itemCode: typeof code === 'string' && code.trim() ? code.trim().toLowerCase() : null,
+    storeId: typeof invoice.storeId === 'string' ? invoice.storeId : null,
+  };
+}
+
+// Deterministic token for a looked-up invoice: the same invoice always yields
+// the same token, so one re-minted after a restart is byte-identical.
+// Returns null when the invoice does not qualify, including once its claim
+// window (createdTime + settlement grace + CLAIM_TTL) has passed: a restart
+// must not let a leaked invoice ID re-fetch the token for its whole lifetime.
+function tokenForInvoice(invoice) {
+  if (!invoice || invoice.status !== 'Settled') return null;
+  if (invoice.storeId !== null && invoice.storeId !== BTCPAY_STORE_ID) return null;
+  const days = invoice.itemCode === null ? undefined : PRO_TIERS.get(invoice.itemCode);
+  if (!days) return null;
+  const nowS = Math.floor(Date.now() / 1000);
+  if (nowS > invoice.createdTime + SETTLEMENT_GRACE_S + CLAIM_TTL_MS / 1000) return null;
+  const exp = invoice.createdTime + days * 86400 + SETTLEMENT_GRACE_S;
+  if (exp <= nowS) return null;
+  return mintProTokenAt(exp);
 }
 
 async function handleBtcPayWebhook(req, res) {
@@ -607,6 +718,15 @@ async function handleBtcPayWebhook(req, res) {
     return respond(req, res, 400, TYPE_TEXT, 'Invalid event');
   }
 
+  // A validly signed but old delivery is acknowledged and dropped.
+  if (
+    typeof event.timestamp === 'number' &&
+    Math.floor(Date.now() / 1000) - event.timestamp > WEBHOOK_MAX_AGE_S
+  ) {
+    logWarn('Stale webhook ignored');
+    return respond(req, res, 200, TYPE_TEXT, 'ignored');
+  }
+
   // Anything we do not act on is acknowledged so BTCPay stops retrying it.
   if (event.type !== 'InvoiceSettled') return respond(req, res, 200, TYPE_TEXT, 'ok');
   if (typeof event.invoiceId !== 'string' || !INVOICE_ID_RE.test(event.invoiceId)) {
@@ -622,17 +742,32 @@ async function handleBtcPayWebhook(req, res) {
   const key = invoiceKey(event.invoiceId);
   if (invoices.has(key)) return respond(req, res, 200, TYPE_TEXT, 'ok');
 
-  const rawCode = event.metadata?.itemCode ?? event.data?.metadata?.itemCode;
-  let itemCode = typeof rawCode === 'string' && rawCode.trim() ? rawCode.trim().toLowerCase() : null;
-  if (itemCode === null && BTCPAY_LOOKUP_ENABLED) {
+  // With lookup enabled, the invoice itself is the source of truth and the
+  // token is derived from it deterministically (see tokenForInvoice).
+  if (BTCPAY_LOOKUP_ENABLED) {
+    let invoice;
     try {
-      itemCode = await fetchInvoiceItemCode(event.invoiceId);
+      invoice = await fetchInvoice(event.invoiceId);
     } catch (err) {
-      logError('BTCPay invoice lookup failed', err);
+      logError(`BTCPay invoice lookup failed (${describeLookupError(err)})`);
       // Non-2xx makes BTCPay retry the delivery later.
       return respond(req, res, 502, TYPE_TEXT, 'Invoice lookup failed');
     }
+    const token = tokenForInvoice(invoice);
+    if (!token) {
+      logWarn('Settled webhook for an invoice that does not qualify: no token minted');
+      return respond(req, res, 200, TYPE_TEXT, 'ignored');
+    }
+    if (!invoices.has(key)) {
+      rememberInvoice(key, token);
+      claimMisses.delete(key);
+      logInfo('Pro token minted');
+    }
+    return respond(req, res, 200, TYPE_TEXT, 'ok');
   }
+
+  const rawCode = event.metadata?.itemCode ?? event.data?.metadata?.itemCode;
+  const itemCode = typeof rawCode === 'string' && rawCode.trim() ? rawCode.trim().toLowerCase() : null;
 
   const days = itemCode === null ? undefined : PRO_TIERS.get(itemCode);
   if (!days) {
@@ -645,31 +780,52 @@ async function handleBtcPayWebhook(req, res) {
   }
 
   if (!invoices.has(key)) {
-    const now = Date.now();
-    invoices.set(key, {
-      token: mintProToken(days),
-      claimUntil: now + CLAIM_TTL_MS,
-      forgetAt: now + INVOICE_DEDUPE_MS,
-    });
+    rememberInvoice(key, mintProToken(days));
     logInfo(`Pro token minted (${days}d)`);
   }
   return respond(req, res, 200, TYPE_TEXT, 'ok');
 }
 
-function handleClaim(req, res, url) {
+async function handleClaim(req, res, url) {
   if (!allowClaim(getClientIdentity(req))) {
     return respondJson(req, res, 429, { ready: false }, { 'Retry-After': '60' });
   }
 
   const invoiceId = url.searchParams.get('invoiceId') || '';
-  const entry = INVOICE_ID_RE.test(invoiceId) ? invoices.get(invoiceKey(invoiceId)) : undefined;
+  if (!INVOICE_ID_RE.test(invoiceId)) return respondJson(req, res, 404, { ready: false });
+  const key = invoiceKey(invoiceId);
+  const entry = invoices.get(key);
 
   // The token stays readable for the whole claim window, so a response lost
   // in transit does not cost the buyer their token.
-  if (!entry || !entry.token || entry.claimUntil <= Date.now()) {
+  if (entry) {
+    if (!entry.token || entry.claimUntil <= Date.now()) {
+      return respondJson(req, res, 404, { ready: false });
+    }
+    return respondJson(req, res, 200, { ready: true, token: entry.token });
+  }
+
+  // Cache miss (not settled yet, webhook not delivered, or we restarted):
+  // ask BTCPay directly and re-derive the deterministic token.
+  if (!BTCPAY_LOOKUP_ENABLED || !PRO_TOKEN_SECRET || isRecentClaimMiss(key)) {
     return respondJson(req, res, 404, { ready: false });
   }
-  return respondJson(req, res, 200, { ready: true, token: entry.token });
+
+  let invoice;
+  try {
+    invoice = await fetchInvoice(invoiceId);
+  } catch (err) {
+    logWarn(`BTCPay invoice lookup failed (${describeLookupError(err)})`);
+    return respondJson(req, res, 503, { ready: false }, { 'Retry-After': String(CLAIM_RETRY_AFTER_S) });
+  }
+
+  const token = tokenForInvoice(invoice);
+  if (!token) {
+    rememberClaimMiss(key);
+    return respondJson(req, res, 404, { ready: false });
+  }
+  if (!invoices.has(key)) rememberInvoice(key, token);
+  return respondJson(req, res, 200, { ready: true, token });
 }
 
 // ---------------------------------------------------------------------------
@@ -698,7 +854,7 @@ async function handleRequest(req, res) {
   }
   if (isRead && pathname === '/robots.txt') return respond(req, res, 200, TYPE_TEXT, robotsTxt);
   if (isRead && pathname === '/sitemap.xml') return respond(req, res, 200, TYPE_XML, sitemapXml);
-  if (isRead && pathname === '/api/claim') return handleClaim(req, res, url);
+  if (isRead && pathname === '/api/claim') return await handleClaim(req, res, url);
   if (req.method === 'POST' && pathname === '/webhook/btcpay') return handleBtcPayWebhook(req, res);
 
   return respondNotFound(req, res);
@@ -1082,6 +1238,9 @@ const sweep = setInterval(() => {
   }
   for (const [key, entry] of claimHits) {
     if (entry.resetAt <= now) claimHits.delete(key);
+  }
+  for (const [key, expiresAt] of claimMisses) {
+    if (expiresAt <= now) claimMisses.delete(key);
   }
   for (const [key, entry] of invoices) {
     if (entry.forgetAt <= now) invoices.delete(key);

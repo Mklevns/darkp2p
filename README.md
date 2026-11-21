@@ -68,6 +68,7 @@ TURN_SECRET=$(openssl rand -hex 32)
 TURN_TTL=3600
 PRO_TOKEN_SECRET=$(openssl rand -hex 32)
 PRO_TOKEN_DAYS=30
+CLAIM_TTL_HOURS=48
 BTCPAY_WEBHOOK_SECRET=
 EOF
 chmod 600 .env
@@ -122,6 +123,10 @@ console.log(`${exp}.${sig}`);
 ```
 
 *(To automate token issuance with crypto payments, point a BTCPay Server `InvoiceSettled` webhook to `https://yourdomain.com/webhook/btcpay` and set `BTCPAY_WEBHOOK_SECRET` in `.env`.)*
+
+After paying, the buyer's browser claims the token from `/api/claim` and keeps retrying (across reloads) until it arrives. The claim window is `CLAIM_TTL_HOURS` (default `48`); once it has passed, the claim returns `404`.
+
+For restart-safe claims, also set `BTCPAY_URL`, `BTCPAY_API_KEY` (a Greenfield API key with invoice view permission) and `BTCPAY_STORE_ID`. The server then verifies every settled invoice against the BTCPay API and derives the token from the invoice deterministically, so an unclaimed token survives a restart. In this mode the window runs from invoice creation plus a 6-hour settlement grace, and holds across restarts. Without lookup, the window runs from when the webhook minted the token, and an unclaimed token is lost on restart.
 
 ---
 

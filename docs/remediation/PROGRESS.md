@@ -65,3 +65,48 @@
   - Verified paths: success, compose error, existing `.env` (left untouched) and SIGTERM mid-run. In every case no `.env` is left behind. `.env` is also gitignored.
   - Later steps' "docker compose … config -q" gate means `npm run check:compose`.
 - **Gate re-run:** `npm run check` PASS; `npm test` 22/22 PASS; `npm run check:compose` PASS. `shellcheck` is SKIPPED for `scripts/compose-gate.sh` (tool unavailable).
+
+### Step 3 — Durable Pro token claims (2026-11-21)
+- **Tasks:** 3.A, 3.B
+- **Files changed:** `server.js`, `public/index.html`; new `test/claim.test.mjs`.
+- **3.A (server):**
+  - `CLAIM_TTL_MS` = `CLAIM_TTL_HOURS` (default 48, range 1–168) × 1 h, with a fatal error if it is over `INVOICE_DEDUPE_MS`.
+  - `mintProTokenAt(expUnix)` added; `mintProToken(days)` wraps it, so the token format is unchanged.
+  - `fetchInvoiceItemCode` is replaced by `fetchInvoice`, which returns `{status, createdTime, itemCode, storeId}`. Types are validated, `redirect:'error'` and the timeout are kept, and a BTCPay 404 returns null. Other non-2xx statuses or a malformed body throw a `BtcPayError` with a code and status.
+  - `tokenForInvoice()` gives a deterministic `exp = createdTime + days*86400 + 6h`. It requires `Settled`, a matching store and a known tier, and refuses if `exp <= now`.
+  - With lookup enabled, both the webhook and claim paths use it. The webhook now always looks the invoice up and returns 502 on failure so BTCPay retries. Without lookup, the now-based expiry is unchanged.
+  - `handleClaim` is async and awaited. On a cache miss it checks the negative cache (`claimMisses`: 30 s TTL, 5000 max, oldest evicted first, swept), then calls BTCPay. It returns 503 with `Retry-After: 30` when BTCPay is unreachable and 404 otherwise.
+  - `invoices` is capped at 20000; when full, the earliest `forgetAt` is evicted.
+  - A webhook `timestamp` more than 30 days old returns 200 `ignored` with `logWarn('Stale webhook ignored')`.
+  - Lookup errors log only `name`, `code` and `status` (`describeLookupError`).
+- **3.B (client):**
+  - `{invoiceId, startedAt}` is persisted to `localStorage['darkp2p_pending_claim']` before the URL is cleaned. A pending claim with the same ID keeps its original `startedAt`.
+  - A pending claim is resumed on every load. Polling backs off 3 s → 30 s for up to 6 h, honours Retry-After on 429/503 (capped at 10 min), treats 404 as keep polling, and clears the claim on success or once it is more than 48 h old.
+  - `ws.onopen` waits for at most the first attempt (capped at 5 s). A token that arrives after the join logs "Pro token saved — reload to apply."
+- **Gate:**
+  - `npm run check`: PASS.
+  - `npm test`: 32/32 PASS (22 previous + 10 claim).
+  - 7 of the 10 claim tests fail against the Step 2 `server.js`. The other 3 (unknown itemCode, other-store/missing/expired, webhook 502) already passed before.
+- **Extra verification (not committed):** a Playwright and Chromium run against a real server plus an HTTPS mock confirmed:
+  - the join is sent at 0.2 s while the claim is still pending;
+  - the pending claim is persisted and the URL stripped;
+  - a reload resumes it;
+  - the token arrives at about 45 s (30 s negative cache plus backoff) with the reload message;
+  - the pending claim is cleared on success, and an entry older than 48 h is cleared on load;
+  - BTCPay was hit only twice.
+- **SKIPPED:** none (openssl available).
+- **Open questions:**
+  1. With lookup enabled, the claim path mints for any settled invoice until the token's own expiry (+6 h), even after `CLAIM_TTL` has passed, because a restart clears the RAM entry whose `claimUntil` would have returned 404. In practice the invoice ID is a bearer credential for the token's lifetime. Should lookup minting also be refused when `now > createdTime + 6h + CLAIM_TTL`?
+  2. With lookup enabled, the webhook now calls the BTCPay API for every settled invoice (before, only when metadata was missing), and it ignores the payload's `itemCode` in favour of the invoice's own.
+  3. `CLAIM_TTL_HOURS` is not yet documented in `.env.example` or `README.md`.
+
+### Decisions after Step 3 (user, 2026-11-21)
+- **Claim window cutoff:** `tokenForInvoice()` now returns null once `now > createdTime + 6h + CLAIM_TTL`. The webhook and claim paths share this rule, so a leaked invoice ID cannot re-fetch the token after a restart. The response is 404, which the client already treats as keep polling until its own 48 h limit.
+  - New tests: past-window gives 404 while just-inside mints; a claim past the window after a restart gives 404; a webhook past the window returns `ignored`.
+  - All 3 fail with the cutoff disabled.
+- **Webhook behaviour:** kept. It always looks the invoice up and uses its authoritative `metadata.itemCode`.
+  - The timeout stays at `BTCPAY_API_TIMEOUT_MS` = 5 s, and any lookup error (timeout, network, non-404 status, bad body) returns 502 so BTCPay retries.
+  - New test: a hanging mock gives 502 in about 5 s and logs `name=TimeoutError`.
+- **Docs:** `CLAIM_TTL_HOURS=48` is now in `.env.example` (with a comment) and in the README `.env` example. The README also explains the claim flow and window, and the optional lookup variables (`BTCPAY_URL`, `BTCPAY_API_KEY`, `BTCPAY_STORE_ID`) that make claims restart-safe.
+- **Gate re-run:** `npm run check` PASS; `npm test` 36/36 PASS.
+- Step 3 open questions 1–3 are resolved.

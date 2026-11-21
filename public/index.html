@@ -689,40 +689,115 @@
       }
     };
 
-    async function autoClaimToken() {
-      const params = new URLSearchParams(location.search);
-      const invoiceId = params.get('invoiceId');
-      if (!invoiceId) return;
+    // A paid invoice is remembered until its token is claimed, so a refresh,
+    // a closed tab or a server restart cannot lose it.
+    const PENDING_CLAIM_KEY = 'darkp2p_pending_claim';
+    const CLAIM_MAX_AGE_MS = 48 * 3600 * 1000;
+    const CLAIM_POLL_MS = 6 * 3600 * 1000;
+    const CLAIM_FIRST_DELAY_MS = 3000;
+    const CLAIM_MAX_DELAY_MS = 30_000;
+    const CLAIM_MAX_RETRY_AFTER_MS = 10 * 60 * 1000;
+    const CLAIM_JOIN_WAIT_MS = 5000;
+    const INVOICE_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+    let joinSent = false;
 
-      const cleanUrl = `${location.pathname}${location.hash}`;
-      history.replaceState(null, '', cleanUrl);
-      shareUrlEl.value = location.href;
+    function readPendingClaim() {
+      try {
+        const c = JSON.parse(localStorage.getItem(PENDING_CLAIM_KEY) || 'null');
+        if (c && typeof c.invoiceId === 'string' && INVOICE_ID_RE.test(c.invoiceId) &&
+            Number.isFinite(c.startedAt)) {
+          return { invoiceId: c.invoiceId, startedAt: c.startedAt };
+        }
+      } catch {}
+      return null;
+    }
 
+    function writePendingClaim(claim) {
+      try { localStorage.setItem(PENDING_CLAIM_KEY, JSON.stringify(claim)); } catch {}
+    }
+
+    function clearPendingClaim() {
+      try { localStorage.removeItem(PENDING_CLAIM_KEY); } catch {}
+    }
+
+    // One claim request. Resolves to { token } on success, otherwise to
+    // { retryAfterMs } (null when the server gave no Retry-After).
+    async function claimOnce(invoiceId) {
+      try {
+        const res = await fetch(`/api/claim?invoiceId=${encodeURIComponent(invoiceId)}`, {
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ready && typeof data.token === 'string' && data.token) return { token: data.token };
+          return { retryAfterMs: null };
+        }
+        if (res.status === 429 || res.status === 503) {
+          const secs = Number(res.headers.get('Retry-After'));
+          if (Number.isFinite(secs) && secs > 0) {
+            return { retryAfterMs: Math.min(secs * 1000, CLAIM_MAX_RETRY_AFTER_MS) };
+          }
+        }
+        // 404 means not settled yet (or not yet visible): keep polling.
+      } catch {}
+      return { retryAfterMs: null };
+    }
+
+    async function pollClaim(claim, onFirstAttempt) {
+      const pollUntil = Date.now() + CLAIM_POLL_MS;
+      let delay = CLAIM_FIRST_DELAY_MS;
       log('Checking payment status for Pro TURN token...');
 
-      const maxAttempts = 20;
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          const res = await fetch(`/api/claim?invoiceId=${encodeURIComponent(invoiceId)}`, {
-            cache: 'no-store',
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.ready && data.token) {
-              localStorage.setItem('darkp2p_token', data.token);
-              proTokenEl.value = data.token;
-              log('Pro TURN token claimed and saved.', 'ok');
-              return;
-            }
-          }
-        } catch {}
+      for (let first = true; ; first = false) {
+        if (Date.now() - claim.startedAt > CLAIM_MAX_AGE_MS) {
+          clearPendingClaim();
+          log('Pro token claim expired (48 h). Contact support with your invoice if you paid.', 'err');
+          return;
+        }
 
-        if (attempt < maxAttempts) {
-          await new Promise((r) => setTimeout(r, 3000));
+        const result = await claimOnce(claim.invoiceId);
+        if (first) onFirstAttempt();
+
+        if (result.token) {
+          try { localStorage.setItem('darkp2p_token', result.token); } catch {}
+          proTokenEl.value = result.token;
+          clearPendingClaim();
+          log(joinSent ? 'Pro token saved — reload to apply.' : 'Pro TURN token claimed and saved.', 'ok');
+          return;
+        }
+
+        if (Date.now() >= pollUntil) {
+          log('Token not ready yet. Reload this page later to keep checking.', 'err');
+          return;
+        }
+        const wait = Math.max(delay, result.retryAfterMs || 0);
+        await new Promise((r) => setTimeout(r, Math.min(wait, Math.max(0, pollUntil - Date.now()))));
+        delay = Math.min(delay * 2, CLAIM_MAX_DELAY_MS);
+      }
+    }
+
+    // Returns a promise that settles after the first claim attempt (or at once
+    // if there is nothing to claim). Polling continues in the background.
+    function autoClaimToken() {
+      const invoiceId = new URLSearchParams(location.search).get('invoiceId');
+      if (invoiceId && INVOICE_ID_RE.test(invoiceId)) {
+        const existing = readPendingClaim();
+        if (!existing || existing.invoiceId !== invoiceId) {
+          writePendingClaim({ invoiceId, startedAt: Date.now() });
         }
       }
+      if (invoiceId !== null) {
+        const cleanUrl = `${location.pathname}${location.hash}`;
+        history.replaceState(null, '', cleanUrl);
+        shareUrlEl.value = location.href;
+      }
 
-      log('Token not ready yet. Refresh once your payment confirms.', 'err');
+      const claim = readPendingClaim();
+      if (!claim) return Promise.resolve();
+
+      return new Promise((resolve) => {
+        pollClaim(claim, resolve).catch(() => {}).finally(resolve);
+      });
     }
 
     const claimReady = autoClaimToken();
@@ -1177,8 +1252,11 @@
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = async () => {
-      await claimReady;
+      // Wait for at most the first claim attempt, never the whole poll.
+      await Promise.race([claimReady, new Promise((r) => setTimeout(r, CLAIM_JOIN_WAIT_MS))]);
+      if (ws.readyState !== WebSocket.OPEN) return;
       log(`Connected to signaling broker. Room: ${roomId.slice(0, 8)}...`);
+      joinSent = true;
       ws.send(JSON.stringify({
         type: 'join',
         room: roomId,
