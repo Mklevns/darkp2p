@@ -103,8 +103,11 @@ denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
 denied-peer-ip=2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-# coturn logs every client and peer address: keep logging off.
+# coturn logs every client and peer address: keep logging off. simple-log
+# stops coturn appending a date to log-file; without it, opening
+# /dev/null_<date>.log fails and coturn falls back to /var/tmp.
 no-stdout-log
+simple-log
 log-file=/dev/null
 EOF
 

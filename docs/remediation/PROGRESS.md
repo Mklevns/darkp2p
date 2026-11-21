@@ -563,5 +563,32 @@
   5. **`header -Server`** was also added to the www redirect block. Say if you want it only on the main site.
   6. **`IPV6=yes`** is written into `/etc/default/ufw` rather than only checked. The warning fires only if that fails.
 
+### Decisions after Step 9 (user, 2026-11-21) and follow-up
+- **coturn `simple-log`: applied.**
+  - `gen-turnserver-conf.sh` now emits `simple-log` before `log-file=/dev/null`, with a comment saying why. The compose debug comment names it too.
+  - The generator test requires the line. A mutation removing it fails that test.
+  - The pinned coturn image ran from a regenerated conf with only `turnserver.pid` in `/var/tmp`, so no fallback log is written.
+- **Tor base moved off EOL Alpine 3.20:**
+  - `tor/Dockerfile` is now `FROM alpine:3.23.8` with `apk add --no-cache tor=0.4.9.17-r0`. That version is from `community/tor/APKBUILD` on the aports `3.23-stable` branch (GitHub mirror).
+  - **The exact `tor=` pin will be verified on the deploy host.** `dl-cdn.alpinelinux.org` stays blocked in this sandbox by your decision (HTTP 403), so the image build fails at `apk add` here.
+  - The compose test now requires Alpine 3.22 or newer for tor.
+- **node and caddy pinned by tag and digest**, like coturn, each with a comment on refreshing the digest:
+  - `node:22.23.5-alpine3.24@sha256:1314fb30…481a`
+  - `caddy:2.11.9-alpine@sha256:003a9780…36f0`
+  - Both are the top-level multi-arch index digests from `docker buildx imagetools inspect`, and match the RepoDigests of the images pulled here. The tests require the `@sha256:` form.
+- **`header -Server`:** kept on both site blocks.
+- **Gate re-run:**
+  - `npm run check`: PASS.
+  - `npm test`: 103/103 PASS.
+  - `bash -n` on each script: PASS.
+  - `shellcheck`: SKIPPED (tool unavailable).
+  - `npm run check:compose`: PASS.
+  - `caddy validate` in the digest-pinned caddy image: "Valid configuration".
+  - `docker build darkp2p:audit`: PASS, using the same sandbox-CA base override, keyed on the digest-pinned reference. The image ran healthy as `node` with `NODE_ENV=production` under the compose limits.
+  - `docker build darkp2p-tor:audit`: FAILED (network policy: `dl-cdn.alpinelinux.org` 403). Deferred to the deploy host.
+
 #### Step 10 checklist (added)
-- [ ] README deploy steps: run `sudo scripts/gen-turnserver-conf.sh` before `docker compose up`, and after any change to `TURN_HOST`, `TURN_PUBLIC_IP` or `TURN_SECRET`. Note the one-time `tor_data` chown for existing installs. Update the "No TURN Logs" line, which still names the Step 2 command-line flags.
+- [ ] README deploy steps: run `sudo scripts/gen-turnserver-conf.sh` before `docker compose up`, and after any change to `TURN_HOST`, `TURN_PUBLIC_IP` or `TURN_SECRET`. Update the "No TURN Logs" line, which still names the Step 2 command-line flags (now `no-stdout-log`, `simple-log` and `log-file=/dev/null` in the generated conf).
+- [ ] README upgrade/deploy notes: before starting the new tor image on an existing install, run the one-time `tor_data` chown so the `.onion` keys survive:
+  `docker compose run --rm --no-deps --user root --entrypoint chown tor -R tor:tor /var/lib/tor`
+- [ ] On the deploy host: `docker compose build tor` to confirm the `tor=0.4.9.17-r0` pin on Alpine 3.23.8, and bump the pin if the repository has moved on.

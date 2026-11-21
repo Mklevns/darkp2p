@@ -1,6 +1,11 @@
 services:
   caddy:
-    image: caddy:2.11.9-alpine
+    # Pinned by tag and multi-arch index digest. To update, pick an exact
+    # 2.x.y-alpine tag (https://hub.docker.com/_/caddy/tags), then take the
+    # top-level "Digest:" line from:
+    #   docker buildx imagetools inspect caddy:<tag>
+    # and re-run: caddy validate --adapter caddyfile --config Caddyfile
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     container_name: darkp2p-caddy
     restart: unless-stopped
     cap_drop:
@@ -95,8 +100,9 @@ services:
       - "no-new-privileges:true"
     # coturn logs the address of every client and peer, so its output is
     # discarded and never reaches the host disk. To debug temporarily, set
-    # `driver: json-file` here and swap no-stdout-log/log-file=/dev/null in
-    # scripts/gen-turnserver-conf.sh for log-file=stdout, then revert and
+    # `driver: json-file` here and swap no-stdout-log/simple-log/
+    # log-file=/dev/null in scripts/gen-turnserver-conf.sh for
+    # log-file=stdout, then revert and
     # remove the container (docker compose rm -sf coturn) so the saved log is
     # deleted.
     logging:

@@ -82,7 +82,7 @@ test('caddy keeps DOMAIN; tor forwards to the onion listener', { skip }, () => {
   }
   assert.doesNotMatch(torrc, /darkp2p:3000/);
   const df = readFileSync(join(ROOT, 'tor', 'Dockerfile'), 'utf8');
-  assert.match(df, /^FROM alpine:3\.20\.\d+$/m);
+  assert.match(df, /^FROM alpine:3\.(2[2-9]|[3-9]\d)\.\d+$/m, 'tor base must be a supported Alpine (3.22+)');
   assert.match(df, /apk add --no-cache tor=\d+\.\d+\.\d+\.\d+-r\d+/);
   assert.match(df, /^USER tor$/m);
 });
@@ -103,8 +103,8 @@ test('every service: no-new-privileges; bounded local logs except coturn', { ski
   const caddy = services.caddy;
   assert.deepEqual(caddy.cap_drop, ['ALL']);
   assert.deepEqual(caddy.cap_add, ['NET_BIND_SERVICE']);
-  assert.match(caddy.image, /^caddy:2\.\d+\.\d+-alpine$/);
-  assert.match(readFileSync(join(ROOT, 'Dockerfile'), 'utf8'), /^FROM node:22\.\d+\.\d+-alpine3\.\d+$/m);
+  assert.match(caddy.image, /^caddy:2\.\d+\.\d+-alpine@sha256:[a-f0-9]{64}$/);
+  assert.match(readFileSync(join(ROOT, 'Dockerfile'), 'utf8'), /^FROM node:22\.\d+\.\d+-alpine3\.\d+@sha256:[a-f0-9]{64}$/m);
 });
 
 test('coturn: config file only, no secret or interpolation in compose', { skip }, () => {
@@ -144,7 +144,7 @@ test('gen-turnserver-conf: hardened coturn flags, secret only in a 0600 file', (
     const lines = readFileSync(out, 'utf8').split('\n');
     for (const want of [
       `static-auth-secret=${fixture.TURN_SECRET}`, `realm=${fixture.TURN_HOST}`, 'use-auth-secret',
-      'no-tcp-relay', 'total-quota=40', 'no-stdout-log', 'log-file=/dev/null', 'no-tls', 'no-dtls',
+      'no-tcp-relay', 'total-quota=40', 'no-stdout-log', 'simple-log', 'log-file=/dev/null', 'no-tls', 'no-dtls',
       'denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255', 'denied-peer-ip=::-::',
       'denied-peer-ip=127.0.0.0-127.255.255.255', `denied-peer-ip=${fixture.TURN_PUBLIC_IP}`,
     ]) {
