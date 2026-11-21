@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DARKP2P // Ephemeral Dead Drop</title>
-  <meta name="description" content="Direct, zero-knowledge P2P file transfer in your browser. End-to-end AES-256-GCM encrypted WebRTC streaming with zero server storage or file size limits." />
+  <meta name="description" content="Direct, zero-knowledge P2P file transfer in your browser. End-to-end AES-256-GCM encrypted WebRTC streaming with zero server storage, Tor Browser support, and no file size limits." />
   <link rel="canonical" href="https://darkp2p.com/" />
 
   <meta property="og:type" content="website" />
@@ -23,7 +23,7 @@
         "url": "https://darkp2p.com/",
         "applicationCategory": "UtilitiesApplication",
         "operatingSystem": "Web, Windows, macOS, Linux, Android, iOS",
-        "description": "Zero-knowledge, end-to-end AES-256-GCM encrypted peer-to-peer file transfer directly in the browser using WebRTC DataChannels with zero server storage.",
+        "description": "Zero-knowledge, end-to-end AES-256-GCM encrypted peer-to-peer file transfer directly in the browser using WebRTC DataChannels with automatic E2E WebSocket relay fallback for Tor Browser.",
         "offers": {
           "@type": "Offer",
           "price": "0",
@@ -32,6 +32,7 @@
         "featureList": [
           "End-to-end AES-256-GCM client-side encryption",
           "Direct WebRTC peer-to-peer streaming",
+          "Automatic E2E-encrypted WebSocket relay fallback for Tor Browser",
           "Zero server file storage or logging",
           "Origin Private File System (OPFS) disk streaming for large files",
           "Optional TURN relay for strict corporate firewalls and CGNAT"
@@ -61,7 +62,7 @@
             "name": "Is there a file size limit?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "There is no server-enforced file size limit. On modern browsers supporting the Origin Private File System (OPFS), incoming chunks stream directly to disk so multi-gigabyte transfers do not exhaust browser RAM."
+              "text": "There is no server-enforced file size limit for direct P2P transfers. On modern browsers supporting the Origin Private File System (OPFS), incoming chunks stream directly to disk so multi-gigabyte transfers do not exhaust browser RAM."
             }
           },
           {
@@ -69,7 +70,7 @@
             "name": "Does WebRTC hide my IP address?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "No. Direct peer-to-peer WebRTC connections exchange IP addresses between the two peers during NAT traversal. Use a zero-log VPN if you need to mask your IP address from your peer."
+              "text": "No. Direct peer-to-peer WebRTC connections exchange IP addresses between the two peers during NAT traversal. Use a zero-log VPN or Tor Browser if you need to mask your IP address from your peer."
             }
           }
         ]
@@ -117,6 +118,30 @@
       padding: 16px;
       margin-bottom: 16px;
       background: rgba(0, 0, 0, 0.25);
+    }
+    .box-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.75rem;
+      margin-bottom: 6px;
+      color: var(--muted);
+    }
+    .link-btn {
+      background: none;
+      border: none;
+      padding: 0;
+      color: var(--accent);
+      font-size: 0.72rem;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .link-btn:hover {
+      background: var(--accent);
+      color: #000;
+      text-decoration: none;
     }
     .row { display: flex; gap: 8px; }
     input[type="text"] {
@@ -246,6 +271,103 @@
       color: var(--muted);
       line-height: 1.5;
     }
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(7, 9, 11, 0.85);
+      backdrop-filter: blur(2px);
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 100;
+    }
+    .modal-backdrop.open {
+      display: flex;
+    }
+    .modal {
+      width: 100%;
+      max-width: 440px;
+      background: var(--panel);
+      border: 1px solid var(--accent);
+      padding: 20px;
+      box-shadow: 0 0 35px rgba(0, 240, 255, 0.15);
+    }
+    .modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .modal-head h2 {
+      margin: 0;
+      font-size: 0.95rem;
+      color: var(--accent);
+      letter-spacing: 1px;
+    }
+    .modal-sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+      line-height: 1.5;
+      margin-bottom: 14px;
+    }
+    .tier-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .tier-card {
+      border: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.35);
+      padding: 14px 12px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .tier-card.featured {
+      border-color: var(--accent);
+    }
+    .tier-name {
+      font-size: 0.75rem;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .tier-price {
+      font-size: 1.25rem;
+      color: var(--accent);
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+    .tier-perks {
+      list-style: none;
+      padding: 0;
+      margin: 0 0 12px;
+      font-size: 0.68rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .tier-cta {
+      display: block;
+      text-align: center;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      text-decoration: none;
+      padding: 7px 10px;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+    }
+    .tier-cta:hover {
+      background: var(--accent);
+      color: #000;
+    }
+    .modal-note {
+      font-size: 0.68rem;
+      color: var(--muted);
+      border-top: 1px dashed var(--border);
+      padding-top: 10px;
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
@@ -262,8 +384,9 @@
     </div>
 
     <div class="box">
-      <div style="font-size:0.75rem; margin-bottom:6px; color:var(--muted);">
-        PRO RELAY TOKEN (OPTIONAL — UNLOCKS TURN):
+      <div class="box-header">
+        <span>PRO RELAY TOKEN (OPTIONAL — UNLOCKS TURN):</span>
+        <button type="button" class="link-btn" id="openProModalBtn">Get Pro Token →</button>
       </div>
       <div class="row">
         <input type="text" id="proToken" placeholder="Paste token for strict NAT / firewall relay" />
@@ -309,14 +432,62 @@
 
       <details>
         <summary>Is there a file size limit?</summary>
-        <p>No server cap. Incoming chunks stream directly to disk via the browser's Origin Private File System (OPFS) so multi-gigabyte files won't crash your tab.</p>
+        <p>No server cap for direct P2P transfers. Incoming chunks stream directly to disk via the browser's Origin Private File System (OPFS) so multi-gigabyte files won't crash your tab.</p>
       </details>
 
       <details>
         <summary>Does WebRTC hide my IP address?</summary>
-        <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. Use a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a> if you want to mask your IP.</p>
+        <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. Use a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a> or Tor Browser if you want to mask your IP.</p>
       </details>
     </section>
+
+    <div class="modal-backdrop" id="proModal" role="dialog" aria-modal="true" aria-labelledby="proModalTitle">
+      <div class="modal">
+        <div class="modal-head">
+          <h2 id="proModalTitle">PRO TURN RELAY ACCESS</h2>
+          <button type="button" id="closeProModalBtn" style="padding:4px 8px;">✕</button>
+        </div>
+        <div class="modal-sub">
+          Unlocks dedicated TURN relay traversal through strict corporate firewalls &amp; CGNAT, plus higher WebSocket relay caps for Tor Browser. Zero accounts or logs.
+        </div>
+
+        <div class="tier-grid">
+          <div class="tier-card">
+            <div>
+              <div class="tier-name">24-HOUR PASS</div>
+              <div class="tier-price">$2</div>
+              <ul class="tier-perks">
+                <li>• 24h TURN relay access</li>
+                <li>• 500 MB WS relay cap</li>
+                <li>• One-off dead drops</li>
+              </ul>
+            </div>
+            <a class="tier-cta" href="https://btcpay.YOURDOMAIN.com/apps/YOUR_APP_ID/pos?itemCode=pro-1d" target="_blank" rel="noopener noreferrer">
+              Pay BTC / XMR
+            </a>
+          </div>
+
+          <div class="tier-card featured">
+            <div>
+              <div class="tier-name">30-DAY PRO</div>
+              <div class="tier-price">$5</div>
+              <ul class="tier-perks">
+                <li>• 30d TURN relay access</li>
+                <li>• 500 MB WS relay cap</li>
+                <li>• Best for frequent use</li>
+              </ul>
+            </div>
+            <a class="tier-cta" href="https://btcpay.YOURDOMAIN.com/apps/YOUR_APP_ID/pos?itemCode=pro-30d" target="_blank" rel="noopener noreferrer">
+              Pay BTC / XMR
+            </a>
+          </div>
+        </div>
+
+        <div class="modal-note">
+          After payment settles on BTCPay Server, you will be redirected back here and your Pro token will auto-claim and save locally.
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -366,6 +537,12 @@
       if (label) dropLabel.textContent = label;
     }
 
+    function readyDropLabel() {
+      return transportMode === 'ws'
+        ? 'DROP FILE HERE OR CLICK TO SELECT (WS RELAY)'
+        : 'DROP FILE HERE OR CLICK TO SELECT';
+    }
+
     function initRoomAndKey() {
       const rawHash = location.hash.slice(1);
       const parts = rawHash.split(':');
@@ -384,6 +561,17 @@
 
     const { roomId, keyBytes } = initRoomAndKey();
     shareUrlEl.value = location.href;
+
+    // Pro Token Modal
+    const proModal = document.getElementById('proModal');
+    document.getElementById('openProModalBtn').onclick = () => proModal.classList.add('open');
+    document.getElementById('closeProModalBtn').onclick = () => proModal.classList.remove('open');
+    proModal.onclick = (e) => {
+      if (e.target === proModal) proModal.classList.remove('open');
+    };
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') proModal.classList.remove('open');
+    });
 
     proTokenEl.value = localStorage.getItem('darkp2p_token') || '';
     document.getElementById('saveTokenBtn').onclick = () => {
@@ -491,6 +679,8 @@
 
     let pc = null;
     let dc = null;
+    let transportMode = 'webrtc'; // 'webrtc' | 'ws'
+    let iceTimer = null;
     let remoteDescSet = false;
     let iceQueue = [];
     let isTransferring = false;
@@ -510,6 +700,8 @@
     }
 
     function cleanupPeer() {
+      clearTimeout(iceTimer);
+      iceTimer = null;
       if (dc) {
         dc.onopen = dc.onclose = dc.onerror = dc.onmessage = null;
         try { dc.close(); } catch {}
@@ -526,6 +718,26 @@
       resetRxState();
     }
 
+    function getActiveChannel() {
+      return transportMode === 'ws' ? ws : dc;
+    }
+
+    function isChannelOpen(ch) {
+      if (!ch) return false;
+      return ch === ws ? ch.readyState === WebSocket.OPEN : ch.readyState === 'open';
+    }
+
+    function activateWsFallback(notifyPeer = false) {
+      if (transportMode === 'ws') return;
+      cleanupPeer();
+      transportMode = 'ws';
+      if (notifyPeer && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ws-fallback' }));
+      }
+      log('WebRTC unavailable — E2E-encrypted WebSocket relay active.', 'ok');
+      setDropEnabled(true, readyDropLabel());
+    }
+
     async function flushIceQueue() {
       while (iceQueue.length && pc) {
         const candidate = iceQueue.shift();
@@ -539,6 +751,17 @@
 
     async function waitForBufferDrain(channel) {
       if (channel.bufferedAmount <= HIGH_WATER) return;
+
+      if (channel === ws) {
+        while (channel.bufferedAmount > HIGH_WATER) {
+          if (channel.readyState !== WebSocket.OPEN) {
+            throw new Error('WebSocket closed during transfer');
+          }
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        return;
+      }
+
       await new Promise((resolve, reject) => {
         const cleanup = () => {
           channel.removeEventListener('bufferedamountlow', onLow);
@@ -632,8 +855,8 @@
         log(`Receive failed: ${err.message}`, 'err');
       } finally {
         isTransferring = false;
-        if (dc && dc.readyState === 'open') {
-          setDropEnabled(true, 'DROP FILE HERE OR CLICK TO SELECT');
+        if (isChannelOpen(getActiveChannel())) {
+          setDropEnabled(true, readyDropLabel());
         }
       }
     }
@@ -669,13 +892,28 @@
       }
     }
 
+    function enqueueIncomingBinary(buffer) {
+      rxQueue = rxQueue
+        .then(() => handleIncomingFrame(buffer))
+        .catch((err) => {
+          log(`Decrypt/receive error: ${err.message}`, 'err');
+          isTransferring = false;
+          resetRxState();
+          if (isChannelOpen(getActiveChannel())) {
+            setDropEnabled(true, readyDropLabel());
+          }
+        });
+    }
+
     function setupDataChannel(channel) {
       channel.binaryType = 'arraybuffer';
       channel.bufferedAmountLowThreshold = HIGH_WATER / 2;
 
       channel.onopen = () => {
+        clearTimeout(iceTimer);
+        iceTimer = null;
         log('E2E encrypted P2P tunnel established.', 'ok');
-        setDropEnabled(true, 'DROP FILE HERE OR CLICK TO SELECT');
+        setDropEnabled(true, readyDropLabel());
       };
 
       channel.onclose = () => {
@@ -690,23 +928,26 @@
       };
 
       channel.onmessage = ({ data }) => {
-        if (!(data instanceof ArrayBuffer)) return;
-        rxQueue = rxQueue
-          .then(() => handleIncomingFrame(data))
-          .catch((err) => {
-            log(`Decrypt/receive error: ${err.message}`, 'err');
-            isTransferring = false;
-            resetRxState();
-            if (dc && dc.readyState === 'open') {
-              setDropEnabled(true, 'DROP FILE HERE OR CLICK TO SELECT');
-            }
-          });
+        if (data instanceof ArrayBuffer) enqueueIncomingBinary(data);
       };
     }
 
     async function initPeer(initiator) {
+      transportMode = 'webrtc';
+      if (typeof RTCPeerConnection === 'undefined') {
+        activateWsFallback(true);
+        return;
+      }
+
       cleanupPeer();
       pc = new RTCPeerConnection(iceConfig);
+
+      iceTimer = setTimeout(() => {
+        if (!dc || dc.readyState !== 'open') {
+          log('WebRTC handshake timed out — switching to E2E WebSocket relay.');
+          activateWsFallback(true);
+        }
+      }, 12_000);
 
       pc.onicecandidate = ({ candidate }) => {
         if (candidate && ws.readyState === WebSocket.OPEN) {
@@ -715,8 +956,11 @@
       };
 
       pc.onconnectionstatechange = () => {
-        if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'disconnected')) {
-          log(`WebRTC connection ${pc.connectionState}.`, 'err');
+        if (pc && pc.connectionState === 'failed') {
+          log('WebRTC connection failed — switching to E2E WebSocket relay.');
+          activateWsFallback(true);
+        } else if (pc && pc.connectionState === 'disconnected') {
+          log('WebRTC connection disconnected.', 'err');
           setDropEnabled(false, 'CONNECTION LOST');
         }
       };
@@ -730,6 +974,7 @@
           ws.send(JSON.stringify({ type: 'offer', offer }));
         } catch (err) {
           log(`Offer failed: ${err.message}`, 'err');
+          activateWsFallback(true);
         }
       } else {
         pc.ondatachannel = ({ channel }) => {
@@ -740,7 +985,8 @@
     }
 
     async function sendFile(file) {
-      if (!dc || dc.readyState !== 'open' || isTransferring) return;
+      const ch = getActiveChannel();
+      if (!isChannelOpen(ch) || isTransferring) return;
       isTransferring = true;
       setDropEnabled(false, `SENDING: ${file.name}`);
       progressEl.value = 0;
@@ -750,31 +996,31 @@
         const metaBytes = encoder.encode(
           JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime: file.type })
         );
-        dc.send(await encryptFrame(FRAME_CTRL, metaBytes, 0));
+        ch.send(await encryptFrame(FRAME_CTRL, metaBytes, 0));
 
         let offset = 0;
         let seq = 1;
         let chunks = 0;
 
         while (offset < file.size) {
-          if (dc.readyState !== 'open') throw new Error('Peer disconnected');
-          await waitForBufferDrain(dc);
+          if (!isChannelOpen(ch)) throw new Error('Peer disconnected');
+          await waitForBufferDrain(ch);
 
           const slice = file.slice(offset, offset + CHUNK_SIZE);
           const buf = await slice.arrayBuffer();
           const frame = await encryptFrame(FRAME_DATA, new Uint8Array(buf), seq++);
 
-          if (dc.readyState !== 'open') throw new Error('Peer disconnected');
-          dc.send(frame);
+          if (!isChannelOpen(ch)) throw new Error('Peer disconnected');
+          ch.send(frame);
 
           offset += buf.byteLength;
           chunks++;
           progressEl.value = (offset / file.size) * 100;
         }
 
-        await waitForBufferDrain(dc);
+        await waitForBufferDrain(ch);
         const doneBytes = encoder.encode(JSON.stringify({ type: 'done', chunks, size: file.size }));
-        dc.send(await encryptFrame(FRAME_CTRL, doneBytes, seq));
+        ch.send(await encryptFrame(FRAME_CTRL, doneBytes, seq));
 
         progressEl.value = 100;
         log(`Sent: ${file.name}`, 'ok');
@@ -782,14 +1028,15 @@
         log(`Send aborted: ${err.message}`, 'err');
       } finally {
         isTransferring = false;
-        if (dc && dc.readyState === 'open') {
-          setDropEnabled(true, 'DROP FILE HERE OR CLICK TO SELECT');
+        if (isChannelOpen(getActiveChannel())) {
+          setDropEnabled(true, readyDropLabel());
         }
       }
     }
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${location.host}`);
+    ws.binaryType = 'arraybuffer';
 
     ws.onopen = async () => {
       await claimReady;
@@ -803,13 +1050,28 @@
 
     ws.onclose = () => {
       log('Signaling connection closed.', 'err');
+      if (transportMode === 'ws') {
+        isTransferring = false;
+        resetRxState();
+        setDropEnabled(false, 'RELAY CLOSED');
+      }
     };
 
     ws.onmessage = async ({ data }) => {
+      if (data instanceof ArrayBuffer) {
+        enqueueIncomingBinary(data);
+        return;
+      }
+
       let msg;
       try {
         msg = JSON.parse(data);
       } catch {
+        return;
+      }
+
+      if (msg.type === 'ws-fallback') {
+        activateWsFallback(false);
         return;
       }
 
@@ -819,12 +1081,22 @@
       }
 
       if (msg.type === 'error') {
-        log(`Signaling error: ${msg.reason}`, 'err');
+        if (msg.reason === 'relay-limit-exceeded') {
+          log('WS relay cap reached (50 MB free / 500 MB Pro). Use direct P2P or a Pro token.', 'err');
+          isTransferring = false;
+          resetRxState();
+          if (isChannelOpen(getActiveChannel())) {
+            setDropEnabled(true, readyDropLabel());
+          }
+        } else {
+          log(`Signaling error: ${msg.reason}`, 'err');
+        }
         return;
       }
 
       if (msg.type === 'peer-left') {
         log('Remote peer disconnected.', 'err');
+        transportMode = 'webrtc';
         cleanupPeer();
         setDropEnabled(false, 'PEER DISCONNECTED — WAITING...');
         return;
