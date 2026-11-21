@@ -71,3 +71,40 @@ test('caddy keeps DOMAIN; tor forwards to the onion listener', { skip }, () => {
   assert.match(cmd, /HiddenServicePort 80 darkp2p:3001/);
   assert.doesNotMatch(cmd, /darkp2p:3000/);
 });
+
+test('coturn: no TCP relay, mapped-IPv4 deny, no stdout log, logging disabled', { skip }, () => {
+  const coturn = renderCompose(fixtureText).services.coturn;
+  const cmd = [].concat(coturn.command).map(String);
+  assert.ok(cmd.includes('--no-tcp-relay'), 'missing --no-tcp-relay');
+  assert.ok(cmd.includes('--denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255'), 'missing ::ffff: deny');
+  assert.ok(cmd.includes('--denied-peer-ip=::-::'), 'missing :: deny');
+  assert.ok(cmd.includes('--denied-peer-ip=127.0.0.0-127.255.255.255'), 'missing 127/8 deny');
+  assert.ok(cmd.includes(`--denied-peer-ip=${fixture.TURN_PUBLIC_IP}`), 'missing own public IP deny');
+  const stdoutFlags = cmd.filter((a) => a !== '--no-stdout-log' && /stdout/i.test(a));
+  assert.deepEqual(stdoutFlags, [], 'coturn logs to stdout');
+  assert.ok(cmd.includes('--no-stdout-log'));
+  assert.ok(cmd.includes('--log-file=/dev/null'));
+  assert.ok(cmd.includes('--total-quota=40'));
+  assert.equal(coturn.logging?.driver, 'none');
+  assert.match(coturn.image, /^coturn\/coturn:4\.6\.\d+-r\d+-alpine$/, 'coturn image not pinned to an exact 4.6.x tag');
+});
+
+test('compose refuses to render without TURN_PUBLIC_IP', { skip }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'darkp2p-compose-'));
+  try {
+    copyFileSync(join(ROOT, 'docker-compose.yml'), join(dir, 'docker-compose.yml'));
+    const noIp = fixtureText.split('\n').filter((l) => !l.startsWith('TURN_PUBLIC_IP=')).join('\n');
+    writeFileSync(join(dir, '.env'), noIp);
+    writeFileSync(join(dir, 'interp.env'), noIp);
+    const r = spawnSync(
+      'docker',
+      ['compose', '--project-directory', dir, '-f', join(dir, 'docker-compose.yml'),
+        '--env-file', join(dir, 'interp.env'), 'config', '-q'],
+      { encoding: 'utf8' }
+    );
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /TURN_PUBLIC_IP/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

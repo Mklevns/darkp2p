@@ -53,10 +53,17 @@ services:
       - internal
 
   coturn:
-    image: coturn/coturn:4.6-alpine
+    image: coturn/coturn:4.6.3-r3-alpine
     container_name: darkp2p-coturn
     restart: unless-stopped
     network_mode: host
+    # coturn logs the address of every client and peer, so its output is
+    # discarded and never reaches the host disk. To debug temporarily, set
+    # `driver: json-file` here and swap --no-stdout-log/--log-file=/dev/null
+    # below for --log-file=stdout, then revert and remove the container
+    # (docker compose rm -sf coturn) so the saved log is deleted.
+    logging:
+      driver: "none"
     read_only: true
     tmpfs:
       - /var/tmp
@@ -70,7 +77,7 @@ services:
       - --min-port=49160
       - --max-port=49200
       - --user-quota=4
-      - --total-quota=100
+      - --total-quota=40
       - --max-bps=5000000
       - --bps-capacity=50000000
       - --max-allocate-lifetime=1800
@@ -80,16 +87,27 @@ services:
       - --no-dtls
       - --no-software-attribute
       - --no-multicast-peers
-      - --no-loopback-peers
+      - --no-tcp-relay
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
       - --denied-peer-ip=10.0.0.0-10.255.255.255
       - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
       - --denied-peer-ip=169.254.0.0-169.254.255.255
       - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.0.0.0-192.0.0.255
       - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=198.18.0.0-198.19.255.255
+      - --denied-peer-ip=240.0.0.0-255.255.255.255
+      - --denied-peer-ip=${TURN_PUBLIC_IP:?Set TURN_PUBLIC_IP to the server's public IPv4}
+      - "--denied-peer-ip=::-::"
       - --denied-peer-ip=::1
+      - --denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255
+      - --denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
+      - --denied-peer-ip=2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-      - --log-file=stdout
+      - --no-stdout-log
+      - --log-file=/dev/null
 
 networks:
   internal:
