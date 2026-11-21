@@ -213,10 +213,13 @@
     .dropzone.active { border-color: var(--accent); background: rgba(0, 240, 255, 0.05); }
     .dropzone.disabled { cursor: not-allowed; opacity: 0.65; }
     progress { width: 100%; height: 6px; accent-color: var(--accent); margin-top: 12px; }
-    .offer .offer-text { font-size: 0.75rem; margin-bottom: 10px; word-break: break-all; }
+    .offer .offer-text, .rx-panel .offer-text { font-size: 0.75rem; margin-bottom: 10px; word-break: break-all; }
     .cancel-btn { display: block; width: 100%; margin: -8px 0 16px; border-color: var(--warn); color: var(--warn); }
     .cancel-btn:hover:not(:disabled) { background: var(--warn); color: #000; }
     .cancel-btn[hidden] { display: none; }
+    .rx-panel[hidden] { display: none; }
+    .rx-panel progress { margin: 0 0 12px; }
+    .rx-panel .cancel-btn { margin: 0; }
     #log {
       font-size: 0.75rem;
       color: var(--muted);
@@ -389,6 +392,7 @@
       text-transform: uppercase;
     }
     .tier-cta:hover { background: var(--accent); color: #000; }
+    .tier-cta[hidden], .tip-jar[hidden], .tip-btn[hidden], .modal-note[hidden] { display: none; }
     .modal-note {
       font-size: 0.68rem;
       color: var(--muted);
@@ -440,7 +444,13 @@
       <input type="file" id="fileInput" hidden disabled />
       <progress id="progress" value="0" max="100"></progress>
     </div>
-    <button type="button" id="cancelBtn" class="cancel-btn" hidden>Cancel transfer</button>
+    <button type="button" id="cancelBtn" class="cancel-btn" hidden>Cancel send</button>
+
+    <div class="box rx-panel" id="rxPanel" hidden>
+      <div class="offer-text" id="rxLabel"></div>
+      <progress id="rxProgress" value="0" max="100"></progress>
+      <button type="button" id="cancelRxBtn" class="cancel-btn">Cancel receive</button>
+    </div>
 
     <div id="log"></div>
 
@@ -450,11 +460,11 @@
         <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a>.
       </div>
 
-      <div class="tip-jar">
+      <div class="tip-jar" hidden>
         <span>SUPPORT ZERO-LOG INFRASTRUCTURE:</span>
         <div class="tip-btns">
-          <button type="button" class="tip-btn" data-coin="XMR" data-addr="4YOUR_MONERO_ADDRESS_HERE">Copy XMR</button>
-          <button type="button" class="tip-btn" data-coin="BTC" data-addr="bc1qYOUR_BITCOIN_ADDRESS_HERE">Copy BTC</button>
+          <button type="button" class="tip-btn" data-coin="XMR" hidden>Copy XMR</button>
+          <button type="button" class="tip-btn" data-coin="BTC" hidden>Copy BTC</button>
         </div>
       </div>
     </div>
@@ -504,7 +514,7 @@
                 <li>• One-off dead drops</li>
               </ul>
             </div>
-            <a class="tier-cta" href="https://btcpay.YOURDOMAIN.com/apps/YOUR_APP_ID/pos?itemCode=pro-1d" target="_blank" rel="noopener noreferrer">
+            <a class="tier-cta" data-item-code="pro-1d" target="_blank" rel="noopener noreferrer" hidden>
               Pay BTC / XMR
             </a>
           </div>
@@ -519,19 +529,20 @@
                 <li>• Best for frequent use</li>
               </ul>
             </div>
-            <a class="tier-cta" href="https://btcpay.YOURDOMAIN.com/apps/YOUR_APP_ID/pos?itemCode=pro-30d" target="_blank" rel="noopener noreferrer">
+            <a class="tier-cta" data-item-code="pro-30d" target="_blank" rel="noopener noreferrer" hidden>
               Pay BTC / XMR
             </a>
           </div>
         </div>
 
-        <div class="modal-note">
+        <div class="modal-note" hidden>
           After payment settles on BTCPay Server, you will be redirected back here and your Pro token will auto-claim and save locally.
         </div>
       </div>
     </div>
   </div>
 
+  <script type="application/json" id="darkp2p-config">{}</script>
   <script>
     const CHUNK_SIZE = 16000;
     const HIGH_WATER = 1048576;
@@ -544,8 +555,11 @@
     const TX_WATCHDOG_MS = 1000;
     const MSG_KEY_MISMATCH = 'Key mismatch — the link was altered';
     const MSG_PEER_OUTDATED = 'Peer is running an outdated DARKP2P page — both sides reload';
+    const MSG_SESSION_UNCONFIRMED = 'Peer did not confirm the session key — both sides reload';
+    // Used only if the server's `ready` carries no relay budget (older server).
     const WS_RELAY_LIMIT_FREE = 50 * 1024 * 1024;
     const WS_RELAY_LIMIT_PRO = 500 * 1024 * 1024;
+    const FULL_RETRY_MS = 90_000; // server notices a dead socket within 2 heartbeats (60 s)
 
     let iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
@@ -557,6 +571,10 @@
     const fileInput = document.getElementById('fileInput');
     const progressEl = document.getElementById('progress');
     const cancelBtn = document.getElementById('cancelBtn');
+    const rxPanel = document.getElementById('rxPanel');
+    const rxLabel = document.getElementById('rxLabel');
+    const rxProgressEl = document.getElementById('rxProgress');
+    const cancelRxBtn = document.getElementById('cancelRxBtn');
     const modeBadge = document.getElementById('modeBadge');
     const ipBadge = document.getElementById('ipBadge');
 
@@ -816,16 +834,21 @@
     const claimReady = autoClaimToken();
 
     // ==BEGIN darkp2p-framing==
-    // Wire format v2: type(1) | transferId(16) | seq(4, BE) | iv(12) | ciphertext||tag(16).
-    // AAD = "DP2" | type | senderRole | transferId | seq. Each transfer has its own
-    // AES-GCM-256 key: HKDF-SHA256(room key, salt = transferId, info = "darkp2p/v2/transfer").
+    // Wire format v3: type(1) | transferId(16) | seq(4, BE) | iv(12) | ciphertext||tag(16).
+    // AAD = "DP3" | type | senderRole | transferId | seq.
+    // HELLO frames: HKDF-SHA256(room key, salt = transferId, info = "darkp2p/v3/hello").
+    // CTRL/DATA frames are bound to the session (both peers' hello nonces):
+    //   HKDF-SHA256(room key, salt = transferId | initNonce | respNonce, info = "darkp2p/v3/transfer").
     // Pure Web Crypto and typed arrays only (no DOM): test/framing.test.mjs evaluates this block.
-    const FRAME_TYPE_CTRL = 0x11;
-    const FRAME_TYPE_DATA = 0x12;
-    const LEGACY_FRAME_TYPES = [1, 2];
+    const FRAME_TYPE_HELLO = 0x20;
+    const FRAME_TYPE_CTRL = 0x21;
+    const FRAME_TYPE_DATA = 0x22;
+    const FRAME_TYPES = [FRAME_TYPE_HELLO, FRAME_TYPE_CTRL, FRAME_TYPE_DATA];
+    const LEGACY_FRAME_TYPES = [1, 2, 0x11, 0x12]; // v1, v2
     const ROLE_INITIATOR = 0x01;
     const ROLE_RESPONDER = 0x02;
     const ROOM_KEY_LEN = 32;
+    const SESSION_NONCE_LEN = 32;
     const TRANSFER_ID_LEN = 16;
     const FRAME_IV_LEN = 12;
     const FRAME_TAG_LEN = 16;
@@ -838,8 +861,9 @@
       return out;
     }
 
-    const AAD_MAGIC = asciiBytes('DP2');
-    const HKDF_INFO = asciiBytes('darkp2p/v2/transfer');
+    const AAD_MAGIC = asciiBytes('DP3');
+    const HKDF_INFO_HELLO = asciiBytes('darkp2p/v3/hello');
+    const HKDF_INFO_TRANSFER = asciiBytes('darkp2p/v3/transfer');
 
     class FrameError extends Error {
       constructor(code, message) {
@@ -882,10 +906,15 @@
       return crypto.subtle.importKey('raw', keyBytes, 'HKDF', false, ['deriveKey']);
     }
 
-    async function deriveTransferKey(roomKey, transferId) {
-      checkTransferId(transferId);
+    function checkNonce(nonce) {
+      if (!(nonce instanceof Uint8Array) || nonce.length !== SESSION_NONCE_LEN) {
+        throw new FrameError('malformed', 'Session nonce must be 32 bytes');
+      }
+    }
+
+    function hkdfAesKey(roomKey, salt, info) {
       return crypto.subtle.deriveKey(
-        { name: 'HKDF', hash: 'SHA-256', salt: transferId, info: HKDF_INFO },
+        { name: 'HKDF', hash: 'SHA-256', salt, info },
         roomKey,
         { name: 'AES-GCM', length: 256 },
         false,
@@ -893,8 +922,30 @@
       );
     }
 
-    // LRU of derived transfer keys: at most `max` entries, least recently used evicted.
-    function createTransferKeyCache(roomKey, max) {
+    // Key for a HELLO frame: room key only (the session does not exist yet).
+    async function deriveHelloKey(roomKey, transferId) {
+      checkTransferId(transferId);
+      return hkdfAesKey(roomKey, transferId, HKDF_INFO_HELLO);
+    }
+
+    // Key for a CTRL/DATA frame: bound to the transfer and to both peers' session nonces.
+    // session = { initNonce, respNonce } (initiator's nonce first).
+    async function deriveTransferKey(roomKey, transferId, session) {
+      checkTransferId(transferId);
+      checkNonce(session && session.initNonce);
+      checkNonce(session.respNonce);
+      const salt = new Uint8Array(TRANSFER_ID_LEN + 2 * SESSION_NONCE_LEN);
+      salt.set(transferId, 0);
+      salt.set(session.initNonce, TRANSFER_ID_LEN);
+      salt.set(session.respNonce, TRANSFER_ID_LEN + SESSION_NONCE_LEN);
+      return hkdfAesKey(roomKey, salt, HKDF_INFO_TRANSFER);
+    }
+
+    // LRU of one session's transfer keys: at most `max` entries, least recently used evicted.
+    function createTransferKeyCache(roomKey, session, max) {
+      checkNonce(session && session.initNonce);
+      checkNonce(session.respNonce);
+      const nonces = { initNonce: session.initNonce.slice(), respNonce: session.respNonce.slice() };
       const entries = new Map(); // hex(transferId) -> Promise<CryptoKey>, oldest first
       return function getTransferKey(transferId) {
         checkTransferId(transferId);
@@ -905,7 +956,7 @@
           entries.set(id, pending);
           return pending;
         }
-        pending = deriveTransferKey(roomKey, transferId.slice());
+        pending = deriveTransferKey(roomKey, transferId.slice(), nonces);
         pending.catch(() => { if (entries.get(id) === pending) entries.delete(id); });
         entries.set(id, pending);
         while (entries.size > max) entries.delete(entries.keys().next().value);
@@ -914,9 +965,7 @@
     }
 
     async function encodeFrame({ type, role, transferId, seq, payload, key }) {
-      if (type !== FRAME_TYPE_CTRL && type !== FRAME_TYPE_DATA) {
-        throw new FrameError('malformed', 'Unknown frame type');
-      }
+      if (!FRAME_TYPES.includes(type)) throw new FrameError('malformed', 'Unknown frame type');
       if (!isRole(role)) throw new FrameError('malformed', 'Invalid sender role');
       checkTransferId(transferId);
       if (!Number.isInteger(seq) || seq < 0 || seq > 0xffffffff) {
@@ -950,10 +999,8 @@
       if (bytes.length < 1) throw new FrameError('malformed', 'Empty frame');
 
       const type = bytes[0];
-      if (LEGACY_FRAME_TYPES.includes(type)) throw new FrameError('legacy', 'Legacy (v1) frame');
-      if (type !== FRAME_TYPE_CTRL && type !== FRAME_TYPE_DATA) {
-        throw new FrameError('malformed', 'Unknown frame type');
-      }
+      if (LEGACY_FRAME_TYPES.includes(type)) throw new FrameError('legacy', 'Legacy (v1/v2) frame');
+      if (!FRAME_TYPES.includes(type)) throw new FrameError('malformed', 'Unknown frame type');
       if (bytes.length < FRAME_OVERHEAD) throw new FrameError('malformed', 'Truncated frame');
       if (!isRole(peerRole)) throw new FrameError('malformed', 'Invalid peer role');
 
@@ -1242,14 +1289,73 @@
         return true;
       }
     }
+
+    // ---- Resilience helpers (pure) ----
+    const RECONNECT_BASE_MS = 1000;
+    const RECONNECT_MAX_MS = 30_000;
+    // Room relay budget reserve for meta/done/ack/complete frames, per file.
+    const RELAY_CTRL_RESERVE = 1024;
+    const OPFS_TEMP_PREFIX = 'darkp2p-';
+    const OPFS_STALE_MS = 24 * 3600 * 1000;
+
+    // Delay before signaling reconnect attempt `attempt` (0-based): 1 s doubling to a
+    // 30 s cap, with +-20 % jitter so many clients do not reconnect in lockstep.
+    // `rand` is in [0, 1).
+    function reconnectDelay(attempt, rand) {
+      const n = Number.isInteger(attempt) && attempt > 0 ? Math.min(attempt, 16) : 0;
+      const base = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** n);
+      const r = rand >= 0 && rand < 1 ? rand : 0.5;
+      return Math.round(base * (0.8 + 0.4 * r));
+    }
+
+    // The room's WebSocket relay budget as the server counts it: every binary frame
+    // relayed in either direction, from the `ready` snapshot onwards.
+    class RelayBudget {
+      constructor({ cap, remaining }) {
+        if (!Number.isSafeInteger(cap) || cap < 0) throw new RangeError('Invalid relay cap');
+        if (!Number.isSafeInteger(remaining) || remaining < 0 || remaining > cap) {
+          throw new RangeError('Invalid relay remaining');
+        }
+        this.cap = cap;
+        this.remaining = remaining;
+      }
+
+      charge(bytes) {
+        if (Number.isSafeInteger(bytes) && bytes > 0) this.remaining = Math.max(0, this.remaining - bytes);
+      }
+
+      // Relay bytes a file of `size` bytes uses: every chunk plus its frame overhead,
+      // the receiver's acks (one per 64 chunks) and the meta/done/complete frames.
+      static wireBytes(size, chunkSize) {
+        const chunks = Math.ceil(size / chunkSize);
+        const acks = Math.ceil(chunks / ACK_EVERY) + 1;
+        return size + chunks * FRAME_OVERHEAD + acks * (FRAME_OVERHEAD + 32) + RELAY_CTRL_RESERVE;
+      }
+
+      fits(size, chunkSize) {
+        return RelayBudget.wireBytes(size, chunkSize) <= this.remaining;
+      }
+    }
+
+    // OPFS temp files are named darkp2p-<createdAtMs>-<random>. A file older than
+    // OPFS_STALE_MS is a leftover of a closed or crashed tab (another tab's live
+    // transfer is younger).
+    function isStaleTempName(name, now) {
+      const m = /^darkp2p-(\d{1,15})-[a-z0-9]+$/.exec(name);
+      return Boolean(m) && now - Number(m[1]) > OPFS_STALE_MS;
+    }
     // ==END darkp2p-framing==
 
-    const transferKeyReady = importRoomKey(keyBytes)
-      .then((roomKey) => createTransferKeyCache(roomKey, TRANSFER_KEY_CACHE_MAX));
+    const roomKeyReady = importRoomKey(keyBytes);
+    let roomKey = null;
+    roomKeyReady.then((k) => { roomKey = k; });
 
-    async function transferKey(transferId) {
-      return (await transferKeyReady)(transferId);
-    }
+    // Session binding: each side sends a fresh nonce in its hello whenever a transport
+    // opens. Once both nonces are known, CTRL/DATA keys are derived from both, so frames
+    // recorded in an earlier session never decrypt in a later one.
+    let myNonce = null;
+    let peerNonce = null;
+    let session = null; // { keys: transferId -> Promise<CryptoKey> }
 
     function sameTransferId(a, b) {
       if (!a || !b || a.length !== b.length) return false;
@@ -1291,20 +1397,26 @@
         const frame = await build();
         if (!isChannelOpen(channel)) throw new Error('Channel closed');
         channel.send(frame.buffer);
+        if (channel instanceof WebSocket && relayBudget) relayBudget.charge(frame.byteLength);
       });
       outQueue = step.catch(() => {});
       return step;
     }
 
-    function sendCtrl(channel, transferId, seq, obj) {
-      return sendQueued(channel, async () => encodeFrame({
-        type: FRAME_TYPE_CTRL,
-        role: myRole,
-        transferId,
-        seq,
-        payload: encoder.encode(JSON.stringify(obj)),
-        key: await transferKey(transferId),
-      }));
+    // `keys` is captured when the frame is queued, so a frame is never encrypted
+    // under a session that replaced the one it belongs to.
+    function sendCtrl(channel, transferId, seq, obj, keys = session && session.keys) {
+      return sendQueued(channel, async () => {
+        if (!keys) throw new Error('No session key');
+        return encodeFrame({
+          type: FRAME_TYPE_CTRL,
+          role: myRole,
+          transferId,
+          seq,
+          payload: encoder.encode(JSON.stringify(obj)),
+          key: await keys(transferId),
+        });
+      });
     }
 
     let tx = null; // active outgoing transfer
@@ -1320,7 +1432,8 @@
     let iceTimer = null;
     let remoteDescSet = false;
     let iceQueue = [];
-    let isTransferring = false;
+    // Room relay budget from the latest `ready`; charged for every binary frame on the relay.
+    let relayBudget = null;
     let rxQueue = Promise.resolve();
     let rx = null;
 
@@ -1330,7 +1443,7 @@
       rx = null;
       markTransferEnded(prev.transferId);
       if (prev.offerEl) prev.offerEl.remove();
-      cancelBtn.hidden = !tx;
+      rxPanel.hidden = true;
       if (prev.writable) {
         await prev.writable.abort().catch(() => {});
       }
@@ -1366,7 +1479,6 @@
         abortTx(tx, null, `Send interrupted: ${tx.name}`);
       }
       if (rx) log(`Receive interrupted: ${rx.machine.meta.name}`, 'err');
-      isTransferring = false;
       resetRxState();
     }
 
@@ -1376,12 +1488,13 @@
 
     function isChannelOpen(ch) {
       if (!ch) return false;
-      return ch === ws ? ch.readyState === WebSocket.OPEN : ch.readyState === 'open';
+      return ch instanceof WebSocket ? ch.readyState === WebSocket.OPEN : ch.readyState === 'open';
     }
 
-    // File selection is only offered once the peer's hello has authenticated.
+    // File selection is offered once the session is confirmed and nothing is being sent
+    // (receiving does not block sending).
     function enableDropIfReady() {
-      if (handshake === 'ok' && !isTransferring && isChannelOpen(getActiveChannel())) {
+      if (handshake === 'ok' && !tx && isChannelOpen(getActiveChannel())) {
         setDropEnabled(true, readyDropLabel());
       }
     }
@@ -1390,6 +1503,7 @@
       clearTimeout(helloTimer);
       helloTimer = null;
       handshake = 'idle';
+      myNonce = peerNonce = session = null;
     }
 
     function failHandshake(kind) {
@@ -1403,50 +1517,99 @@
       setDropEnabled(false, msg);
     }
 
-    async function sendHello(channel) {
-      try {
+    // Queued like every other frame, so our hello always leaves before our hello-ack.
+    function sendHello(channel, nonce) {
+      const transferId = crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN));
+      sendQueued(channel, async () => encodeFrame({
+        type: FRAME_TYPE_HELLO,
+        role: myRole,
+        transferId,
+        seq: 0,
+        payload: encoder.encode(JSON.stringify({ type: 'hello', v: 3, nonce: toBase64Url(nonce) })),
+        key: await deriveHelloKey(await roomKeyReady, transferId),
+      })).catch((err) => log(`Hello failed: ${err.message}`, 'err'));
+    }
+
+    // Derives the session once both nonces are known and confirms it to the peer.
+    function updateSession() {
+      if (!myNonce || !peerNonce || myRole === null) return;
+      if (!roomKey) {
+        roomKeyReady.then(updateSession, () => {});
+        return;
+      }
+      const nonces = myRole === ROLE_INITIATOR
+        ? { initNonce: myNonce, respNonce: peerNonce }
+        : { initNonce: peerNonce, respNonce: myNonce };
+      session = { keys: createTransferKeyCache(roomKey, nonces, TRANSFER_KEY_CACHE_MAX) };
+      const ch = getActiveChannel();
+      if (isChannelOpen(ch)) {
         const transferId = crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN));
-        const frame = await encodeFrame({
-          type: FRAME_TYPE_CTRL,
-          role: myRole,
-          transferId,
-          seq: 0,
-          payload: encoder.encode(JSON.stringify({ type: 'hello', v: 2 })),
-          key: await transferKey(transferId),
-        });
-        if (isChannelOpen(channel)) channel.send(frame.buffer);
-      } catch (err) {
-        log(`Hello failed: ${err.message}`, 'err');
+        sendCtrl(ch, transferId, 0, { type: 'hello-ack', v: 3 }).catch(() => {});
       }
     }
 
-    // Called whenever a transport opens (DataChannel or WS relay).
-    function startHandshake(channel) {
-      sendHello(channel);
-      if (handshake === 'mismatch' || handshake === 'outdated') return;
-      if (handshake === 'ok') {
-        enableDropIfReady();
-        return;
+    // A session change ends any transfer of the old session.
+    function endTransfersForNewSession() {
+      if (tx || rx) {
+        log('Session renewed — transfers in progress were stopped.', 'err');
+        abortAllTransfersLocally();
       }
-      handshake = 'pending';
-      setDropEnabled(false, 'VERIFYING PEER KEY...');
+    }
+
+    function armHelloTimer() {
       clearTimeout(helloTimer);
       helloTimer = setTimeout(() => {
         helloTimer = null;
-        if (handshake === 'pending' && isChannelOpen(getActiveChannel())) failHandshake('outdated');
+        if (handshake !== 'pending' || !isChannelOpen(getActiveChannel())) return;
+        if (!peerNonce) failHandshake('outdated');
+        else log(MSG_SESSION_UNCONFIRMED, 'err');
       }, HELLO_TIMEOUT_MS);
     }
 
+    function enterPending() {
+      handshake = 'pending';
+      setDropEnabled(false, 'VERIFYING PEER KEY...');
+      armHelloTimer();
+    }
+
+    // Called whenever a transport opens (DataChannel or WS relay): new nonce, new session.
+    function startHandshake(channel) {
+      myNonce = crypto.getRandomValues(new Uint8Array(SESSION_NONCE_LEN));
+      session = null;
+      sendHello(channel, myNonce);
+      if (handshake === 'mismatch' || handshake === 'outdated') return;
+      endTransfersForNewSession();
+      enterPending();
+      updateSession();
+    }
+
     function acceptHello(ctrl) {
-      if (ctrl.v !== 2) {
+      if (ctrl.v !== 3) {
         failHandshake('outdated');
         return;
       }
-      if (handshake === 'ok') return;
+      let nonce = null;
+      try {
+        nonce = typeof ctrl.nonce === 'string' ? fromBase64Url(ctrl.nonce) : null;
+      } catch {}
+      if (!nonce || nonce.length !== SESSION_NONCE_LEN) {
+        throw new ProtocolError('integrity', 'Invalid hello nonce');
+      }
+      if (peerNonce && sameTransferId(nonce, peerNonce)) return;
+      endTransfersForNewSession();
+      peerNonce = nonce;
+      session = null;
+      if (handshake === 'ok' || handshake === 'pending') enterPending();
+      updateSession();
+    }
+
+    // The peer derived the same session key (its hello-ack decrypted under it).
+    function acceptHelloAck() {
+      if (handshake !== 'pending') return;
       clearTimeout(helloTimer);
       helloTimer = null;
       handshake = 'ok';
-      log('Peer key verified (wire format v2).', 'ok');
+      log('Peer key verified, session key confirmed (wire format v3).', 'ok');
       enableDropIfReady();
     }
 
@@ -1483,7 +1646,7 @@
     async function waitForBufferDrain(channel) {
       if (channel.bufferedAmount <= HIGH_WATER) return;
 
-      if (channel === ws) {
+      if (channel instanceof WebSocket) {
         while (channel.bufferedAmount > HIGH_WATER) {
           if (channel.readyState !== WebSocket.OPEN) {
             throw new Error('WebSocket closed during transfer');
@@ -1525,14 +1688,14 @@
 
     // Sends a reply (receiver -> sender) for an incoming transfer.
     function rxReply(state, obj) {
-      sendCtrl(getActiveChannel(), state.transferId, state.machine.nextReplySeq(), obj)
+      sendCtrl(getActiveChannel(), state.transferId, state.machine.nextReplySeq(), obj, state.keys)
         .catch((err) => log(`Reply failed: ${err.message}`, 'err'));
     }
 
     // Ends an incoming transfer locally and releases its storage and UI.
+    // Receiving never blocks sending, so the drop zone is left alone.
     function endRx(state) {
       if (rx !== state) return;
-      isTransferring = Boolean(tx);
       resetRxState();
       enableDropIfReady();
     }
@@ -1546,6 +1709,35 @@
       endRx(state);
     }
 
+    const canUseSavePicker = () => typeof window.showSaveFilePicker === 'function';
+
+    // Streams to a temp file in the Origin Private File System, if the browser can.
+    async function prepareOpfs(state) {
+      if (!navigator.storage?.getDirectory) return;
+      try {
+        const root = await navigator.storage.getDirectory();
+        const tmpName = `${OPFS_TEMP_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const handle = await root.getFileHandle(tmpName, { create: true });
+        if (typeof handle.createWritable !== 'function') {
+          await root.removeEntry(tmpName).catch(() => {});
+          return;
+        }
+        state.writable = await handle.createWritable();
+        state.opfsRoot = root;
+        state.opfsName = tmpName;
+        state.opfsHandle = handle;
+        state.saveMode = 'opfs';
+      } catch {}
+    }
+
+    // Releases storage a torn-down transfer prepared after it was torn down.
+    async function discardStorage(state) {
+      if (state.writable) await state.writable.abort().catch(() => {});
+      state.writable = null;
+      if (state.opfsRoot && state.opfsName) await state.opfsRoot.removeEntry(state.opfsName).catch(() => {});
+      state.opfsRoot = state.opfsName = null;
+    }
+
     async function onIncomingMeta(transferId, ctrl) {
       const channel = getActiveChannel();
       let meta;
@@ -1557,62 +1749,59 @@
         throw err;
       }
 
-      if (rx || tx || isTransferring) {
+      // One incoming transfer at a time; an outgoing one does not count.
+      if (rx) {
         markTransferEnded(transferId);
         sendCtrl(channel, transferId, 1, { type: 'decline', reason: 'busy' }).catch(() => {});
-        log(`Declined ${meta.name}: a transfer is already in progress.`, 'err');
+        log(`Declined ${meta.name}: already receiving a file.`, 'err');
         return;
       }
 
       const state = {
         transferId,
+        keys: session.keys,
         machine: new RxStateMachine(meta),
         buffers: [],
+        saveMode: 'ram', // 'picker' | 'opfs' | 'ram'
+        savedName: meta.name,
         opfsRoot: null,
         opfsName: null,
         opfsHandle: null,
         writable: null,
         offerEl: null,
+        accepting: false,
       };
       rx = state;
-      isTransferring = true;
-      setDropEnabled(false, `INCOMING: ${meta.name}`);
 
-      if (navigator.storage?.getDirectory) {
-        try {
-          const root = await navigator.storage.getDirectory();
-          const tmpName = `darkp2p-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-          const handle = await root.getFileHandle(tmpName, { create: true });
-          if (typeof handle.createWritable === 'function') {
-            state.writable = await handle.createWritable();
-            state.opfsRoot = root;
-            state.opfsName = tmpName;
-            state.opfsHandle = handle;
-          }
-        } catch {}
-      }
+      // With a save picker the target is chosen on Accept; otherwise prepare OPFS now
+      // so the offer can say whether the file streams to disk.
+      if (!canUseSavePicker()) await prepareOpfs(state);
       if (rx !== state) {
-        // Torn down while storage was being prepared.
-        if (state.writable) await state.writable.abort().catch(() => {});
-        if (state.opfsRoot) await state.opfsRoot.removeEntry(state.opfsName).catch(() => {});
+        await discardStorage(state);
         return;
       }
 
-      const autoReason = RxStateMachine.autoDeclineReason(meta, { diskStreaming: Boolean(state.writable) });
+      const diskStreaming = canUseSavePicker() || Boolean(state.writable);
+      const autoReason = RxStateMachine.autoDeclineReason(meta, { diskStreaming });
       if (autoReason) {
-        state.machine.decline();
-        rxReply(state, { type: 'decline', reason: autoReason });
-        log(`Declined ${meta.name} (${mb(meta.size)} MB): this browser cannot stream to disk, ` +
-          `and in-memory receives are limited to ${RAM_MODE_MAX_BYTES / 1048576} MB.`, 'err');
-        endRx(state);
+        declineForSize(state);
         return;
       }
       showOffer(state);
     }
 
+    function declineForSize(state) {
+      const { meta } = state.machine;
+      state.machine.decline();
+      rxReply(state, { type: 'decline', reason: 'size' });
+      log(`Declined ${meta.name} (${mb(meta.size)} MB): this browser cannot stream to disk, ` +
+        `and in-memory receives are limited to ${RAM_MODE_MAX_BYTES / 1048576} MB.`, 'err');
+      endRx(state);
+    }
+
     function showOffer(state) {
       const { meta } = state.machine;
-      const mode = state.writable ? 'disk-stream' : 'ram-buffer';
+      const mode = canUseSavePicker() ? 'save to a file you choose' : state.writable ? 'disk-stream' : 'ram-buffer';
       const box = document.createElement('div');
       box.className = 'box offer';
       const text = document.createElement('div');
@@ -1635,21 +1824,50 @@
       log(`Incoming offer: ${meta.name} (${mb(meta.size)} MB). Accept or decline below.`);
     }
 
-    function acceptRx(state) {
-      if (rx !== state || state.machine.phase !== 'offered') return;
+    // Chooses where the file goes: the save picker (opened by this click), else OPFS,
+    // else RAM (declined above the RAM cap).
+    async function acceptRx(state) {
+      if (rx !== state || state.machine.phase !== 'offered' || state.accepting) return;
+      state.accepting = true;
+      if (state.offerEl) for (const b of state.offerEl.querySelectorAll('button')) b.disabled = true;
+      const { meta } = state.machine;
+
+      if (canUseSavePicker() && !state.writable) {
+        try {
+          const handle = await window.showSaveFilePicker({ suggestedName: meta.name });
+          state.writable = await handle.createWritable();
+          state.saveMode = 'picker';
+          state.savedName = typeof handle.name === 'string' && handle.name ? handle.name : meta.name;
+        } catch (err) {
+          state.writable = null;
+          log(err && err.name === 'AbortError'
+            ? 'Save dialog cancelled — using browser storage instead.'
+            : 'Save dialog unavailable — using browser storage instead.');
+        }
+        if (rx === state && !state.writable) await prepareOpfs(state);
+        if (rx !== state) {
+          await discardStorage(state);
+          return;
+        }
+      }
+
+      if (!state.writable && meta.size > RAM_MODE_MAX_BYTES) {
+        declineForSize(state);
+        return;
+      }
+
       state.machine.accept();
       if (state.offerEl) state.offerEl.remove();
       state.offerEl = null;
       rxReply(state, { type: 'accept' });
-      const { meta } = state.machine;
-      setDropEnabled(false, `RECEIVING: ${meta.name}`);
-      cancelBtn.hidden = false;
-      progressEl.value = 0;
-      log(`Receiving: ${meta.name} (${mb(meta.size)} MB, ${state.writable ? 'disk-stream' : 'ram-buffer'})`);
+      rxLabel.textContent = `RECEIVING: ${meta.name}`;
+      rxProgressEl.value = 0;
+      rxPanel.hidden = false;
+      log(`Receiving: ${meta.name} (${mb(meta.size)} MB, ${state.saveMode === 'ram' ? 'ram-buffer' : state.saveMode === 'picker' ? 'to chosen file' : 'disk-stream'})`);
     }
 
     function declineRx(state) {
-      if (rx !== state || state.machine.phase !== 'offered') return;
+      if (rx !== state || state.machine.phase !== 'offered' || state.accepting) return;
       state.machine.decline();
       rxReply(state, { type: 'decline', reason: 'user' });
       log(`Declined: ${state.machine.meta.name}`);
@@ -1670,7 +1888,7 @@
       if (rx !== state) return;
       if (ack !== null) rxReply(state, { type: 'ack', seq: ack });
       const { meta } = state.machine;
-      progressEl.value = meta.size > 0 ? (state.machine.bytes / meta.size) * 100 : 100;
+      rxProgressEl.value = meta.size > 0 ? (state.machine.bytes / meta.size) * 100 : 100;
     }
 
     async function onIncomingDone(state, seq, ctrl) {
@@ -1678,9 +1896,13 @@
       rxReply(state, { type: 'ack', seq: ack, done: true });
       const { meta } = state.machine;
 
-      let blob;
+      let blob = null;
       try {
-        if (state.writable) {
+        if (state.saveMode === 'picker') {
+          // Committed to the chosen file only now, after verification.
+          await state.writable.close();
+          state.writable = null;
+        } else if (state.writable) {
           await state.writable.close();
           state.writable = null;
           blob = await state.opfsHandle.getFile();
@@ -1692,24 +1914,28 @@
       }
       if (rx !== state) return;
 
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = meta.name;
-      a.click();
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = meta.name;
+        a.click();
 
-      // The download keeps its own copy; the OPFS temp file is removed after a minute.
-      const { opfsRoot, opfsName } = state;
-      state.opfsRoot = state.opfsName = null;
-      setTimeout(() => {
-        URL.revokeObjectURL(url);
-        if (opfsRoot && opfsName) opfsRoot.removeEntry(opfsName).catch(() => {});
-      }, 60_000);
+        // The download keeps its own copy; the OPFS temp file is removed after a minute.
+        const { opfsRoot, opfsName } = state;
+        state.opfsRoot = state.opfsName = null;
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+          if (opfsRoot && opfsName) opfsRoot.removeEntry(opfsName).catch(() => {});
+        }, 60_000);
+      }
 
       state.machine.complete();
       rxReply(state, { type: 'complete' });
-      progressEl.value = 100;
-      log(`Verified & saved: ${meta.name}`, 'ok');
+      rxProgressEl.value = 100;
+      log(state.saveMode === 'picker'
+        ? `Verified & saved: ${meta.name} (to ${state.savedName})`
+        : `Verified & saved: ${meta.name}`, 'ok');
       endRx(state);
     }
 
@@ -1735,7 +1961,9 @@
     function abortTx(state, reason, message) {
       const seq = state.window.abortSeq(reason || 'user');
       if (seq === null) return;
-      if (reason) sendCtrl(state.channel, state.transferId, seq, { type: 'abort', reason }).catch(() => {});
+      if (reason) {
+        sendCtrl(state.channel, state.transferId, seq, { type: 'abort', reason }, state.keys).catch(() => {});
+      }
       log(message, 'err');
       wakeTx(state);
     }
@@ -1755,6 +1983,13 @@
     // Refuses frames before decryption: DATA and replies only for an active
     // transfer, and a new transfer (seq 0) only with an unseen transferId.
     function lookupRxKey(transferId, { type, seq }) {
+      if (type === FRAME_TYPE_HELLO) {
+        if (seq !== 0) throw new FrameError('rejected', 'Malformed hello');
+        if (seenTransferIds.has(transferIdHex(transferId))) throw new FrameError('rejected', 'Replayed hello');
+        return roomKeyReady.then((k) => deriveHelloKey(k, transferId));
+      }
+      // Session frames before both nonces are known (e.g. a hello-ack of a superseded session).
+      if (!session) throw new FrameError('stale', 'No session yet');
       const rxActive = rx && sameTransferId(transferId, rx.transferId);
       const txActive = tx && sameTransferId(transferId, tx.transferId);
       if (!rxActive && !txActive && endedTransferIds.has(transferIdHex(transferId))) {
@@ -1766,7 +2001,7 @@
       } else if (seenTransferIds.has(transferIdHex(transferId))) {
         throw new FrameError('rejected', 'Replayed transfer');
       }
-      return transferKey(transferId);
+      return session.keys(transferId);
     }
 
     async function handleIncomingFrame(buffer) {
@@ -1780,12 +2015,22 @@
           failHandshake('outdated');
           return;
         }
-        // Before the hello is verified only seq-0 CTRL frames reach decryption.
+        if (err.code === 'stale') return;
         if (err.code === 'auth' && handshake !== 'ok') {
-          failHandshake('mismatch');
+          // A hello that fails is a wrong room key. A session frame that fails before the
+          // session is confirmed is a hello-ack from a superseded session: ignore it.
+          if (new Uint8Array(buffer, 0, 1)[0] === FRAME_TYPE_HELLO) failHandshake('mismatch');
           return;
         }
         throw err;
+      }
+
+      if (frame.type === FRAME_TYPE_HELLO) {
+        rememberTransferId(frame.transferId);
+        const ctrl = parseCtrl(frame.payload);
+        if (ctrl.type !== 'hello') throw new ProtocolError('integrity', 'Unexpected hello frame');
+        acceptHello(ctrl);
+        return;
       }
 
       // Replies to our own outgoing transfer.
@@ -1806,11 +2051,11 @@
         const ctrl = parseCtrl(frame.payload);
         if (frame.seq === 0) {
           rememberTransferId(frame.transferId);
-          if (ctrl.type === 'hello') {
-            acceptHello(ctrl);
+          if (ctrl.type === 'hello-ack') {
+            acceptHelloAck();
             return;
           }
-          if (handshake !== 'ok') throw new ProtocolError('integrity', 'Control frame before peer hello');
+          if (handshake !== 'ok') throw new ProtocolError('integrity', 'Control frame before the session is confirmed');
           if (ctrl.type === 'meta') {
             await onIncomingMeta(frame.transferId, ctrl);
             return;
@@ -1880,6 +2125,11 @@
 
       channel.onclose = () => {
         log('P2P tunnel closed.', 'err');
+        if (peerAway) {
+          // The peer had already left the room: it is gone, wait for a new pairing.
+          enterStandby();
+          return;
+        }
         abortAllTransfersLocally();
         setDropEnabled(false, 'TUNNEL CLOSED');
         updateStatusBadges('closed');
@@ -1962,27 +2212,24 @@
 
     async function sendFile(file) {
       const ch = getActiveChannel();
-      if (!isChannelOpen(ch) || isTransferring || handshake !== 'ok') return;
+      if (!isChannelOpen(ch) || tx || handshake !== 'ok' || !session) return;
       const chunkCount = Math.ceil(file.size / CHUNK_SIZE);
 
-      if (transportMode === 'ws') {
-        const estimatedWireBytes = file.size + chunkCount * FRAME_OVERHEAD + 512;
-        const cap = relayEnabled ? WS_RELAY_LIMIT_PRO : WS_RELAY_LIMIT_FREE;
-
-        if (estimatedWireBytes > cap) {
-          const capMb = Math.floor(cap / (1024 * 1024));
-          const fileMb = (file.size / (1024 * 1024)).toFixed(1);
-          log(
-            `Blocked: ${file.name} (${fileMb} MB) exceeds the ${capMb} MB WebSocket relay cap.` +
-            (relayEnabled ? '' : ' Uncheck "Force WebSocket relay" for unlimited direct P2P, or activate a Pro token for 500 MB.'),
-            'err'
-          );
-          if (!relayEnabled) proModal.classList.add('open');
-          return;
-        }
+      // The relay cap is per room and counts both directions, so check what is left.
+      if (transportMode === 'ws' && relayBudget && !relayBudget.fits(file.size, CHUNK_SIZE)) {
+        const capMb = Math.floor(relayBudget.cap / 1048576);
+        const leftMb = (relayBudget.remaining / 1048576).toFixed(1);
+        const fileMb = (file.size / 1048576).toFixed(1);
+        log(
+          `Blocked: ${file.name} (${fileMb} MB) does not fit the WebSocket relay: ${leftMb} MB of ` +
+          `this room's ${capMb} MB left.` +
+          (relayEnabled ? '' : ' Uncheck "Force WebSocket relay" for unlimited direct P2P, or activate a Pro token for a higher cap.'),
+          'err'
+        );
+        if (!relayEnabled) proModal.classList.add('open');
+        return;
       }
 
-      isTransferring = true;
       setDropEnabled(false, `OFFERING: ${file.name}`);
       progressEl.value = 0;
 
@@ -1990,6 +2237,7 @@
         transferId: crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN)),
         name: file.name,
         channel: ch,
+        keys: session.keys,
         window: new TxWindow({ chunks: chunkCount, now: Date.now() }),
         wake: null,
       };
@@ -2013,10 +2261,10 @@
       }, TX_WATCHDOG_MS);
 
       try {
-        const key = await transferKey(state.transferId);
+        const key = await state.keys(state.transferId);
         await sendCtrl(ch, state.transferId, 0, {
           type: 'meta', name: file.name, size: file.size, mime: file.type, chunks: chunkCount,
-        });
+        }, state.keys);
         log(`Offered: ${file.name} (${mb(file.size)} MB) — waiting for the peer to accept...`);
         await waitTx(state, () => win.phase !== 'offered');
         if (win.phase === 'declined') {
@@ -2059,7 +2307,7 @@
         if (win.phase !== 'sending') return;
         await waitForBufferDrain(ch);
         const doneSeq = win.doneSeq(Date.now());
-        await sendCtrl(ch, state.transferId, doneSeq, { type: 'done', chunks: chunkCount, size: file.size });
+        await sendCtrl(ch, state.transferId, doneSeq, { type: 'done', chunks: chunkCount, size: file.size }, state.keys);
         setDropEnabled(false, 'AWAITING CONFIRMATION...');
         log(`Sent, awaiting confirmation: ${file.name}`);
 
@@ -2069,69 +2317,152 @@
           log(`Delivered: ${file.name}`, 'ok');
         }
       } catch (err) {
-        abortTx(state, isChannelOpen(ch) ? 'integrity' : null, `Send aborted: ${err.message}`);
+        if (isChannelOpen(ch)) abortTx(state, 'integrity', `Send aborted: ${err.message}`);
+        else abortTx(state, null, `Send interrupted: ${file.name}`);
       } finally {
         clearInterval(watchdog);
         markTransferEnded(state.transferId);
         if (tx === state) tx = null;
-        cancelBtn.hidden = !rx || rx.machine.phase !== 'receiving';
-        isTransferring = Boolean(rx);
+        cancelBtn.hidden = true;
         enableDropIfReady();
       }
     }
 
+    // ---- Signaling: reconnecting WebSocket, messages handled strictly in order ----
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${location.host}`);
-    ws.binaryType = 'arraybuffer';
+    let ws = null;
+    let wsAttempt = 0;
+    let wsReconnectTimer = null;
+    let signalingLost = false; // set when an established signaling connection drops
+    let fullRetryUntil = 0;
+    // One queue for every inbound WebSocket message, so an async handler (ready ->
+    // initPeer, offer -> createAnswer) finishes before the next message is looked at.
+    let sigQueue = Promise.resolve();
 
-    ws.onopen = async () => {
-      // Wait for at most the first claim attempt, never the whole poll.
-      await Promise.race([claimReady, new Promise((r) => setTimeout(r, CLAIM_JOIN_WAIT_MS))]);
-      if (ws.readyState !== WebSocket.OPEN) return;
-      log(`Connected to signaling broker. Room: ${roomId.slice(0, 8)}...`);
-      joinSent = true;
-      ws.send(JSON.stringify({
-        type: 'join',
-        room: roomId,
-        token: localStorage.getItem('darkp2p_token') || '',
-      }));
-    };
+    // The peer left the room while its DataChannel stayed up.
+    let peerAway = false;
 
-    ws.onclose = () => {
-      log('Signaling connection closed.', 'err');
+    // Back to "waiting for a peer": no transport, no session, no roles.
+    function enterStandby() {
+      peerAway = false;
+      transportMode = 'webrtc';
+      relayEnabled = false;
+      cleanupPeer();
+      resetHandshake();
+      myRole = peerRole = null;
+      setDropEnabled(false, 'PEER DISCONNECTED — WAITING...');
+      updateStatusBadges('standby');
+    }
+
+    // A verified DataChannel does not need signaling any more.
+    function isDirectTunnelUp() {
+      return transportMode === 'webrtc' && Boolean(dc) && dc.readyState === 'open' && handshake === 'ok';
+    }
+
+    function scheduleReconnect() {
+      clearTimeout(wsReconnectTimer);
+      const delay = reconnectDelay(wsAttempt, Math.random());
+      wsAttempt += 1;
+      wsReconnectTimer = setTimeout(connectSignaling, delay);
+    }
+
+    function onSignalingClosed() {
+      if (!signalingLost) {
+        signalingLost = true;
+        fullRetryUntil = Date.now() + FULL_RETRY_MS;
+        log(isDirectTunnelUp()
+          ? 'Signaling connection lost — direct tunnel still up, reconnecting...'
+          : 'Signaling connection lost — reconnecting...', 'err');
+      }
       if (transportMode === 'ws') {
+        // The relay was the transport: its transfers and session are gone.
         abortAllTransfersLocally();
-        setDropEnabled(false, 'RELAY CLOSED');
+        resetHandshake();
+        setDropEnabled(false, 'RELAY CLOSED — RECONNECTING...');
         updateStatusBadges('closed');
       }
-    };
+      scheduleReconnect();
+    }
 
-    ws.onmessage = async ({ data }) => {
-      if (data instanceof ArrayBuffer) {
-        enqueueIncomingBinary(data);
-        return;
-      }
+    function connectSignaling() {
+      wsReconnectTimer = null;
+      const sock = new WebSocket(`${proto}//${location.host}`);
+      sock.binaryType = 'arraybuffer';
+      ws = sock;
 
-      let msg;
+      sock.onopen = async () => {
+        // Wait for at most the first claim attempt, never the whole poll.
+        await Promise.race([claimReady, new Promise((r) => setTimeout(r, CLAIM_JOIN_WAIT_MS))]);
+        if (ws !== sock || sock.readyState !== WebSocket.OPEN) return;
+        wsAttempt = 0;
+        log(signalingLost
+          ? 'Signaling reconnected — rejoining the room...'
+          : `Connected to signaling broker. Room: ${roomId.slice(0, 8)}...`);
+        joinSent = true;
+        sock.send(JSON.stringify({
+          type: 'join',
+          room: roomId,
+          token: localStorage.getItem('darkp2p_token') || '',
+        }));
+      };
+
+      sock.onclose = () => {
+        if (ws === sock) onSignalingClosed();
+      };
+
+      sock.onmessage = ({ data }) => {
+        if (ws !== sock) return;
+        if (data instanceof ArrayBuffer) {
+          if (transportMode === 'ws' && relayBudget) relayBudget.charge(data.byteLength);
+          sigQueue = sigQueue.then(() => enqueueIncomingBinary(data));
+          return;
+        }
+        let msg;
+        try {
+          msg = JSON.parse(data);
+        } catch {
+          return;
+        }
+        if (!msg || typeof msg !== 'object') return;
+        sigQueue = sigQueue
+          .then(() => (ws === sock ? handleSignal(msg, sock) : undefined))
+          .catch((err) => log(`Signaling handler error: ${err.message}`, 'err'));
+      };
+    }
+
+    function setRelayBudgetFrom(msg) {
       try {
-        msg = JSON.parse(data);
+        relayBudget = new RelayBudget({ cap: msg.wsRelayCap, remaining: msg.wsRelayRemaining });
       } catch {
-        return;
+        // Older server: assume a fresh room at the default caps.
+        const cap = msg.relayEnabled ? WS_RELAY_LIMIT_PRO : WS_RELAY_LIMIT_FREE;
+        relayBudget = new RelayBudget({ cap, remaining: cap });
       }
+    }
 
+    async function handleSignal(msg, sock) {
       if (msg.type === 'ws-fallback') {
         activateWsFallback(false);
         return;
       }
 
       if (msg.type === 'full') {
+        // After a drop, the server may still hold our old socket until its heartbeat
+        // notices: retry for a while before giving up.
+        if (signalingLost && Date.now() < fullRetryUntil) {
+          sock.close();
+          return;
+        }
         log('Room full (max 2 peers). Open a fresh link.', 'err');
         return;
       }
 
       if (msg.type === 'error') {
         if (msg.reason === 'relay-limit-exceeded') {
-          log('WS relay cap reached (50 MB free / 500 MB Pro). Use direct P2P or a Pro token.', 'err');
+          const capMb = relayBudget ? Math.floor(relayBudget.cap / 1048576) : null;
+          log(`WS relay cap${capMb !== null ? ` (${capMb} MB for this room)` : ''} reached. ` +
+            'Use direct P2P or a Pro token.', 'err');
+          if (relayBudget) relayBudget.remaining = 0;
           abortAllTransfersLocally();
           enableDropIfReady();
         } else {
@@ -2146,18 +2477,32 @@
       }
 
       if (msg.type === 'peer-left') {
+        if (isDirectTunnelUp()) {
+          // Only the peer's signaling connection dropped: the tunnel and any transfer
+          // carry on. If the DataChannel closes later, enterStandby() runs from there.
+          peerAway = true;
+          log('Peer lost its signaling connection — direct tunnel still up.');
+          return;
+        }
         log('Remote peer disconnected.', 'err');
-        transportMode = 'webrtc';
-        relayEnabled = false;
-        cleanupPeer();
-        resetHandshake();
-        myRole = peerRole = null;
-        setDropEnabled(false, 'PEER DISCONNECTED — WAITING...');
-        updateStatusBadges('standby');
+        enterStandby();
         return;
       }
 
       if (msg.type === 'ready') {
+        peerAway = false;
+        if (signalingLost) {
+          signalingLost = false;
+          log('Signaling restored.', 'ok');
+        }
+        setRelayBudgetFrom(msg);
+        if (isDirectTunnelUp()) {
+          // Re-pairing after a signaling drop: the verified tunnel to the same peer is
+          // still up, so keep it (and its roles and session) instead of starting over.
+          relayEnabled = Boolean(msg.relayEnabled);
+          log('Rejoined the room — keeping the direct tunnel.');
+          return;
+        }
         resetHandshake();
         myRole = msg.initiator ? ROLE_INITIATOR : ROLE_RESPONDER;
         peerRole = msg.initiator ? ROLE_RESPONDER : ROLE_INITIATOR;
@@ -2174,7 +2519,7 @@
           await flushIceQueue();
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          ws.send(JSON.stringify({ type: 'answer', answer }));
+          if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: 'answer', answer }));
         } catch (err) {
           log(`Answer failed: ${err.message}`, 'err');
         }
@@ -2193,11 +2538,32 @@
           iceQueue.push(msg.candidate);
         }
       }
-    };
+    }
+
+    // Leftover OPFS temp files from closed or crashed tabs.
+    async function cleanupStaleOpfs() {
+      if (!navigator.storage?.getDirectory) return;
+      try {
+        const root = await navigator.storage.getDirectory();
+        const now = Date.now();
+        const stale = [];
+        for await (const name of root.keys()) {
+          if (isStaleTempName(name, now)) stale.push(name);
+          if (stale.length >= 1000) break;
+        }
+        for (const name of stale) await root.removeEntry(name).catch(() => {});
+        if (stale.length) log(`Removed ${stale.length} leftover temporary file(s) from an earlier visit.`);
+      } catch {}
+    }
+
+    connectSignaling();
+    cleanupStaleOpfs();
 
     cancelBtn.onclick = () => {
       if (tx) abortTx(tx, 'user', `Send cancelled: ${tx.name}`);
-      else if (rx) abortRx('user', `Receive cancelled: ${rx.machine.meta.name}`);
+    };
+    cancelRxBtn.onclick = () => {
+      if (rx) abortRx('user', `Receive cancelled: ${rx.machine.meta.name}`);
     };
 
     dropzone.onclick = () => { if (!fileInput.disabled) fileInput.click(); };
@@ -2216,9 +2582,48 @@
       if (!fileInput.disabled && e.dataTransfer.files[0]) sendFile(e.dataTransfer.files[0]);
     };
 
+    // Payment details injected by the server at boot (BTCPAY_POS_URL,
+    // TIP_XMR_ADDRESS, TIP_BTC_ADDRESS). Anything unset stays hidden.
+    function readPageConfig() {
+      try {
+        const cfg = JSON.parse(document.getElementById('darkp2p-config')?.textContent || '{}');
+        return cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+      } catch {
+        return {};
+      }
+    }
+
+    function httpsUrl(value) {
+      if (typeof value !== 'string' || !value) return null;
+      try {
+        return new URL(value).protocol === 'https:' ? value : null;
+      } catch {
+        return null;
+      }
+    }
+
+    const pageConfig = readPageConfig();
+    const btcpayPosUrl = httpsUrl(pageConfig.btcpayPosUrl);
+    if (btcpayPosUrl) {
+      document.querySelectorAll('.tier-cta').forEach((a) => {
+        a.href = `${btcpayPosUrl}?itemCode=${encodeURIComponent(a.dataset.itemCode)}`;
+        a.hidden = false;
+      });
+      document.querySelector('.modal-note').hidden = false;
+    }
+
+    const tipAddrs = {
+      XMR: typeof pageConfig.tipXmr === 'string' ? pageConfig.tipXmr : '',
+      BTC: typeof pageConfig.tipBtc === 'string' ? pageConfig.tipBtc : '',
+    };
+    let anyTip = false;
     document.querySelectorAll('.tip-btn').forEach((btn) => {
+      const coin = btn.dataset.coin;
+      const addr = tipAddrs[coin];
+      if (!addr) return;
+      btn.hidden = false;
+      anyTip = true;
       btn.onclick = async () => {
-        const { coin, addr } = btn.dataset;
         try {
           await navigator.clipboard.writeText(addr);
           log(`${coin} tip address copied to clipboard.`, 'ok');
@@ -2227,6 +2632,7 @@
         }
       };
     });
+    document.querySelector('.tip-jar').hidden = !anyTip;
   </script>
 </body>
 </html>

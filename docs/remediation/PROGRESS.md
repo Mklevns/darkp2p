@@ -186,7 +186,7 @@
 - **Step 5 additions:** all five are kept (user, 2026-11-21): the transferId replay set, `meta.chunks` validation, silent drop of an aborted transfer's frames, `relay-busy` clearing the hello timer, and a hello with `v !== 2` treated as outdated.
 
 #### Step 6 checklist (carried over)
-- [ ] Session binding: HKDF over the room key plus both peers' hello nonces; per-transfer keys derived from the session key. **Moved to Step 6.5 (or the start of Step 7); see the decisions after Step 6.**
+- [x] Session binding: HKDF over the room key plus both peers' hello nonces; per-transfer keys derived from the session key. **Done in Step 6.5.**
 - [x] README "Architecture" envelope size and "Wire Format" section updated together (done in Step 6).
 
 ### Step 6 — Transfer handshake, credit window, completion/abort (2026-11-21)
@@ -271,3 +271,393 @@
   - Patched to swallow `complete` and the final ack: "Send interrupted" (`err`).
   - That script passed 8 of 9 runs. The first run timed out at a step I did not capture; the 8 runs after it all passed, so the cause is unknown (most likely harness timing).
   - The full Step 6 regression script passed 44/44 twice.
+
+### Step 6.5 — Session binding (wire format v3) (2026-11-21)
+- **Scope:** your post-Step-6 decision. No separate spec was given, so the design choices below are mine (open question 4).
+  - Per-transfer keys become `HKDF-SHA256(roomKey, transferId ‖ initNonce ‖ respNonce, …)`.
+  - A sequential hello → hello-ack handshake makes sure both peers hold both nonces before any transfer key is used.
+- **Files changed:** `public/index.html`, `README.md` (Wire Format section), `test/framing.test.mjs`. `server.js` is unchanged.
+- **Wire format v3:**
+  - Frame types `0x20` HELLO, `0x21` CTRL, `0x22` DATA. The header is unchanged (33 bytes, overhead 49). AAD magic `"DP3"`.
+  - `1`, `2`, `0x11` and `0x12` count as legacy, so a v2 peer is reported as "outdated" (not "Key mismatch"). The v3 side sees the v2 hello's `0x11` type at once; the v2 side times out after 5 s.
+  - **HELLO key:** `HKDF(roomKey, salt = transferId, info = "darkp2p/v3/hello")`. Payload `{type:'hello', v:3, nonce: base64url(32 bytes)}`.
+  - **CTRL/DATA key:** `HKDF(roomKey, salt = transferId ‖ initNonce ‖ respNonce (80 bytes), info = "darkp2p/v3/transfer")`, initiator's nonce first (by `ready.initiator` role).
+  - **Hello-ack:** a CTRL frame (new transferId, seq 0) `{type:'hello-ack', v:3}` under the session key.
+- **Framing block:** new `deriveHelloKey(roomKey, transferId)` and `deriveTransferKey(roomKey, transferId, {initNonce, respNonce})`. `createTransferKeyCache(roomKey, session, max)` is now one LRU per session. Nonces are checked to be 32 bytes, and `encodeFrame`/`decodeFrame` accept the three v3 types.
+- **Handshake (app):**
+  - Every transport open (`startHandshake`) makes a fresh `myNonce`, sends the hello and enters `pending`. Every peer hello with a new nonce updates `peerNonce`. A hello repeating the current nonce is ignored.
+  - Whenever both nonces are known, `updateSession()` builds the session's key cache and sends a hello-ack. `acceptHelloAck()` (the ack decrypted under the current session) moves to `ok` and enables the drop zone.
+  - Our hello and hello-ack go through the ordered `outQueue`, so the hello always leaves first. A hello-ack of a superseded session fails authentication and is ignored silently. A CTRL/DATA frame that arrives before any session exists is dropped (`stale`).
+  - A session renewal (our new nonce or the peer's) stops transfers of the old session ("Session renewed — transfers in progress were stopped.").
+  - Each transfer captures its session's key function (`state.keys`), and `sendCtrl` captures the key function when the frame is queued. A frame is never encrypted under a session it does not belong to.
+  - 5 s timer: no peer hello gives "outdated", as before. A peer hello without a hello-ack logs "Peer did not confirm the session key — both sides reload"; the state stays `pending`, so a late ack still completes the handshake.
+- **Behaviour kept:** "Key mismatch" (a hello that fails authentication before `ok`) stays until the next `ready`, all Step 6 protocol behaviour, and the in-session transferId replay set.
+- **Tests (`framing.test.mjs`, now 19):**
+  - Existing tests adapted to the session key API. The legacy test now covers `1`, `2`, `0x11` and `0x12`.
+  - New:
+    - v3 type values;
+    - a frame from session 1 fails under session 2 with the same room key and transferId, including when only one peer's nonce changed;
+    - swapped nonce order fails;
+    - hello keys are separate from session keys, a hello under another room key fails, and a HELLO frame re-typed as CTRL fails;
+    - nonce length is validated.
+- **Mutation check:** each of these was applied and reverted, with the file restored byte-identical:
+  - nonces left out of the HKDF salt: the session-1-vs-2 and swapped-order tests fail;
+  - nonce order normalized: the swapped-order test fails;
+  - the hello key reusing the transfer info label: **not detected**. This is expected: the salts already differ (`transferId` vs `transferId‖nonces`), so the separate label is only defence in depth and not observable on its own.
+- **Gate:** `npm run check` PASS; `npm test` 81/81 PASS (76 previous + 5 new framing tests), including the CSP-hash baseline.
+- **Extra verification (not committed):**
+  - The Step 6.5 Playwright/Chromium script passed 13/13 with no page errors:
+    - **Cross-session replay:** a relay-style recording of a full session-1 transfer (meta, chunks, done), replayed into session 2 after the receiver reloads, produces no offer. The frames fail authentication, and a fresh transfer afterwards works. With the nonces removed from the salt, the same replay is accepted ("Incoming offer: secret.bin"), so the check detects the attack.
+    - **Direct → WS relay mid-session:** both sides re-verify, and transfers work in both directions with no "did not confirm" warning.
+    - **v2 peer:** a peer sending a `0x11` frame is reported "outdated" in 24 ms.
+    - **Wrong key:** "Key mismatch" on both sides.
+  - The Step 6 regression script passed 44/44.
+- **SKIPPED:** none.
+- **Open questions:**
+  1. **Stale hello replay (DoS only).** A relay can replay a peer hello from an earlier page load; its transferId is not in the new page's seen set. The receiving side then switches to a session with that stale nonce. The real peer never acks it, so the drop zone stays disabled with the "did not confirm" warning until a reload. Confidentiality and integrity are not affected, and a relay can already cause a DoS by dropping frames. Stopping it would need the hello itself to be bound to fresh state (for example, echoing the peer's nonce inside the hello-ack and requiring a challenge), which is a larger protocol change.
+  2. **Transfers do not survive a session renewal.** Switching transports mid-transfer already ended transfers in Step 6 (`cleanupPeer`). Surviving it belongs with Step 7's transport resilience, and would need the session to survive a transport change.
+  3. **Rule 7:** with session binding in place, I consider wire format v3 final unless Step 7 changes it. Please confirm.
+  4. **My design choices (the spec gave only the formula):**
+     - type bytes `0x20`/`0x21`/`0x22`, and a separate HELLO type, so the key can be chosen before decryption;
+     - the info labels `darkp2p/v3/hello` and `darkp2p/v3/transfer`, and the `"DP3"` AAD magic;
+     - the nonce encoded as base64url inside the encrypted hello JSON;
+     - a missing hello-ack giving a warning, not a sticky failure;
+     - a new nonce on every transport open.
+
+### Decisions after Step 6.5 (user, 2026-11-21)
+- **Stale hello replay (DoS only):** accepted as a limitation, with no challenge-response handshake. The README threat model is to note it in Step 10.
+- **Mid-transfer connection switching:** stays out of scope here and is handled with connection resilience in Step 7.
+- **Wire format v3 is final** under rule 7, unless Step 7 needs a wire-level change. Step 10's README updates must document v3 (the "Wire Format" section already describes v3 as of Step 6.5).
+- **All five Step 6.5 design choices are approved:** the separate hello type and type numbers; the `darkp2p/v3/hello` / `darkp2p/v3/transfer` HKDF labels and the `"DP3"` AAD magic; the base64url nonce inside the encrypted hello; a missing `hello-ack` giving a warning, not a hard failure; and a fresh nonce on every connection open.
+  - On the condition attached to the hello-ack warning: the drop zone is gated more strictly than "a valid peer hello". It opens only after the peer's `hello-ack` decrypts under the current session, which requires a valid peer hello first. While only the warning is showing, the drop zone stays disabled (`handshake` remains `pending`).
+
+#### Step 10 checklist (carried over)
+- [ ] README threat model: a relay replaying a peer hello from an earlier page load can stall the handshake (DoS only; no confidentiality or integrity impact). This is an accepted limitation.
+- [ ] README documents wire format v3 throughout. Check that no v2 references remain.
+- [ ] README covers the Step 7 behaviour:
+  - `decline busy` now means "already receiving", not "any transfer";
+  - one send and one receive can run at the same time;
+  - the relay cap is per room and counts both directions, and the sender checks what is left;
+  - signaling reconnects, and a direct tunnel survives a signaling drop;
+  - the save picker with its OPFS/RAM fallback, and the 24 h OPFS temp-file cleanup.
+
+### Step 7 — Connection resilience (2026-11-21)
+- **Scope:** the deferred list from Step 6, plus mid-transfer switching. Your decisions (2026-11-21), all four the recommended options:
+  1. Transfers end cleanly and the page recovers, with no resume. Signaling reconnects automatically, and an open DataChannel survives a `peer-left`.
+  2. One send and one receive at the same time.
+  3. The relay cap comes from the server's `ready`.
+  4. The save picker when available, else OPFS, else RAM.
+- **Files changed:** `public/index.html`; new `test/resilience.test.mjs`. **`server.js` is unchanged:** its `ready` already carried `wsRelayCap` and `wsRelayRemaining`, which the client simply ignored until now. The wire format is unchanged (v3 stays final per rule 7). The README is left for Step 10 (checklist above).
+- **Pure helpers (marked block):**
+  - `reconnectDelay(attempt, rand)`: 1 s doubling to a 30 s cap, ±20 % jitter, safe on bad input.
+  - `RelayBudget {cap, remaining}`: `charge`, `fits`, and `wireBytes(size, chunk)`, which covers chunks, frame overhead, acks and control frames.
+  - `isStaleTempName(name, now)`: matches only `darkp2p-<ms>-<base36>` names older than 24 h.
+- **Signaling:**
+  - `ws` is now a reconnecting socket (`connectSignaling`). Stale sockets are ignored by identity, and the client rejoins with the same room and token.
+  - After a drop, a `full` reply is retried for 90 s, because the server notices a dead socket only within two heartbeats.
+  - Every inbound message, binary included, goes through one `sigQueue`, so an async handler (`ready` → `initPeer`, `offer` → answer) finishes before the next message is handled. Binary frames are only handed to `rxQueue` in order; they are not processed there.
+  - `ws.onclose` in relay mode ends both transfers and the session ("Send interrupted" / "Receive interrupted"). In direct mode it logs "direct tunnel still up" and leaves the tunnel alone.
+- **DataChannel survival:**
+  - When a verified DataChannel is open (`isDirectTunnelUp`), `peer-left` only logs and sets `peerAway`.
+  - A later `ready` (rejoin) keeps the tunnel, its roles and its session, and only refreshes the relay budget and Pro flag.
+  - If that DataChannel then closes while `peerAway` is set, `enterStandby()` runs (the same as `peer-left`).
+- **Separate send/receive:**
+  - `isTransferring` is removed. Sending depends only on `tx`, and receiving does not disable the drop zone.
+  - `decline busy` is sent only while already receiving.
+  - The receiver has its own panel (`#rxPanel`: label, `#rxProgress`, `#cancelRxBtn`), and `#cancelBtn` is now "Cancel send".
+  - `isChannelOpen` and `waitForBufferDrain` use `instanceof WebSocket`, so a replaced socket is never mistaken for a DataChannel.
+- **Relay budget:**
+  - Taken from `ready` (falling back to 50/500 MB defaults for an older server) and charged for every binary frame sent or received over the relay.
+  - The sender blocks a file that does not fit what the room has left (with the remaining and cap MB in the message). `relay-limit-exceeded` sets the remaining budget to 0.
+- **Saving:**
+  - With `showSaveFilePicker`, the offer says "save to a file you choose". Accept, a user gesture, opens the picker. Chunks stream to the chosen file, committed by `close()` only after verification, with no blob download.
+  - If the picker is cancelled or fails, the receiver uses OPFS, then RAM. A RAM-only receive over 512 MB is then declined with `size` at Accept time.
+  - Without a picker, OPFS is prepared at offer time as before.
+  - Storage prepared for a transfer that was torn down meanwhile is discarded (`discardStorage`).
+- **OPFS cleanup:** on load, the page iterates OPFS (at most 1000 names), removes stale `darkp2p-*` temp files and logs the count.
+- **Tests (`resilience.test.mjs`, 6):**
+  - the backoff schedule, jitter bounds and bad input;
+  - `RelayBudget` validation and charging;
+  - `wireBytes` is never below the real relay bytes of a transfer (computed from actual JSON sizes, 0 B … 499 MB, 200-character file name) and never more than 4 KB above;
+  - `fits` uses what is left, not the cap (a cap of 0 disables the relay);
+  - stale-name matching with boundary and look-alike names.
+- **Mutation check:** each was applied and reverted, with the file restored byte-identical:
+  - acks not counted in `wireBytes`: the wireBytes test fails;
+  - `fits` compared against the cap: the fits test fails;
+  - every `darkp2p-` name treated as stale: the cleanup test fails;
+  - no backoff cap: both backoff tests fail.
+- **Gate:** `npm run check` PASS; `npm test` 87/87 PASS (81 previous + 6 resilience), including the CSP-hash baseline.
+- **Extra verification (not committed):**
+  - **Step 7 Playwright/Chromium script, 20/20 PASS** with no page errors, against a real `server.js` on a fixed port:
+    - Server killed and restarted during a 200 MB direct transfer: the transfer completed with a matching SHA-256, both sides rejoined and kept the tunnel, and a reverse transfer worked afterwards.
+    - One side's signaling closed mid-transfer (30 MB): the peer logged "Peer lost its signaling connection — direct tunnel still up", the transfer completed, and the DataChannel was not torn down.
+    - Server restarted during a relay transfer: "Send interrupted" and "Receive interrupted" on both sides, signaling restored, the session renegotiated, and a new transfer worked.
+    - Concurrent 8 MB and 6 MB transfers in opposite directions: both delivered, the drop zone stayed enabled while receiving, and there were no `busy` declines.
+    - **Save picker (stubbed with an OPFS-backed handle):** the file was streamed to the chosen handle, with no blob download, and the log names the chosen file.
+    - **Picker cancelled:** the OPFS path plus a download worked.
+    - **`RELAY_CAP_FREE_MB=1`:** after a 600 KB file, a second 600 KB file was blocked client-side ("0.4 MB of this room's 1 MB left") with nothing offered to the peer, the Pro upsell was shown, and a 100 KB file still went through.
+    - **OPFS cleanup:** only the stale `darkp2p-*` file was removed; fresh and unrelated files were kept.
+  - **Step 6 regression, 45/45 PASS:**
+    - Selectors were updated for the new receive panel.
+    - The RAM-mode scenario now also removes the save picker, since a picker counts as disk streaming.
+    - New case: picker cancelled, no OPFS and a file over 512 MB is declined with `size` at Accept.
+  - **Step 6.5 regression, 13/13 PASS.**
+  - Two behaviour notes from these runs:
+    - Headless Chromium exposes `showSaveFilePicker` and rejects it with `AbortError`, so every Accept in these runs used the picker-cancel → OPFS fallback.
+    - A sender whose relay socket dies logged "Send aborted: Channel closed" before `onclose` ran. It now logs "Send interrupted: NAME" whenever the channel is closed.
+- **Not exercised:** the `full` retry needs an abrupt network loss (a clean close frees the slot at once), so it was not run in a browser.
+- **SKIPPED:** none.
+- **Open questions:**
+  1. **Newcomer while the DataChannel survives.** If a different link holder joins while the DataChannel peer's signaling is down, this side keeps its tunnel and ignores the newcomer's `ready`. If the newcomer then falls back to the relay (`ws-fallback`), this side switches to the relay and the tunnel to the original peer ends. Anyone with the link holds the key, so this is not a confidentiality issue.
+  2. **Empty file left by the save picker.** For a new file name, the picker may create an empty file, and an aborted transfer leaves it behind. It is deliberately not deleted: `handle.remove()` would also delete an existing file the user chose to overwrite (whose contents are untouched on abort).
+  3. **Data waits behind signaling.** Binary frames now wait behind any in-flight signaling handler. In practice that only happens during negotiation, but it does add latency there.
+  4. **Wrong wording on first connect.** A failed first connection logs "Signaling connection lost — reconnecting..." although nothing was ever connected.
+
+### Decisions after Step 7 (user, 2026-11-21)
+- **Newcomer falling back to the relay:** kept as-is. Anyone with the room link holds the key, so a newcomer's `ws-fallback` is a valid peer switch.
+- **Empty file left by the save picker on abort:** kept as-is. The handle is never deleted, so an existing file the user chose to overwrite is never wiped.
+- **Data waiting behind signaling:** kept as-is. Signaling is quiet during a transfer, and one ordered queue avoids concurrency races.
+- **First-connect wording:** cosmetic and not changed now. If `connectSignaling()` is touched again, log "Could not connect to signaling — retrying..." when the socket never opened, instead of "Signaling connection lost".
+
+### Step 8 — Config injection + stats line (2026-11-21)
+- **Tasks:** 8.1 (H7, I3), 8.2 (I5).
+- **Files changed:** `server.js`, `public/index.html`, `.env.example`, `test/baseline.test.mjs`, `test/relay.test.mjs`, `test/helpers/server.mjs`; new `test/config.test.mjs` and `test/stats.test.mjs`. The wire format is unchanged.
+- **Task 8.1 — server (`loadPage`, `renderIndex`, `pageConfigJson`):**
+  - New optional env vars, all checked in `validateConfig()`, and an invalid value is `fatal`:
+    - `BTCPAY_POS_URL` must parse with `new URL`, be `https:`, and have no query, fragment or credentials, because the page appends `?itemCode=…`.
+    - `TIP_XMR_ADDRESS` must be base58, start with `4`/`8`, and be 95 or 106 characters.
+    - `TIP_BTC_ADDRESS` must be lowercase `bc1` bech32/bech32m (11–90 characters) or legacy base58 starting with `1`/`3`.
+  - At boot, `index.html` gets these substitutions:
+    - every literal `https://darkp2p.com/` becomes `https://${DOMAIN}/`;
+    - `<script type="application/json" id="darkp2p-config">{}</script>` becomes `JSON.stringify({btcpayPosUrl, tipXmr, tipBtc})`, with unset values as `null` and every `<` as `<`;
+    - the server refuses to start if that block is not in the file exactly once;
+    - the substitutions use split/join, so a `$` in a value cannot act as a replacement pattern.
+  - The CSP is built from the substituted HTML. `loadPage` now reads the file as UTF-8 and serves the rendered string. `404.html` has no transform and is served as before.
+- **Task 8.1 — client:**
+  - The empty config block sits just before the app script.
+  - The tier CTAs no longer have an `href`. They carry `data-item-code` and start `hidden`. When `btcpayPosUrl` parses as https, each one gets `${btcpayPosUrl}?itemCode=<code>` and is shown. The client re-checks the https scheme as defence in depth.
+  - The tip buttons start `hidden` and have no `data-addr`. Each is shown only when its address is set, and copies it from the config.
+  - Explicit `[hidden] { display: none }` rules cover `.tier-cta`, `.tip-jar`, `.tip-btn` and `.modal-note`, since `.tier-cta` and `.tip-jar` set their own `display`.
+  - All `YOUR*` placeholders are gone.
+- **Task 8.2 — stats line:**
+  - `sweep` logs `stats conns=N rooms=N relayRooms=N relayMB=N.N rejected429=N stalls=N`.
+    - `conns`, `rooms` and `relayRooms` are current values.
+    - `relayMB` counts the binary bytes relayed in the interval.
+    - `rejected429` counts WS upgrades and `/api/claim` requests refused with 429 in the interval.
+    - `stalls` counts `relay-stalled` events in the interval.
+  - The interval counters (`stats.relayBytes`, `rejected429`, `stalls`) reset after each line. They are plain numbers with no keys, so the reset is their eviction rule (rule 6).
+  - `SWEEP_MS` is now env-tunable (`envInt('SWEEP_MS', 300000, 1000, 3600000)`, the same precedent as `HEARTBEAT_MS`), so tests can see the line. The default interval is unchanged at 5 min.
+- **Tests:**
+  - `config.test.mjs`, 12 tests:
+    - the default page has no `YOUR`, no `darkp2p.com/` and a `test.local` canonical/OG/JSON-LD;
+    - with no env, the config is all `null`;
+    - with the env set, the CTAs, tip buttons and config JSON are present;
+    - the CSP matches the hashes of the scripts actually served, and the executable script is identical with or without config;
+    - a `</script><script>alert(1)</script><!--` in `BTCPAY_POS_URL` leaves no `<` in the block and adds no `<script` tag;
+    - 8 boot failures: http, `javascript:`, unparseable, query, credentials, placeholder XMR, XMR with markup, placeholder BTC;
+    - legacy BTC and integrated XMR are accepted.
+  - `stats.test.mjs`: with `SWEEP_MS=1000`, about 1.2 MB is relayed, then a 429 is triggered. Checks that the line reports `relayMB≥1.1`, `rejected429≥1`, `conns=2`, `rooms=1` and `relayRooms=1`; that the next line has its interval counters back at 0 while the gauges stay; that the gauges drop to 0 after both peers close; and that every line matches the strict `STATS_LINE_RE`.
+  - The baseline log-hygiene test now runs with `SWEEP_MS=1000`. It waits for a stats line written after all the baseline traffic, checks every stats line against `STATS_LINE_RE` (in `helpers/server.mjs`), and still checks for no addresses, room IDs, invoice IDs or tokens.
+  - The relay stall test now also requires a stats line with `stalls=1`.
+- **Mutation check:** each was applied and reverted, with `server.js` restored byte-identical:
+  - no `darkp2p.com` swap: 1 failure;
+  - no https check: 2 failures;
+  - interval counters not reset: 1 failure;
+  - stall not counted: 1 failure;
+  - room IDs appended to the stats line: 1 failure (hygiene).
+  - **Not detected, as expected:**
+    - Removing the `<` escape. Validation already blocks every way a `<` could reach the config: WHATWG `URL` percent-encodes `<` in the path, a query or fragment is rejected, a host with `<` does not parse, and the address regexes forbid it. The escape is defence in depth.
+    - Hashing the page before substitution. The substitutions never touch the executable script, so its hash is the same either way. The test still checks the hashes against the served page.
+- **Gate:** `npm run check` PASS; `npm test` 100/100 PASS (87 previous + 12 config + 1 stats), 0 skipped.
+- **Extra verification (not committed):** a Playwright/Chromium script against a real `server.js`, 21/21 PASS, with no page or CSP errors in any configuration:
+  - no env: no CTAs, no tip buttons, no tip jar and no payment note, and the app script runs;
+  - everything set: both CTAs link to `…/pos?itemCode=pro-1d` / `pro-30d`, both tip buttons show, and XMR copies the configured address to the clipboard;
+  - XMR only: one tip button, no CTAs.
+- **SKIPPED:** none.
+- **Open questions:**
+  1. **Beyond the spec, two extra things are hidden:** the whole tip jar when neither address is set (otherwise only the "SUPPORT ZERO-LOG INFRASTRUCTURE:" label would show), and the "After payment settles…" note when there is no POS URL. The Pro modal itself stays reachable, because pasting a token still works.
+  2. **An invalid payment value is fatal**, not a warning with the item hidden. This matches `BTCPAY_URL`, but a typo in a tip address now stops the server from starting.
+  3. **The address regexes accept mainnet only:** no testnet/regtest, and no all-uppercase bech32. Say if you want them widened.
+  4. **`rejected429`** also counts `/api/claim` 429s, not just WS upgrades. A `full` room is not counted.
+  5. **`SWEEP_MS`** is a new env var, added for testability. It also sets the stats interval, so it belongs in the Step 10 env table.
+
+### Decisions after Step 8 (user, 2026-11-21)
+- **All four Step 8 open questions are approved as implemented:**
+  1. Extra hiding: the tip jar is hidden when no address is set, and the "After payment settles…" note when there is no POS URL. The Pro modal stays openable for pasting a token.
+  2. An invalid `BTCPAY_POS_URL`, `TIP_XMR_ADDRESS` or `TIP_BTC_ADDRESS` stops the server at boot.
+  3. The tip address regexes accept mainnet only.
+  4. `rejected429` counts every 429 refusal (WS upgrades and `/api/claim`). Full-room replies are not counted.
+
+#### Step 10 checklist (added)
+- [ ] The env var table covers `BTCPAY_POS_URL`, `TIP_XMR_ADDRESS`, `TIP_BTC_ADDRESS` and `SWEEP_MS`, and documents the stats line format.
+
+### Step 9 — Infrastructure hardening (2026-11-21)
+- **Tasks:** 9.1, 9.2, 9.3, 9.4, 9.5, 9.6.
+- **Files changed:** `Dockerfile`, `docker-compose.yml`, `Caddyfile`, `setup-ufw.sh`, `.gitignore`, `.env.example` (one comment), `test/compose.test.mjs`; new `tor/Dockerfile`, `tor/torrc`, `scripts/gen-turnserver-conf.sh`. `server.js` and `public/` are unchanged.
+- **9.1:** `FROM node:22.23.5-alpine3.24` (newest 22.x patch on Docker Hub), `ENV NODE_ENV=production`. `USER node` and the HEALTHCHECK are kept.
+- **9.2:**
+  - Every service has `no-new-privileges:true`. caddy, darkp2p and tor use the `local` driver with 10m × 3 files; coturn keeps `none`.
+  - darkp2p: `mem_limit: 384m`, `pids_limit: 128`, `tmpfs: [/tmp]`.
+  - caddy: `cap_drop: [ALL]`, `cap_add: [NET_BIND_SERVICE]`, image `caddy:2.11.9-alpine`. Its Hub digest equals the current `caddy:2-alpine` digest.
+- **9.3:**
+  - `tor/Dockerfile`: `FROM alpine:3.20.10`, `apk add --no-cache tor=0.4.9.11-r0`, `/var/lib/tor` and `hidden_service` chowned to `tor` with mode 700, and `USER tor`.
+  - `tor/torrc` has the five required lines plus `DataDirectory /var/lib/tor`, so the data dir is fixed whatever tor's non-root default is. It is mounted read-only, and the runtime `apk add`/`printf` command is gone.
+  - A new `tor_data` volume inherits the image's ownership. A compose comment gives the one-time `chown` for a volume created by the old root-run container.
+- **9.4:**
+  - `scripts/gen-turnserver-conf.sh [ENV_FILE] [OUT_FILE]` parses `.env` without sourcing it. It validates `TURN_HOST`, `TURN_PUBLIC_IP` (dotted IPv4, each octet ≤255) and `TURN_SECRET` (≥16 printable characters, no space or `#`).
+  - It writes every Step 2 flag, including `static-auth-secret`, through a umask 077 temp file, then `chmod 0600`, then `chown 65534:65533`, then an atomic `mv`.
+  - That owner is coturn's `nobody:nogroup`; `nogroup` is gid 65533 in this image. `COTURN_OWNER` overrides it, and empty skips the chown. A failed chown exits 1 with "re-run with sudo".
+  - The secret is never printed.
+  - Compose mounts the file read-only with `command: ["-c", "/etc/coturn/turnserver.conf"]`. The compose file has no `TURN_*` reference and no secret, and `coturn/turnserver.conf` is gitignored. The `TURN_PUBLIC_IP` requirement moved from compose to the script. No `turns:`/TLS was added.
+- **9.5:**
+  - A global `servers { timeouts { read_header 10s } }`.
+  - `header -Server` in both site blocks: the www redirect block also sent `Server: Caddy`.
+  - `request_body /webhook/btcpay { max_size 64KB }`, and `reverse_proxy darkp2p:3000 { stream_close_delay 5m }`.
+  - No access log.
+- **9.6:**
+  - `set -euo pipefail` and a root check.
+  - `SSH_PORT="${SSH_PORT:-22}"`.
+  - `IPV6=yes` is set in `/etc/default/ufw`, with a warning if it can't be confirmed.
+  - A header comment says Docker-published ports bypass UFW.
+  - The relay range is `TURN_MIN_PORT`/`TURN_MAX_PORT`, cross-referenced with the generator script.
+- **Tests (`compose.test.mjs`, 5 → 8):**
+  - Three tests were rewritten for the new layout:
+    - **tor:** no runtime command, built from `./tor`, torrc read-only and with the required lines, pinned `FROM` and package, `USER tor`.
+    - **coturn:** `-c` only, read-only mount, logging `none`, tag+digest pin, no `TURN_SECRET`/`static-auth-secret` in the compose file or render.
+    - **TURN_PUBLIC_IP:** now checked in the generator.
+  - New:
+    - every service has `no-new-privileges`, with the log driver and rotation checked for all but coturn;
+    - the darkp2p limits, caddy caps and image pins;
+    - the generator writes the Step 2 flags in a 0600 file without printing the secret, and refuses a missing or bad IP or secret without leaving a file;
+    - the UFW relay range equals the generator's range.
+  - The generator and UFW tests run without docker.
+- **Mutation check:** each was applied and reverted, with the files restored byte-identical. Each failed exactly its own test:
+  - UFW max port changed;
+  - `--static-auth-secret=${TURN_SECRET}` added to the coturn command;
+  - no-new-privileges removed from caddy;
+  - `HiddenServiceMaxStreamsCloseCircuit` removed from torrc.
+- **Gate:**
+  - `npm run check`: PASS.
+  - `npm test`: 103/103 PASS (100 previous + 3 new compose tests), 0 skipped.
+  - `bash -n` on each of `setup-ufw.sh`, `scripts/compose-gate.sh` and `scripts/gen-turnserver-conf.sh`: PASS (run per file, since `bash -n a b` only parses `a`).
+  - `shellcheck`: **SKIPPED (tool unavailable)**. Installing it with pip was not permitted in this session.
+  - `docker compose --env-file test/fixtures/compose.env config -q` (via `npm run check:compose`): PASS.
+  - `caddy validate` inside `caddy:2.11.9-alpine` with `DOMAIN=test.local`: "Valid configuration", exit 0.
+    - `caddy adapt` confirms `read_header_timeout` 10 s, `stream_close_delay` 5 m, `max_size` 64000 and `delete: [Server]`.
+    - Caddy reads `64KB` as SI, so the limit is 64,000 bytes.
+  - `docker build -t darkp2p:audit .`: PASS. The sandbox proxy re-signs TLS (npm got `SELF_SIGNED_CERT_IN_CHAIN`), so the unchanged Dockerfile was built with `--build-context node:22.23.5-alpine3.24=docker-image://<the same image plus the sandbox CA>`.
+  - `docker build -t darkp2p-tor:audit tor/`: **FAILED (network policy)**. The session proxy denies `dl-cdn.alpinelinux.org` (403), so `apk` sees no `tor` package. This is an environment block, not a Dockerfile error, but the build and the pinned version are unverified. The version came from `community/tor/APKBUILD` on the aports `3.20-stable` branch (GitHub mirror).
+- **Extra verification (not committed):**
+  - `darkp2p:audit` run with the compose hardening (`--read-only`, `cap-drop ALL`, no-new-privileges, 384m, pids 128, tmpfs `/tmp`, local logs): healthy, uid 1000 `node`, `NODE_ENV=production`, node v22.23.5.
+  - The pinned coturn image ran from a generated conf (fixture env, mode 0600, owner 65534:65533), read-only, with tmpfs and no-new-privileges. It started and ran as `nobody` with `-c /etc/coturn/turnserver.conf`.
+- **SKIPPED:** shellcheck (tool unavailable). The tor image build was blocked by network policy; see above.
+- **Open questions:**
+  1. **coturn still writes a log file, a Step 2 bug that is not fixed here.**
+     - With `log-file=/dev/null` and no `simple-log`, coturn appends a date, fails to open `/dev/null_<date>.log`, and falls back to `/var/tmp/turn_1_<date>.log` on the tmpfs.
+     - It held 9 listener/address lines at startup and would also record client and peer addresses. It is in RAM only, never on the host disk, but it is a log.
+     - Adding `simple-log` to the generated conf was verified to leave only `turnserver.pid` in `/var/tmp`.
+     - Apply it? It is one line in `gen-turnserver-conf.sh` plus a test assertion.
+  2. **Tor image unverified.** Allow `dl-cdn.alpinelinux.org` in this environment so `tor/` can be built and the `tor=0.4.9.11-r0` pin confirmed, or verify it on the deploy host. Alpine 3.20 is past end of support; moving tor to a supported Alpine branch would need a new pin. Your call.
+  3. **Existing `tor_data` volume:** the onion keys are root-owned from the old container, so tor (now uid `tor`) will refuse them until the one-time `chown` in the compose comment is run. Should Step 10's deploy docs include it?
+  4. **Pin by digest?** node and caddy are pinned by tag only, as specified. coturn is pinned by tag and digest. Should these match coturn?
+  5. **`header -Server`** was also added to the www redirect block. Say if you want it only on the main site.
+  6. **`IPV6=yes`** is written into `/etc/default/ufw` rather than only checked. The warning fires only if that fails.
+
+### Decisions after Step 9 (user, 2026-11-21) and follow-up
+- **coturn `simple-log`: applied.**
+  - `gen-turnserver-conf.sh` now emits `simple-log` before `log-file=/dev/null`, with a comment saying why. The compose debug comment names it too.
+  - The generator test requires the line. A mutation removing it fails that test.
+  - The pinned coturn image ran from a regenerated conf with only `turnserver.pid` in `/var/tmp`, so no fallback log is written.
+- **Tor base moved off EOL Alpine 3.20:**
+  - `tor/Dockerfile` is now `FROM alpine:3.23.8` with `apk add --no-cache tor=0.4.9.17-r0`. That version is from `community/tor/APKBUILD` on the aports `3.23-stable` branch (GitHub mirror).
+  - **The exact `tor=` pin will be verified on the deploy host.** `dl-cdn.alpinelinux.org` stays blocked in this sandbox by your decision (HTTP 403), so the image build fails at `apk add` here.
+  - The compose test now requires Alpine 3.22 or newer for tor.
+- **node and caddy pinned by tag and digest**, like coturn, each with a comment on refreshing the digest:
+  - `node:22.23.5-alpine3.24@sha256:1314fb30…481a`
+  - `caddy:2.11.9-alpine@sha256:003a9780…36f0`
+  - Both are the top-level multi-arch index digests from `docker buildx imagetools inspect`, and match the RepoDigests of the images pulled here. The tests require the `@sha256:` form.
+- **`header -Server`:** kept on both site blocks.
+- **Gate re-run:**
+  - `npm run check`: PASS.
+  - `npm test`: 103/103 PASS.
+  - `bash -n` on each script: PASS.
+  - `shellcheck`: SKIPPED (tool unavailable).
+  - `npm run check:compose`: PASS.
+  - `caddy validate` in the digest-pinned caddy image: "Valid configuration".
+  - `docker build darkp2p:audit`: PASS, using the same sandbox-CA base override, keyed on the digest-pinned reference. The image ran healthy as `node` with `NODE_ENV=production` under the compose limits.
+  - `docker build darkp2p-tor:audit`: FAILED (network policy: `dl-cdn.alpinelinux.org` 403). Deferred to the deploy host.
+
+#### Step 10 checklist (added)
+- [ ] README deploy steps: run `sudo scripts/gen-turnserver-conf.sh` before `docker compose up`, and after any change to `TURN_HOST`, `TURN_PUBLIC_IP` or `TURN_SECRET`. Update the "No TURN Logs" line, which still names the Step 2 command-line flags (now `no-stdout-log`, `simple-log` and `log-file=/dev/null` in the generated conf).
+- [ ] README upgrade/deploy notes: before starting the new tor image on an existing install, run the one-time `tor_data` chown so the `.onion` keys survive:
+  `docker compose run --rm --no-deps --user root --entrypoint chown tor -R tor:tor /var/lib/tor`
+- [ ] On the deploy host: `docker compose build tor` to confirm the `tor=0.4.9.17-r0` pin on Alpine 3.23.8, and bump the pin if the repository has moved on.
+
+### Step 10 — README and final verification (2026-11-21)
+- **Tasks:** 10.1, 10.2.
+- **Files changed:** `README.md` only, plus this log.
+- **10.1 — README:**
+  - The two broken `[https://…](https://…)` links (the room-link example and `git clone`) are plain URLs now.
+  - New **Containers** table covers all four services: image and pin, role, hardening, logging.
+  - New **coturn configuration and logging policy** section: `gen-turnserver-conf.sh`, mode 0600 and owner, when to re-run, the deny list, and `no-stdout-log` + `simple-log` + `log-file=/dev/null` with why `simple-log` is needed. It notes the logging driver `none`, the debug procedure, and that the port range is shared with `setup-ufw.sh`. The "No TURN Logs" line now points there.
+  - New **Configuration** table covers all 30 `envStr`/`envInt` keys in `server.js` plus `TURN_PUBLIC_IP`, with defaults, ranges and fatal conditions, and the stats line format.
+  - New **Pro payments and claims** section: the client's pending claim and back-off, the webhook, behaviour with and without lookup, deterministic expiry, 503/502, the negative cache and the 404 after the window.
+  - The wire format section was already v3. Two descriptions there are updated to match Step 7: the save picker → OPFS → RAM order in the storage bullet, and `busy` only while already receiving.
+  - The deploy steps add `sudo scripts/gen-turnserver-conf.sh`, `SSH_PORT`, `IPV6=yes`, and the note that Docker-published ports bypass UFW.
+  - The lockfile step is removed: `package-lock.json` is committed.
+  - Onion bootstrap: `exec tor cat …/hostname`, then set `ONION_HOST`, then `docker compose up -d darkp2p`.
+  - New **3c Upgrading an Existing Install**: the coturn conf script, the one-time `tor_data` chown, verifying or bumping the `tor=` pin, wire format v3 (everyone reloads), and `ONION_PORT`.
+  - The Hide IP (TURN-only) and Force WebSocket relay toggles are described.
+  - This completes the Step 8 and Step 9 checklists.
+- **10.2 — Final verification:**
+  - `npm run check`: PASS. `npm test`: 103/103 PASS, 0 skipped, 0 todo.
+    - The only skips in the code are conditional, each with a printed reason: `openssl not available` (claim tests) and `docker compose not available` (compose tests). Neither fired here.
+    - There is no `.skip`, `.only` or `.todo`.
+  - **Docker stack:**
+    - `docker compose --env-file test/fixtures/compose.env up -d` was run for `caddy`, `darkp2p` and `coturn`, with a temporary `.env` and `coturn/turnserver.conf` generated from the fixture.
+    - **tor was not started:** its image cannot build here (`dl-cdn.alpinelinux.org` returns 403, deferred to the deploy host per the Step 9 decision).
+    - **darkp2p was pre-built** with the sandbox-CA base override (as in Step 9) and started with `--no-build`.
+    - darkp2p became healthy, and caddy and coturn were running.
+  - **Through Caddy:**
+    - `curl -sI http://127.0.0.1/` with `Host: example.test` gives `308` to https.
+    - HTTPS cannot get a certificate here: ACME is blocked and `example.test` is not a real domain.
+    - A throwaway caddy with the same Caddyfile plus `tls internal` ran on the compose network:
+      - `/` gives `HTTP/2 200` with the CSP, `Onion-Location` and HSTS, and **no `Server` header**;
+      - `/health` gives `ok`;
+      - a 100 KB POST to `/webhook/btcpay` gives `413`;
+      - `www.` gives `301` to the apex.
+  - **Log grep (IPv4/IPv6 literals), 42 lines from darkp2p and caddy:**
+    - darkp2p: none.
+    - caddy: 11 lines, **none a client address**. They are Caddy's admin-endpoint origin list (`localhost:2019`, `[::1]:2019`, with `127.0.0.1`) and Docker's embedded DNS resolver `127.0.0.11` inside ACME "lookup failed" errors, which exist only because the sandbox blocks ACME.
+    - The failed-TLS curl attempts logged no peer address.
+  - `docker compose down -v`: done. The temporary `.env`, `coturn/turnserver.conf` and images were removed, and no containers or volumes are left.
+- **Regression map:** no audit document with IDs C1, C2, H1–H7 and M1–M11 is in the repository or git history. Only H7, I3 and I5 appear, in Step 8. IDs are not guessed. The map below is by remediation task. Each task's audit ID should be filled in from your audit list.
+
+| Area (step.task) | Audit ID | Covered by (test file → test) |
+|---|---|---|
+| Compose env merge (1.A) | ? | `compose.test.mjs` → "darkp2p env has no merged list items…", "…interpolates nothing, only fixed non-secret values" |
+| Onion isolation (1.B) | ? | `onion.test.mjs` → all 6 (shared bucket and XFF ignored, Host spoof, Onion-Location only on main, ONION_HOST without ONION_PORT, ONION_PORT = PORT, ONION_PORT without HOST) |
+| coturn logging and relay hardening (2.A–C, 9.4) | ? | `compose.test.mjs` → "coturn: config file only…", "gen-turnserver-conf: hardened coturn flags…", "…refuses a missing or bad…", "setup-ufw.sh opens the same relay range…" |
+| Durable claims (3.A/B) | ? | `claim.test.mjs` → all 14; `baseline.test.mjs` → "settled pro-1d invoice can be claimed…", "webhook with a bad signature gets 401" |
+| Relay stall, relay room cap, control budget (4) | ? | `relay.test.mjs` → all 5 |
+| Wire format, per-transfer keys, AAD (5) | ? | `framing.test.mjs` → header/overhead, round-trip, bit flips, reflection, splice, distinct keys, wrong room key, legacy types, malformed, ≤16384 |
+| Accept/decline, credit window, completion, abort (6) | ? | `protocol.test.mjs` → all 21 |
+| Session-nonce binding, v3 (6.5) | ? | `framing.test.mjs` → "session binding: …" ×2, "hello keys are separate…", "session nonces must be 32 bytes", "frame types are v3…" |
+| Reconnect, relay budget, OPFS cleanup (7) | ? | `resilience.test.mjs` → all 6; tunnel survival and restart are manual (below) |
+| Config injection (8.1) | H7, I3 | `config.test.mjs` → all 12 |
+| Stats line (8.2) | I5 | `stats.test.mjs`; `baseline.test.mjs` → "log hygiene…" |
+| Log hygiene (rule 4) | ? | `baseline.test.mjs` → "log hygiene…"; `claim.test.mjs` → "logs contain no invoice ID…" |
+| CSP and request parsing (baseline) | ? | `baseline.test.mjs` → CSP hash, `GET //[` → 400, foreign Origin → 403, SDP field stripping |
+| Infra hardening (9.1–9.3, 9.5, 9.6) | ? | `compose.test.mjs` → "every service: no-new-privileges…", "caddy keeps DOMAIN; tor…"; **manual:** `caddy validate`, `docker build tor/` on the deploy host, `sudo ./setup-ufw.sh` then `ufw status verbose` |
+
+- **Manual browser checklist:** printed in the Step 10 checkpoint.
+- **SKIPPED / deferred:**
+  - `shellcheck`: tool unavailable.
+  - tor image build and pin verification: deploy host, network policy.
+  - HTTPS with a real certificate and a WebSocket through Caddy over TLS: needs a real domain.
+  - All browser scenarios: manual checklist.
+- **Open questions:**
+  1. **Audit IDs:** please share the C1–M11 list, or confirm the task-based map, so the "?" column can be filled in.
+  2. **`Server: Caddy` on port 80:** it is still sent on the automatic HTTP→HTTPS redirect. That listener is generated by Caddy, not our site blocks, so `header -Server` does not reach it. A fix is an explicit `http://{$DOMAIN}, http://www.{$DOMAIN} { header -Server … redir … }` block. Apply?
+  3. **Caddyfile formatting:** Caddy logs "Caddyfile input is not formatted". This is cosmetic and was left as-is.
+  4. **`docs/remediation/`:** keep it as a changelog, or delete it?

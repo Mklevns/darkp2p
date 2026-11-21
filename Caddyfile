@@ -1,8 +1,23 @@
+{
+    servers {
+        timeouts {
+            read_header 10s
+        }
+    }
+}
+
 www.{$DOMAIN} {
+    header -Server
     redir https://{$DOMAIN}{uri} permanent
 }
 
 {$DOMAIN} {
+    header -Server
     encode zstd gzip
-    reverse_proxy darkp2p:3000
+    request_body /webhook/btcpay {
+        max_size 64KB
+    }
+    reverse_proxy darkp2p:3000 {
+        stream_close_delay 5m
+    }
 }
