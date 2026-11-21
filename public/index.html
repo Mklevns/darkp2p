@@ -544,6 +544,7 @@
     const TX_WATCHDOG_MS = 1000;
     const MSG_KEY_MISMATCH = 'Key mismatch — the link was altered';
     const MSG_PEER_OUTDATED = 'Peer is running an outdated DARKP2P page — both sides reload';
+    const MSG_SESSION_UNCONFIRMED = 'Peer did not confirm the session key — both sides reload';
     const WS_RELAY_LIMIT_FREE = 50 * 1024 * 1024;
     const WS_RELAY_LIMIT_PRO = 500 * 1024 * 1024;
 
@@ -816,16 +817,21 @@
     const claimReady = autoClaimToken();
 
     // ==BEGIN darkp2p-framing==
-    // Wire format v2: type(1) | transferId(16) | seq(4, BE) | iv(12) | ciphertext||tag(16).
-    // AAD = "DP2" | type | senderRole | transferId | seq. Each transfer has its own
-    // AES-GCM-256 key: HKDF-SHA256(room key, salt = transferId, info = "darkp2p/v2/transfer").
+    // Wire format v3: type(1) | transferId(16) | seq(4, BE) | iv(12) | ciphertext||tag(16).
+    // AAD = "DP3" | type | senderRole | transferId | seq.
+    // HELLO frames: HKDF-SHA256(room key, salt = transferId, info = "darkp2p/v3/hello").
+    // CTRL/DATA frames are bound to the session (both peers' hello nonces):
+    //   HKDF-SHA256(room key, salt = transferId | initNonce | respNonce, info = "darkp2p/v3/transfer").
     // Pure Web Crypto and typed arrays only (no DOM): test/framing.test.mjs evaluates this block.
-    const FRAME_TYPE_CTRL = 0x11;
-    const FRAME_TYPE_DATA = 0x12;
-    const LEGACY_FRAME_TYPES = [1, 2];
+    const FRAME_TYPE_HELLO = 0x20;
+    const FRAME_TYPE_CTRL = 0x21;
+    const FRAME_TYPE_DATA = 0x22;
+    const FRAME_TYPES = [FRAME_TYPE_HELLO, FRAME_TYPE_CTRL, FRAME_TYPE_DATA];
+    const LEGACY_FRAME_TYPES = [1, 2, 0x11, 0x12]; // v1, v2
     const ROLE_INITIATOR = 0x01;
     const ROLE_RESPONDER = 0x02;
     const ROOM_KEY_LEN = 32;
+    const SESSION_NONCE_LEN = 32;
     const TRANSFER_ID_LEN = 16;
     const FRAME_IV_LEN = 12;
     const FRAME_TAG_LEN = 16;
@@ -838,8 +844,9 @@
       return out;
     }
 
-    const AAD_MAGIC = asciiBytes('DP2');
-    const HKDF_INFO = asciiBytes('darkp2p/v2/transfer');
+    const AAD_MAGIC = asciiBytes('DP3');
+    const HKDF_INFO_HELLO = asciiBytes('darkp2p/v3/hello');
+    const HKDF_INFO_TRANSFER = asciiBytes('darkp2p/v3/transfer');
 
     class FrameError extends Error {
       constructor(code, message) {
@@ -882,10 +889,15 @@
       return crypto.subtle.importKey('raw', keyBytes, 'HKDF', false, ['deriveKey']);
     }
 
-    async function deriveTransferKey(roomKey, transferId) {
-      checkTransferId(transferId);
+    function checkNonce(nonce) {
+      if (!(nonce instanceof Uint8Array) || nonce.length !== SESSION_NONCE_LEN) {
+        throw new FrameError('malformed', 'Session nonce must be 32 bytes');
+      }
+    }
+
+    function hkdfAesKey(roomKey, salt, info) {
       return crypto.subtle.deriveKey(
-        { name: 'HKDF', hash: 'SHA-256', salt: transferId, info: HKDF_INFO },
+        { name: 'HKDF', hash: 'SHA-256', salt, info },
         roomKey,
         { name: 'AES-GCM', length: 256 },
         false,
@@ -893,8 +905,30 @@
       );
     }
 
-    // LRU of derived transfer keys: at most `max` entries, least recently used evicted.
-    function createTransferKeyCache(roomKey, max) {
+    // Key for a HELLO frame: room key only (the session does not exist yet).
+    async function deriveHelloKey(roomKey, transferId) {
+      checkTransferId(transferId);
+      return hkdfAesKey(roomKey, transferId, HKDF_INFO_HELLO);
+    }
+
+    // Key for a CTRL/DATA frame: bound to the transfer and to both peers' session nonces.
+    // session = { initNonce, respNonce } (initiator's nonce first).
+    async function deriveTransferKey(roomKey, transferId, session) {
+      checkTransferId(transferId);
+      checkNonce(session && session.initNonce);
+      checkNonce(session.respNonce);
+      const salt = new Uint8Array(TRANSFER_ID_LEN + 2 * SESSION_NONCE_LEN);
+      salt.set(transferId, 0);
+      salt.set(session.initNonce, TRANSFER_ID_LEN);
+      salt.set(session.respNonce, TRANSFER_ID_LEN + SESSION_NONCE_LEN);
+      return hkdfAesKey(roomKey, salt, HKDF_INFO_TRANSFER);
+    }
+
+    // LRU of one session's transfer keys: at most `max` entries, least recently used evicted.
+    function createTransferKeyCache(roomKey, session, max) {
+      checkNonce(session && session.initNonce);
+      checkNonce(session.respNonce);
+      const nonces = { initNonce: session.initNonce.slice(), respNonce: session.respNonce.slice() };
       const entries = new Map(); // hex(transferId) -> Promise<CryptoKey>, oldest first
       return function getTransferKey(transferId) {
         checkTransferId(transferId);
@@ -905,7 +939,7 @@
           entries.set(id, pending);
           return pending;
         }
-        pending = deriveTransferKey(roomKey, transferId.slice());
+        pending = deriveTransferKey(roomKey, transferId.slice(), nonces);
         pending.catch(() => { if (entries.get(id) === pending) entries.delete(id); });
         entries.set(id, pending);
         while (entries.size > max) entries.delete(entries.keys().next().value);
@@ -914,9 +948,7 @@
     }
 
     async function encodeFrame({ type, role, transferId, seq, payload, key }) {
-      if (type !== FRAME_TYPE_CTRL && type !== FRAME_TYPE_DATA) {
-        throw new FrameError('malformed', 'Unknown frame type');
-      }
+      if (!FRAME_TYPES.includes(type)) throw new FrameError('malformed', 'Unknown frame type');
       if (!isRole(role)) throw new FrameError('malformed', 'Invalid sender role');
       checkTransferId(transferId);
       if (!Number.isInteger(seq) || seq < 0 || seq > 0xffffffff) {
@@ -950,10 +982,8 @@
       if (bytes.length < 1) throw new FrameError('malformed', 'Empty frame');
 
       const type = bytes[0];
-      if (LEGACY_FRAME_TYPES.includes(type)) throw new FrameError('legacy', 'Legacy (v1) frame');
-      if (type !== FRAME_TYPE_CTRL && type !== FRAME_TYPE_DATA) {
-        throw new FrameError('malformed', 'Unknown frame type');
-      }
+      if (LEGACY_FRAME_TYPES.includes(type)) throw new FrameError('legacy', 'Legacy (v1/v2) frame');
+      if (!FRAME_TYPES.includes(type)) throw new FrameError('malformed', 'Unknown frame type');
       if (bytes.length < FRAME_OVERHEAD) throw new FrameError('malformed', 'Truncated frame');
       if (!isRole(peerRole)) throw new FrameError('malformed', 'Invalid peer role');
 
@@ -1244,12 +1274,16 @@
     }
     // ==END darkp2p-framing==
 
-    const transferKeyReady = importRoomKey(keyBytes)
-      .then((roomKey) => createTransferKeyCache(roomKey, TRANSFER_KEY_CACHE_MAX));
+    const roomKeyReady = importRoomKey(keyBytes);
+    let roomKey = null;
+    roomKeyReady.then((k) => { roomKey = k; });
 
-    async function transferKey(transferId) {
-      return (await transferKeyReady)(transferId);
-    }
+    // Session binding: each side sends a fresh nonce in its hello whenever a transport
+    // opens. Once both nonces are known, CTRL/DATA keys are derived from both, so frames
+    // recorded in an earlier session never decrypt in a later one.
+    let myNonce = null;
+    let peerNonce = null;
+    let session = null; // { keys: transferId -> Promise<CryptoKey> }
 
     function sameTransferId(a, b) {
       if (!a || !b || a.length !== b.length) return false;
@@ -1296,15 +1330,20 @@
       return step;
     }
 
-    function sendCtrl(channel, transferId, seq, obj) {
-      return sendQueued(channel, async () => encodeFrame({
-        type: FRAME_TYPE_CTRL,
-        role: myRole,
-        transferId,
-        seq,
-        payload: encoder.encode(JSON.stringify(obj)),
-        key: await transferKey(transferId),
-      }));
+    // `keys` is captured when the frame is queued, so a frame is never encrypted
+    // under a session that replaced the one it belongs to.
+    function sendCtrl(channel, transferId, seq, obj, keys = session && session.keys) {
+      return sendQueued(channel, async () => {
+        if (!keys) throw new Error('No session key');
+        return encodeFrame({
+          type: FRAME_TYPE_CTRL,
+          role: myRole,
+          transferId,
+          seq,
+          payload: encoder.encode(JSON.stringify(obj)),
+          key: await keys(transferId),
+        });
+      });
     }
 
     let tx = null; // active outgoing transfer
@@ -1390,6 +1429,7 @@
       clearTimeout(helloTimer);
       helloTimer = null;
       handshake = 'idle';
+      myNonce = peerNonce = session = null;
     }
 
     function failHandshake(kind) {
@@ -1403,50 +1443,99 @@
       setDropEnabled(false, msg);
     }
 
-    async function sendHello(channel) {
-      try {
+    // Queued like every other frame, so our hello always leaves before our hello-ack.
+    function sendHello(channel, nonce) {
+      const transferId = crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN));
+      sendQueued(channel, async () => encodeFrame({
+        type: FRAME_TYPE_HELLO,
+        role: myRole,
+        transferId,
+        seq: 0,
+        payload: encoder.encode(JSON.stringify({ type: 'hello', v: 3, nonce: toBase64Url(nonce) })),
+        key: await deriveHelloKey(await roomKeyReady, transferId),
+      })).catch((err) => log(`Hello failed: ${err.message}`, 'err'));
+    }
+
+    // Derives the session once both nonces are known and confirms it to the peer.
+    function updateSession() {
+      if (!myNonce || !peerNonce || myRole === null) return;
+      if (!roomKey) {
+        roomKeyReady.then(updateSession, () => {});
+        return;
+      }
+      const nonces = myRole === ROLE_INITIATOR
+        ? { initNonce: myNonce, respNonce: peerNonce }
+        : { initNonce: peerNonce, respNonce: myNonce };
+      session = { keys: createTransferKeyCache(roomKey, nonces, TRANSFER_KEY_CACHE_MAX) };
+      const ch = getActiveChannel();
+      if (isChannelOpen(ch)) {
         const transferId = crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN));
-        const frame = await encodeFrame({
-          type: FRAME_TYPE_CTRL,
-          role: myRole,
-          transferId,
-          seq: 0,
-          payload: encoder.encode(JSON.stringify({ type: 'hello', v: 2 })),
-          key: await transferKey(transferId),
-        });
-        if (isChannelOpen(channel)) channel.send(frame.buffer);
-      } catch (err) {
-        log(`Hello failed: ${err.message}`, 'err');
+        sendCtrl(ch, transferId, 0, { type: 'hello-ack', v: 3 }).catch(() => {});
       }
     }
 
-    // Called whenever a transport opens (DataChannel or WS relay).
-    function startHandshake(channel) {
-      sendHello(channel);
-      if (handshake === 'mismatch' || handshake === 'outdated') return;
-      if (handshake === 'ok') {
-        enableDropIfReady();
-        return;
+    // A session change ends any transfer of the old session.
+    function endTransfersForNewSession() {
+      if (tx || rx) {
+        log('Session renewed — transfers in progress were stopped.', 'err');
+        abortAllTransfersLocally();
       }
-      handshake = 'pending';
-      setDropEnabled(false, 'VERIFYING PEER KEY...');
+    }
+
+    function armHelloTimer() {
       clearTimeout(helloTimer);
       helloTimer = setTimeout(() => {
         helloTimer = null;
-        if (handshake === 'pending' && isChannelOpen(getActiveChannel())) failHandshake('outdated');
+        if (handshake !== 'pending' || !isChannelOpen(getActiveChannel())) return;
+        if (!peerNonce) failHandshake('outdated');
+        else log(MSG_SESSION_UNCONFIRMED, 'err');
       }, HELLO_TIMEOUT_MS);
     }
 
+    function enterPending() {
+      handshake = 'pending';
+      setDropEnabled(false, 'VERIFYING PEER KEY...');
+      armHelloTimer();
+    }
+
+    // Called whenever a transport opens (DataChannel or WS relay): new nonce, new session.
+    function startHandshake(channel) {
+      myNonce = crypto.getRandomValues(new Uint8Array(SESSION_NONCE_LEN));
+      session = null;
+      sendHello(channel, myNonce);
+      if (handshake === 'mismatch' || handshake === 'outdated') return;
+      endTransfersForNewSession();
+      enterPending();
+      updateSession();
+    }
+
     function acceptHello(ctrl) {
-      if (ctrl.v !== 2) {
+      if (ctrl.v !== 3) {
         failHandshake('outdated');
         return;
       }
-      if (handshake === 'ok') return;
+      let nonce = null;
+      try {
+        nonce = typeof ctrl.nonce === 'string' ? fromBase64Url(ctrl.nonce) : null;
+      } catch {}
+      if (!nonce || nonce.length !== SESSION_NONCE_LEN) {
+        throw new ProtocolError('integrity', 'Invalid hello nonce');
+      }
+      if (peerNonce && sameTransferId(nonce, peerNonce)) return;
+      endTransfersForNewSession();
+      peerNonce = nonce;
+      session = null;
+      if (handshake === 'ok' || handshake === 'pending') enterPending();
+      updateSession();
+    }
+
+    // The peer derived the same session key (its hello-ack decrypted under it).
+    function acceptHelloAck() {
+      if (handshake !== 'pending') return;
       clearTimeout(helloTimer);
       helloTimer = null;
       handshake = 'ok';
-      log('Peer key verified (wire format v2).', 'ok');
+      log('Peer key verified, session key confirmed (wire format v3).', 'ok');
       enableDropIfReady();
     }
 
@@ -1525,7 +1614,7 @@
 
     // Sends a reply (receiver -> sender) for an incoming transfer.
     function rxReply(state, obj) {
-      sendCtrl(getActiveChannel(), state.transferId, state.machine.nextReplySeq(), obj)
+      sendCtrl(getActiveChannel(), state.transferId, state.machine.nextReplySeq(), obj, state.keys)
         .catch((err) => log(`Reply failed: ${err.message}`, 'err'));
     }
 
@@ -1566,6 +1655,7 @@
 
       const state = {
         transferId,
+        keys: session.keys,
         machine: new RxStateMachine(meta),
         buffers: [],
         opfsRoot: null,
@@ -1735,7 +1825,9 @@
     function abortTx(state, reason, message) {
       const seq = state.window.abortSeq(reason || 'user');
       if (seq === null) return;
-      if (reason) sendCtrl(state.channel, state.transferId, seq, { type: 'abort', reason }).catch(() => {});
+      if (reason) {
+        sendCtrl(state.channel, state.transferId, seq, { type: 'abort', reason }, state.keys).catch(() => {});
+      }
       log(message, 'err');
       wakeTx(state);
     }
@@ -1755,6 +1847,13 @@
     // Refuses frames before decryption: DATA and replies only for an active
     // transfer, and a new transfer (seq 0) only with an unseen transferId.
     function lookupRxKey(transferId, { type, seq }) {
+      if (type === FRAME_TYPE_HELLO) {
+        if (seq !== 0) throw new FrameError('rejected', 'Malformed hello');
+        if (seenTransferIds.has(transferIdHex(transferId))) throw new FrameError('rejected', 'Replayed hello');
+        return roomKeyReady.then((k) => deriveHelloKey(k, transferId));
+      }
+      // Session frames before both nonces are known (e.g. a hello-ack of a superseded session).
+      if (!session) throw new FrameError('stale', 'No session yet');
       const rxActive = rx && sameTransferId(transferId, rx.transferId);
       const txActive = tx && sameTransferId(transferId, tx.transferId);
       if (!rxActive && !txActive && endedTransferIds.has(transferIdHex(transferId))) {
@@ -1766,7 +1865,7 @@
       } else if (seenTransferIds.has(transferIdHex(transferId))) {
         throw new FrameError('rejected', 'Replayed transfer');
       }
-      return transferKey(transferId);
+      return session.keys(transferId);
     }
 
     async function handleIncomingFrame(buffer) {
@@ -1780,12 +1879,22 @@
           failHandshake('outdated');
           return;
         }
-        // Before the hello is verified only seq-0 CTRL frames reach decryption.
+        if (err.code === 'stale') return;
         if (err.code === 'auth' && handshake !== 'ok') {
-          failHandshake('mismatch');
+          // A hello that fails is a wrong room key. A session frame that fails before the
+          // session is confirmed is a hello-ack from a superseded session: ignore it.
+          if (new Uint8Array(buffer, 0, 1)[0] === FRAME_TYPE_HELLO) failHandshake('mismatch');
           return;
         }
         throw err;
+      }
+
+      if (frame.type === FRAME_TYPE_HELLO) {
+        rememberTransferId(frame.transferId);
+        const ctrl = parseCtrl(frame.payload);
+        if (ctrl.type !== 'hello') throw new ProtocolError('integrity', 'Unexpected hello frame');
+        acceptHello(ctrl);
+        return;
       }
 
       // Replies to our own outgoing transfer.
@@ -1806,11 +1915,11 @@
         const ctrl = parseCtrl(frame.payload);
         if (frame.seq === 0) {
           rememberTransferId(frame.transferId);
-          if (ctrl.type === 'hello') {
-            acceptHello(ctrl);
+          if (ctrl.type === 'hello-ack') {
+            acceptHelloAck();
             return;
           }
-          if (handshake !== 'ok') throw new ProtocolError('integrity', 'Control frame before peer hello');
+          if (handshake !== 'ok') throw new ProtocolError('integrity', 'Control frame before the session is confirmed');
           if (ctrl.type === 'meta') {
             await onIncomingMeta(frame.transferId, ctrl);
             return;
@@ -1962,7 +2071,7 @@
 
     async function sendFile(file) {
       const ch = getActiveChannel();
-      if (!isChannelOpen(ch) || isTransferring || handshake !== 'ok') return;
+      if (!isChannelOpen(ch) || isTransferring || handshake !== 'ok' || !session) return;
       const chunkCount = Math.ceil(file.size / CHUNK_SIZE);
 
       if (transportMode === 'ws') {
@@ -1990,6 +2099,7 @@
         transferId: crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN)),
         name: file.name,
         channel: ch,
+        keys: session.keys,
         window: new TxWindow({ chunks: chunkCount, now: Date.now() }),
         wake: null,
       };
@@ -2013,10 +2123,10 @@
       }, TX_WATCHDOG_MS);
 
       try {
-        const key = await transferKey(state.transferId);
+        const key = await state.keys(state.transferId);
         await sendCtrl(ch, state.transferId, 0, {
           type: 'meta', name: file.name, size: file.size, mime: file.type, chunks: chunkCount,
-        });
+        }, state.keys);
         log(`Offered: ${file.name} (${mb(file.size)} MB) — waiting for the peer to accept...`);
         await waitTx(state, () => win.phase !== 'offered');
         if (win.phase === 'declined') {
@@ -2059,7 +2169,7 @@
         if (win.phase !== 'sending') return;
         await waitForBufferDrain(ch);
         const doneSeq = win.doneSeq(Date.now());
-        await sendCtrl(ch, state.transferId, doneSeq, { type: 'done', chunks: chunkCount, size: file.size });
+        await sendCtrl(ch, state.transferId, doneSeq, { type: 'done', chunks: chunkCount, size: file.size }, state.keys);
         setDropEnabled(false, 'AWAITING CONFIRMATION...');
         log(`Sent, awaiting confirmation: ${file.name}`);
 

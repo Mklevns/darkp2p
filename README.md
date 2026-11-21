@@ -23,7 +23,7 @@ Live instance: [darkp2p.com](https://darkp2p.com)
 
 ## Wire Format (AES-256-GCM Framing)
 
-Wire format **v2**. Every control message (`hello`, `meta`, `accept`, `decline`, `ack`, `done`, `complete`, `abort`) and binary file chunk is a separate frame, encrypted with Web Crypto (`AES-GCM`) and a fresh random 12-byte IV:
+Wire format **v3**. Every control message (`hello`, `hello-ack`, `meta`, `accept`, `decline`, `ack`, `done`, `complete`, `abort`) and binary file chunk is a separate frame, encrypted with Web Crypto (`AES-GCM`) and a fresh random 12-byte IV:
 
 ```text
 +---------+-----------------+--------------+----------+-----------------------------------+
@@ -32,14 +32,26 @@ Wire format **v2**. Every control message (`hello`, `meta`, `accept`, `decline`,
 |<---------------- 33B header ----------------------->|
 ```
 
-* `type`: `0x11` = JSON control frame, `0x12` = binary file chunk. The v1 types `1` and `2` are no longer accepted.
+* `type`: `0x20` = hello, `0x21` = JSON control frame, `0x22` = binary file chunk. Frames of the older formats (v1 types `1`/`2`, v2 types `0x11`/`0x12`) are reported as an outdated peer.
 * `transferId`: 16 random bytes, new for every file and every `hello`.
 * `seq`: big-endian 32-bit counter within a transfer, per direction (see **Transfer** below).
-* **Per-transfer key:** `HKDF-SHA256(ikm = 32-byte room key, salt = transferId, info = "darkp2p/v2/transfer")` gives an AES-GCM-256 key per transfer, so frames from one file never decrypt under another.
-* **AAD** = `"DP2" ‖ type ‖ senderRole ‖ transferId ‖ seq`. `senderRole` (`0x01` initiator, `0x02` responder, from the signaling `ready` message) is not sent on the wire. The receiver authenticates with its peer's role, so a frame reflected back to its sender fails.
+* **Session- and transfer-bound keys:** every control frame and file chunk is encrypted with `HKDF-SHA256(ikm = 32-byte room key, salt = transferId ‖ initNonce ‖ respNonce, info = "darkp2p/v3/transfer")`, an AES-GCM-256 key. `initNonce` and `respNonce` are the two peers' 32-byte session nonces from their hellos, initiator first. Frames from one file never decrypt under another, and frames recorded in an earlier session (or page load) never decrypt in a later one, even with the same link.
+* **Hello key:** hello frames are sent before the session exists, so they use `HKDF-SHA256(room key, salt = transferId, info = "darkp2p/v3/hello")`.
+* **AAD** = `"DP3" ‖ type ‖ senderRole ‖ transferId ‖ seq`. `senderRole` (`0x01` initiator, `0x02` responder, from the signaling `ready` message) is not sent on the wire. The receiver authenticates with its peer's role, so a frame reflected back to its sender fails.
 * Overhead is 49 bytes per frame: a 16,000-byte chunk becomes a 16,049-byte frame, under the 16 KB SCTP limit.
 
-**Handshake.** When a transport opens (DataChannel, or the WebSocket relay), each side sends `{type:"hello", v:2}` as a control frame (new `transferId`, `seq 0`). File selection is enabled only after the peer's hello authenticates. A hello that fails authentication shows *"Key mismatch — the link was altered"*. A v1 frame, or no hello within 5 s, shows *"Peer is running an outdated DARKP2P page — both sides reload"*. In both cases file selection stays disabled.
+**Handshake (hello → hello-ack).**
+1. When a transport opens (DataChannel, or the WebSocket relay), each side picks a new random 32-byte nonce and sends `{type:"hello", v:3, nonce}` as a hello frame (new `transferId`, `seq 0`).
+2. When a side knows both nonces, it derives the session and sends `{type:"hello-ack", v:3}` as a control frame under the session key.
+3. File selection is enabled only after the peer's hello-ack decrypts. That proves the peer holds the same room key and derived the same session.
+
+If either side sends a new hello (for example after switching to the WebSocket relay), the session is renewed, and transfers of the old session stop. A hello-ack from a superseded session is ignored.
+
+* A hello that fails authentication shows *"Key mismatch — the link was altered"*.
+* An older-format frame, a hello with `v` other than 3, or no hello within 5 s shows *"Peer is running an outdated DARKP2P page — both sides reload"*.
+* A valid hello with no hello-ack within 5 s logs *"Peer did not confirm the session key — both sides reload"*. A hello-ack that arrives later still completes the handshake.
+
+In each of these failure cases file selection stays disabled.
 
 **Transfer.** All frames of one file use one `transferId`. The sender's frames are numbered by `seq`: `meta` (`{type, name, size, mime, chunks: N}`) at `0`, data chunks `1..N`, `done` (`{type, chunks, size}`) at `N+1`, and an `abort` takes the next `seq`. The receiver's replies go under the same `transferId` and its own role, numbered `1, 2, 3, …`. The sender rejects any reply that is not the next number.
 
@@ -66,7 +78,7 @@ The receiver rejects:
 * any `seq` other than the next expected one;
 * a chunk that would take the byte count past `meta.size`;
 * a `done` whose chunk or byte counts differ from what was announced and received;
-* a `meta` reusing a `transferId` already seen in this page session, so a whole earlier file cannot be replayed.
+* a `meta` reusing a `transferId` already seen in this page session, so a whole earlier file cannot be replayed within a session. Replay across sessions fails decryption because of the session-bound keys.
 
 ---
 

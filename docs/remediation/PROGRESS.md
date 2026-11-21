@@ -186,7 +186,7 @@
 - **Step 5 additions:** all five are kept (user, 2026-11-21): the transferId replay set, `meta.chunks` validation, silent drop of an aborted transfer's frames, `relay-busy` clearing the hello timer, and a hello with `v !== 2` treated as outdated.
 
 #### Step 6 checklist (carried over)
-- [ ] Session binding: HKDF over the room key plus both peers' hello nonces; per-transfer keys derived from the session key. **Moved to Step 6.5 (or the start of Step 7); see the decisions after Step 6.**
+- [x] Session binding: HKDF over the room key plus both peers' hello nonces; per-transfer keys derived from the session key. **Done in Step 6.5.**
 - [x] README "Architecture" envelope size and "Wire Format" section updated together (done in Step 6).
 
 ### Step 6 — Transfer handshake, credit window, completion/abort (2026-11-21)
@@ -271,3 +271,55 @@
   - Patched to swallow `complete` and the final ack: "Send interrupted" (`err`).
   - That script passed 8 of 9 runs. The first run timed out at a step I did not capture; the 8 runs after it all passed, so the cause is unknown (most likely harness timing).
   - The full Step 6 regression script passed 44/44 twice.
+
+### Step 6.5 — Session binding (wire format v3) (2026-11-21)
+- **Scope:** your post-Step-6 decision. No separate spec was given, so the design choices below are mine (open question 4).
+  - Per-transfer keys become `HKDF-SHA256(roomKey, transferId ‖ initNonce ‖ respNonce, …)`.
+  - A sequential hello → hello-ack handshake makes sure both peers hold both nonces before any transfer key is used.
+- **Files changed:** `public/index.html`, `README.md` (Wire Format section), `test/framing.test.mjs`. `server.js` is unchanged.
+- **Wire format v3:**
+  - Frame types `0x20` HELLO, `0x21` CTRL, `0x22` DATA. The header is unchanged (33 bytes, overhead 49). AAD magic `"DP3"`.
+  - `1`, `2`, `0x11` and `0x12` count as legacy, so a v2 peer is reported as "outdated" (not "Key mismatch"). The v3 side sees the v2 hello's `0x11` type at once; the v2 side times out after 5 s.
+  - **HELLO key:** `HKDF(roomKey, salt = transferId, info = "darkp2p/v3/hello")`. Payload `{type:'hello', v:3, nonce: base64url(32 bytes)}`.
+  - **CTRL/DATA key:** `HKDF(roomKey, salt = transferId ‖ initNonce ‖ respNonce (80 bytes), info = "darkp2p/v3/transfer")`, initiator's nonce first (by `ready.initiator` role).
+  - **Hello-ack:** a CTRL frame (new transferId, seq 0) `{type:'hello-ack', v:3}` under the session key.
+- **Framing block:** new `deriveHelloKey(roomKey, transferId)` and `deriveTransferKey(roomKey, transferId, {initNonce, respNonce})`. `createTransferKeyCache(roomKey, session, max)` is now one LRU per session. Nonces are checked to be 32 bytes, and `encodeFrame`/`decodeFrame` accept the three v3 types.
+- **Handshake (app):**
+  - Every transport open (`startHandshake`) makes a fresh `myNonce`, sends the hello and enters `pending`. Every peer hello with a new nonce updates `peerNonce`. A hello repeating the current nonce is ignored.
+  - Whenever both nonces are known, `updateSession()` builds the session's key cache and sends a hello-ack. `acceptHelloAck()` (the ack decrypted under the current session) moves to `ok` and enables the drop zone.
+  - Our hello and hello-ack go through the ordered `outQueue`, so the hello always leaves first. A hello-ack of a superseded session fails authentication and is ignored silently. A CTRL/DATA frame that arrives before any session exists is dropped (`stale`).
+  - A session renewal (our new nonce or the peer's) stops transfers of the old session ("Session renewed — transfers in progress were stopped.").
+  - Each transfer captures its session's key function (`state.keys`), and `sendCtrl` captures the key function when the frame is queued. A frame is never encrypted under a session it does not belong to.
+  - 5 s timer: no peer hello gives "outdated", as before. A peer hello without a hello-ack logs "Peer did not confirm the session key — both sides reload"; the state stays `pending`, so a late ack still completes the handshake.
+- **Behaviour kept:** "Key mismatch" (a hello that fails authentication before `ok`) stays until the next `ready`, all Step 6 protocol behaviour, and the in-session transferId replay set.
+- **Tests (`framing.test.mjs`, now 19):**
+  - Existing tests adapted to the session key API. The legacy test now covers `1`, `2`, `0x11` and `0x12`.
+  - New:
+    - v3 type values;
+    - a frame from session 1 fails under session 2 with the same room key and transferId, including when only one peer's nonce changed;
+    - swapped nonce order fails;
+    - hello keys are separate from session keys, a hello under another room key fails, and a HELLO frame re-typed as CTRL fails;
+    - nonce length is validated.
+- **Mutation check:** each of these was applied and reverted, with the file restored byte-identical:
+  - nonces left out of the HKDF salt: the session-1-vs-2 and swapped-order tests fail;
+  - nonce order normalized: the swapped-order test fails;
+  - the hello key reusing the transfer info label: **not detected**. This is expected: the salts already differ (`transferId` vs `transferId‖nonces`), so the separate label is only defence in depth and not observable on its own.
+- **Gate:** `npm run check` PASS; `npm test` 81/81 PASS (76 previous + 5 new framing tests), including the CSP-hash baseline.
+- **Extra verification (not committed):**
+  - The Step 6.5 Playwright/Chromium script passed 13/13 with no page errors:
+    - **Cross-session replay:** a relay-style recording of a full session-1 transfer (meta, chunks, done), replayed into session 2 after the receiver reloads, produces no offer. The frames fail authentication, and a fresh transfer afterwards works. With the nonces removed from the salt, the same replay is accepted ("Incoming offer: secret.bin"), so the check detects the attack.
+    - **Direct → WS relay mid-session:** both sides re-verify, and transfers work in both directions with no "did not confirm" warning.
+    - **v2 peer:** a peer sending a `0x11` frame is reported "outdated" in 24 ms.
+    - **Wrong key:** "Key mismatch" on both sides.
+  - The Step 6 regression script passed 44/44.
+- **SKIPPED:** none.
+- **Open questions:**
+  1. **Stale hello replay (DoS only).** A relay can replay a peer hello from an earlier page load; its transferId is not in the new page's seen set. The receiving side then switches to a session with that stale nonce. The real peer never acks it, so the drop zone stays disabled with the "did not confirm" warning until a reload. Confidentiality and integrity are not affected, and a relay can already cause a DoS by dropping frames. Stopping it would need the hello itself to be bound to fresh state (for example, echoing the peer's nonce inside the hello-ack and requiring a challenge), which is a larger protocol change.
+  2. **Transfers do not survive a session renewal.** Switching transports mid-transfer already ended transfers in Step 6 (`cleanupPeer`). Surviving it belongs with Step 7's transport resilience, and would need the session to survive a transport change.
+  3. **Rule 7:** with session binding in place, I consider wire format v3 final unless Step 7 changes it. Please confirm.
+  4. **My design choices (the spec gave only the formula):**
+     - type bytes `0x20`/`0x21`/`0x22`, and a separate HELLO type, so the key can be chosen before decryption;
+     - the info labels `darkp2p/v3/hello` and `darkp2p/v3/transfer`, and the `"DP3"` AAD magic;
+     - the nonce encoded as base64url inside the encrypted hello JSON;
+     - a missing hello-ack giving a warning, not a sticky failure;
+     - a new nonce on every transport open.
