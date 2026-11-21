@@ -11,6 +11,11 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const TEST_PRO_TOKEN_SECRET = 'test-pro-token-secret-0123456789abcdef';
 export const TEST_BTCPAY_WEBHOOK_SECRET = 'test-btcpay-webhook-secret-0123456789ab';
 
+// The periodic stats line in full: fixed keys, integers only (relayMB with one
+// decimal), nothing else. Anything identifying would break the match.
+export const STATS_LINE_RE =
+  /^\[darkp2p\] stats conns=\d+ rooms=\d+ relayRooms=\d+ relayMB=\d+\.\d rejected429=\d+ stalls=\d+$/;
+
 export async function freePort() {
   const srv = createServer();
   srv.listen(0, '127.0.0.1');

@@ -392,6 +392,7 @@
       text-transform: uppercase;
     }
     .tier-cta:hover { background: var(--accent); color: #000; }
+    .tier-cta[hidden], .tip-jar[hidden], .tip-btn[hidden], .modal-note[hidden] { display: none; }
     .modal-note {
       font-size: 0.68rem;
       color: var(--muted);
@@ -459,11 +460,11 @@
         <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a>.
       </div>
 
-      <div class="tip-jar">
+      <div class="tip-jar" hidden>
         <span>SUPPORT ZERO-LOG INFRASTRUCTURE:</span>
         <div class="tip-btns">
-          <button type="button" class="tip-btn" data-coin="XMR" data-addr="4YOUR_MONERO_ADDRESS_HERE">Copy XMR</button>
-          <button type="button" class="tip-btn" data-coin="BTC" data-addr="bc1qYOUR_BITCOIN_ADDRESS_HERE">Copy BTC</button>
+          <button type="button" class="tip-btn" data-coin="XMR" hidden>Copy XMR</button>
+          <button type="button" class="tip-btn" data-coin="BTC" hidden>Copy BTC</button>
         </div>
       </div>
     </div>
@@ -513,7 +514,7 @@
                 <li>• One-off dead drops</li>
               </ul>
             </div>
-            <a class="tier-cta" href="https://btcpay.YOURDOMAIN.com/apps/YOUR_APP_ID/pos?itemCode=pro-1d" target="_blank" rel="noopener noreferrer">
+            <a class="tier-cta" data-item-code="pro-1d" target="_blank" rel="noopener noreferrer" hidden>
               Pay BTC / XMR
             </a>
           </div>
@@ -528,19 +529,20 @@
                 <li>• Best for frequent use</li>
               </ul>
             </div>
-            <a class="tier-cta" href="https://btcpay.YOURDOMAIN.com/apps/YOUR_APP_ID/pos?itemCode=pro-30d" target="_blank" rel="noopener noreferrer">
+            <a class="tier-cta" data-item-code="pro-30d" target="_blank" rel="noopener noreferrer" hidden>
               Pay BTC / XMR
             </a>
           </div>
         </div>
 
-        <div class="modal-note">
+        <div class="modal-note" hidden>
           After payment settles on BTCPay Server, you will be redirected back here and your Pro token will auto-claim and save locally.
         </div>
       </div>
     </div>
   </div>
 
+  <script type="application/json" id="darkp2p-config">{}</script>
   <script>
     const CHUNK_SIZE = 16000;
     const HIGH_WATER = 1048576;
@@ -2580,9 +2582,48 @@
       if (!fileInput.disabled && e.dataTransfer.files[0]) sendFile(e.dataTransfer.files[0]);
     };
 
+    // Payment details injected by the server at boot (BTCPAY_POS_URL,
+    // TIP_XMR_ADDRESS, TIP_BTC_ADDRESS). Anything unset stays hidden.
+    function readPageConfig() {
+      try {
+        const cfg = JSON.parse(document.getElementById('darkp2p-config')?.textContent || '{}');
+        return cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+      } catch {
+        return {};
+      }
+    }
+
+    function httpsUrl(value) {
+      if (typeof value !== 'string' || !value) return null;
+      try {
+        return new URL(value).protocol === 'https:' ? value : null;
+      } catch {
+        return null;
+      }
+    }
+
+    const pageConfig = readPageConfig();
+    const btcpayPosUrl = httpsUrl(pageConfig.btcpayPosUrl);
+    if (btcpayPosUrl) {
+      document.querySelectorAll('.tier-cta').forEach((a) => {
+        a.href = `${btcpayPosUrl}?itemCode=${encodeURIComponent(a.dataset.itemCode)}`;
+        a.hidden = false;
+      });
+      document.querySelector('.modal-note').hidden = false;
+    }
+
+    const tipAddrs = {
+      XMR: typeof pageConfig.tipXmr === 'string' ? pageConfig.tipXmr : '',
+      BTC: typeof pageConfig.tipBtc === 'string' ? pageConfig.tipBtc : '',
+    };
+    let anyTip = false;
     document.querySelectorAll('.tip-btn').forEach((btn) => {
+      const coin = btn.dataset.coin;
+      const addr = tipAddrs[coin];
+      if (!addr) return;
+      btn.hidden = false;
+      anyTip = true;
       btn.onclick = async () => {
-        const { coin, addr } = btn.dataset;
         try {
           await navigator.clipboard.writeText(addr);
           log(`${coin} tip address copied to clipboard.`, 'ok');
@@ -2591,6 +2632,7 @@
         }
       };
     });
+    document.querySelector('.tip-jar').hidden = !anyTip;
   </script>
 </body>
 </html>

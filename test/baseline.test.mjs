@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import {
   startServer,
+  STATS_LINE_RE,
   TEST_PRO_TOKEN_SECRET,
   TEST_BTCPAY_WEBHOOK_SECRET,
 } from './helpers/server.mjs';
@@ -25,7 +26,8 @@ function remember(...values) {
 
 let srv;
 before(async () => {
-  srv = await startServer(TURN_ENV);
+  // Short sweep so the periodic stats line is part of the audited logs.
+  srv = await startServer({ ...TURN_ENV, SWEEP_MS: '1000' });
 });
 after(async () => {
   if (srv) await srv.stop();
@@ -248,8 +250,16 @@ test('settled pro-1d invoice can be claimed for a ~1 day token', async () => {
 });
 
 test('log hygiene: no addresses, room IDs, invoice IDs or tokens in logs', async () => {
-  // Let any in-flight close/cleanup logging flush.
-  await new Promise((r) => setTimeout(r, 200));
+  // Let any in-flight close/cleanup logging flush, and at least one stats
+  // line be written after all the baseline traffic.
+  const statsLines = () => srv.logs.stdout.split('\n').filter((l) => l.includes(' stats '));
+  const before = statsLines().length;
+  const deadline = Date.now() + 3000;
+  while (statsLines().length <= before && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.ok(statsLines().length > before, 'no stats line after the baseline traffic');
+  for (const line of statsLines()) assert.match(line, STATS_LINE_RE, 'stats line carries more than counters');
   const logs = srv.logs.all;
   assert.ok(logs.includes('listening on'), 'logs were captured');
   assert.ok(secrets.length > 5, 'tests recorded the values to look for');

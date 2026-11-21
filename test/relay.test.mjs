@@ -72,7 +72,7 @@ async function withServer(env, fn) {
 }
 
 test('a receiver that stops reading is closed with 1008 relay-stalled', async (t) => {
-  await withServer({ HEARTBEAT_MS: '1000', RELAY_STALL_MS: '2000' }, async (srv) => {
+  await withServer({ HEARTBEAT_MS: '1000', RELAY_STALL_MS: '2000', SWEEP_MS: '1000' }, async (srv) => {
     // Pro: 4 MB/s, so the kernel socket buffers fill quickly.
     const { a: sender, b: receiver } = await pair(srv.port, proToken());
     sender.send({ type: 'ws-fallback' });
@@ -115,6 +115,11 @@ test('a receiver that stops reading is closed with 1008 relay-stalled', async (t
     assert.equal(closed.reason, 'relay-stalled');
     await sender.waitFor((m) => m.type === 'peer-left', 5000);
     sender.ws.close();
+
+    // The stall is counted in the next stats line.
+    const deadline = Date.now() + 3000;
+    while (!/ stats .* stalls=1$/m.test(srv.logs.stdout) && Date.now() < deadline) await sleep(50);
+    assert.match(srv.logs.stdout, / stats .* stalls=1$/m);
   });
 });
 

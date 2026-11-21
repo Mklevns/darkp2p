@@ -418,3 +418,68 @@
 - **Empty file left by the save picker on abort:** kept as-is. The handle is never deleted, so an existing file the user chose to overwrite is never wiped.
 - **Data waiting behind signaling:** kept as-is. Signaling is quiet during a transfer, and one ordered queue avoids concurrency races.
 - **First-connect wording:** cosmetic and not changed now. If `connectSignaling()` is touched again, log "Could not connect to signaling — retrying..." when the socket never opened, instead of "Signaling connection lost".
+
+### Step 8 — Config injection + stats line (2026-11-21)
+- **Tasks:** 8.1 (H7, I3), 8.2 (I5).
+- **Files changed:** `server.js`, `public/index.html`, `.env.example`, `test/baseline.test.mjs`, `test/relay.test.mjs`, `test/helpers/server.mjs`; new `test/config.test.mjs` and `test/stats.test.mjs`. The wire format is unchanged.
+- **Task 8.1 — server (`loadPage`, `renderIndex`, `pageConfigJson`):**
+  - New optional env vars, all checked in `validateConfig()`, and an invalid value is `fatal`:
+    - `BTCPAY_POS_URL` must parse with `new URL`, be `https:`, and have no query, fragment or credentials, because the page appends `?itemCode=…`.
+    - `TIP_XMR_ADDRESS` must be base58, start with `4`/`8`, and be 95 or 106 characters.
+    - `TIP_BTC_ADDRESS` must be lowercase `bc1` bech32/bech32m (11–90 characters) or legacy base58 starting with `1`/`3`.
+  - At boot, `index.html` gets these substitutions:
+    - every literal `https://darkp2p.com/` becomes `https://${DOMAIN}/`;
+    - `<script type="application/json" id="darkp2p-config">{}</script>` becomes `JSON.stringify({btcpayPosUrl, tipXmr, tipBtc})`, with unset values as `null` and every `<` as `<`;
+    - the server refuses to start if that block is not in the file exactly once;
+    - the substitutions use split/join, so a `$` in a value cannot act as a replacement pattern.
+  - The CSP is built from the substituted HTML. `loadPage` now reads the file as UTF-8 and serves the rendered string. `404.html` has no transform and is served as before.
+- **Task 8.1 — client:**
+  - The empty config block sits just before the app script.
+  - The tier CTAs no longer have an `href`. They carry `data-item-code` and start `hidden`. When `btcpayPosUrl` parses as https, each one gets `${btcpayPosUrl}?itemCode=<code>` and is shown. The client re-checks the https scheme as defence in depth.
+  - The tip buttons start `hidden` and have no `data-addr`. Each is shown only when its address is set, and copies it from the config.
+  - Explicit `[hidden] { display: none }` rules cover `.tier-cta`, `.tip-jar`, `.tip-btn` and `.modal-note`, since `.tier-cta` and `.tip-jar` set their own `display`.
+  - All `YOUR*` placeholders are gone.
+- **Task 8.2 — stats line:**
+  - `sweep` logs `stats conns=N rooms=N relayRooms=N relayMB=N.N rejected429=N stalls=N`.
+    - `conns`, `rooms` and `relayRooms` are current values.
+    - `relayMB` counts the binary bytes relayed in the interval.
+    - `rejected429` counts WS upgrades and `/api/claim` requests refused with 429 in the interval.
+    - `stalls` counts `relay-stalled` events in the interval.
+  - The interval counters (`stats.relayBytes`, `rejected429`, `stalls`) reset after each line. They are plain numbers with no keys, so the reset is their eviction rule (rule 6).
+  - `SWEEP_MS` is now env-tunable (`envInt('SWEEP_MS', 300000, 1000, 3600000)`, the same precedent as `HEARTBEAT_MS`), so tests can see the line. The default interval is unchanged at 5 min.
+- **Tests:**
+  - `config.test.mjs`, 12 tests:
+    - the default page has no `YOUR`, no `darkp2p.com/` and a `test.local` canonical/OG/JSON-LD;
+    - with no env, the config is all `null`;
+    - with the env set, the CTAs, tip buttons and config JSON are present;
+    - the CSP matches the hashes of the scripts actually served, and the executable script is identical with or without config;
+    - a `</script><script>alert(1)</script><!--` in `BTCPAY_POS_URL` leaves no `<` in the block and adds no `<script` tag;
+    - 8 boot failures: http, `javascript:`, unparseable, query, credentials, placeholder XMR, XMR with markup, placeholder BTC;
+    - legacy BTC and integrated XMR are accepted.
+  - `stats.test.mjs`: with `SWEEP_MS=1000`, about 1.2 MB is relayed, then a 429 is triggered. Checks that the line reports `relayMB≥1.1`, `rejected429≥1`, `conns=2`, `rooms=1` and `relayRooms=1`; that the next line has its interval counters back at 0 while the gauges stay; that the gauges drop to 0 after both peers close; and that every line matches the strict `STATS_LINE_RE`.
+  - The baseline log-hygiene test now runs with `SWEEP_MS=1000`. It waits for a stats line written after all the baseline traffic, checks every stats line against `STATS_LINE_RE` (in `helpers/server.mjs`), and still checks for no addresses, room IDs, invoice IDs or tokens.
+  - The relay stall test now also requires a stats line with `stalls=1`.
+- **Mutation check:** each was applied and reverted, with `server.js` restored byte-identical:
+  - no `darkp2p.com` swap: 1 failure;
+  - no https check: 2 failures;
+  - interval counters not reset: 1 failure;
+  - stall not counted: 1 failure;
+  - room IDs appended to the stats line: 1 failure (hygiene).
+  - **Not detected, as expected:**
+    - Removing the `<` escape. Validation already blocks every way a `<` could reach the config: WHATWG `URL` percent-encodes `<` in the path, a query or fragment is rejected, a host with `<` does not parse, and the address regexes forbid it. The escape is defence in depth.
+    - Hashing the page before substitution. The substitutions never touch the executable script, so its hash is the same either way. The test still checks the hashes against the served page.
+- **Gate:** `npm run check` PASS; `npm test` 100/100 PASS (87 previous + 12 config + 1 stats), 0 skipped.
+- **Extra verification (not committed):** a Playwright/Chromium script against a real `server.js`, 21/21 PASS, with no page or CSP errors in any configuration:
+  - no env: no CTAs, no tip buttons, no tip jar and no payment note, and the app script runs;
+  - everything set: both CTAs link to `…/pos?itemCode=pro-1d` / `pro-30d`, both tip buttons show, and XMR copies the configured address to the clipboard;
+  - XMR only: one tip button, no CTAs.
+- **SKIPPED:** none.
+- **Open questions:**
+  1. **Beyond the spec, two extra things are hidden:** the whole tip jar when neither address is set (otherwise only the "SUPPORT ZERO-LOG INFRASTRUCTURE:" label would show), and the "After payment settles…" note when there is no POS URL. The Pro modal itself stays reachable, because pasting a token still works.
+  2. **An invalid payment value is fatal**, not a warning with the item hidden. This matches `BTCPAY_URL`, but a typo in a tip address now stops the server from starting.
+  3. **The address regexes accept mainnet only:** no testnet/regtest, and no all-uppercase bech32. Say if you want them widened.
+  4. **`rejected429`** also counts `/api/claim` 429s, not just WS upgrades. A `full` room is not counted.
+  5. **`SWEEP_MS`** is a new env var, added for testability. It also sets the stats interval, so it belongs in the Step 10 env table.
+
+#### Step 10 checklist (added)
+- [ ] The env var table covers `BTCPAY_POS_URL`, `TIP_XMR_ADDRESS`, `TIP_BTC_ADDRESS` and `SWEEP_MS`, and documents the stats line format.

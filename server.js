@@ -63,6 +63,11 @@ const MB = 1024 * 1024;
 const HOSTNAME_RE =
   /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 const ONION_V3_RE = /^[a-z2-7]{56}\.onion$/;
+// Conservative address shapes, checked only to keep junk out of the page:
+// Monero standard/subaddress (95) or integrated (106) base58; Bitcoin
+// lowercase bech32/bech32m or legacy base58.
+const XMR_ADDRESS_RE = /^[48][1-9A-HJ-NP-Za-km-z]{94}(?:[1-9A-HJ-NP-Za-km-z]{11})?$/;
+const BTC_ADDRESS_RE = /^(?:bc1[02-9ac-hj-np-z]{8,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$/;
 
 const PORT = envInt('PORT', 3000, 1, 65535);
 const DOMAIN = (envStr('DOMAIN') || 'darkp2p.com').toLowerCase();
@@ -86,6 +91,11 @@ const BTCPAY_API_KEY = envStr('BTCPAY_API_KEY');
 //         (i.e. a local reverse proxy such as the bundled Caddy container)
 // 1 / 0 = always / never trust it
 const TRUST_PROXY = envStr('TRUST_PROXY').toLowerCase() || 'auto';
+// Public payment details injected into index.html at boot (see pageConfig).
+// All optional: the matching purchase links / tip buttons are hidden when unset.
+const BTCPAY_POS_URL = envStr('BTCPAY_POS_URL');
+const TIP_XMR_ADDRESS = envStr('TIP_XMR_ADDRESS');
+const TIP_BTC_ADDRESS = envStr('TIP_BTC_ADDRESS');
 
 const MAX_TOTAL_CONNS = envInt('MAX_TOTAL_CONNS', 1000, 2, 100000);
 const MAX_CONNS_PER_IP = envInt('MAX_CONNS_PER_IP', 6, 1, 10000);
@@ -104,7 +114,7 @@ const HEARTBEAT_MS = envInt('HEARTBEAT_MS', 30_000, 1000, 300_000);
 // A sender paused this long because its receiver is not draining means the
 // receiver has stopped reading: its queued data is pinned in our RAM.
 const RELAY_STALL_MS = envInt('RELAY_STALL_MS', 60_000, 1000, 600_000);
-const SWEEP_MS = 5 * 60 * 1000;
+const SWEEP_MS = envInt('SWEEP_MS', 5 * 60 * 1000, 1000, 3600_000); // also the stats interval
 const SHUTDOWN_GRACE_MS = 5_000;
 // How long a minted token stays claimable by invoice ID.
 const CLAIM_TTL_MS = envInt('CLAIM_TTL_HOURS', 48, 1, 168) * 3600e3;
@@ -209,6 +219,25 @@ function validateConfig() {
     }
     if (url.protocol !== 'https:') fatal('BTCPAY_URL must be https');
   }
+  if (BTCPAY_POS_URL) {
+    let url;
+    try {
+      url = new URL(BTCPAY_POS_URL);
+    } catch {
+      fatal('BTCPAY_POS_URL is not a valid URL');
+    }
+    if (url.protocol !== 'https:') fatal('BTCPAY_POS_URL must be https');
+    // The page appends "?itemCode=…", so the base must not carry its own.
+    if (url.search || url.hash || url.username || url.password) {
+      fatal('BTCPAY_POS_URL must not contain a query, fragment or credentials');
+    }
+  }
+  if (TIP_XMR_ADDRESS && !XMR_ADDRESS_RE.test(TIP_XMR_ADDRESS)) {
+    fatal('TIP_XMR_ADDRESS is not a valid Monero address');
+  }
+  if (TIP_BTC_ADDRESS && !BTC_ADDRESS_RE.test(TIP_BTC_ADDRESS)) {
+    fatal('TIP_BTC_ADDRESS is not a valid Bitcoin address');
+  }
   for (const url of STUN_URLS.split(',').map((s) => s.trim()).filter(Boolean)) {
     if (!/^stuns?:[a-z0-9.\-[\]:]+$/i.test(url)) fatal(`STUN_URLS entry "${url}" is invalid`);
   }
@@ -282,17 +311,46 @@ function buildPageCsp(html) {
   ].join('; ');
 }
 
-function loadPage(file, required) {
+// Non-executable data block the page reads its payment details from.
+const CONFIG_BLOCK_OPEN = '<script type="application/json" id="darkp2p-config">';
+const CONFIG_BLOCK = `${CONFIG_BLOCK_OPEN}{}</script>`;
+
+// Public values only. Every "<" becomes the JSON escape \u003c, so no value
+// can close the <script> block or open a comment inside it.
+function pageConfigJson() {
+  const cfg = {
+    btcpayPosUrl: BTCPAY_POS_URL ? new URL(BTCPAY_POS_URL).href : null,
+    tipXmr: TIP_XMR_ADDRESS || null,
+    tipBtc: TIP_BTC_ADDRESS || null,
+  };
+  return JSON.stringify(cfg).replace(/</g, '\\u003c');
+}
+
+// Boot-time substitutions for index.html. The CSP hashes are computed on the
+// result, so they always match what is served.
+function renderIndex(html) {
+  if (html.split(CONFIG_BLOCK).length !== 2) {
+    fatal('public/index.html must contain the empty darkp2p-config block exactly once');
+  }
+  const origin = `https://${DOMAIN}/`;
+  const config = `${CONFIG_BLOCK_OPEN}${pageConfigJson()}</script>`;
+  // split/join: no "$" replacement patterns in the inserted values.
+  return html.split('https://darkp2p.com/').join(origin).split(CONFIG_BLOCK).join(config);
+}
+
+function loadPage(file, required, transform) {
+  let html;
   try {
-    const body = fs.readFileSync(path.join(__dirname, 'public', file));
-    return { body, csp: buildPageCsp(body.toString('utf8')) };
+    html = fs.readFileSync(path.join(__dirname, 'public', file), 'utf8');
   } catch (err) {
     if (required) fatal(`Cannot read public/${file} (${err.code || err.message})`);
     return null;
   }
+  if (transform) html = transform(html);
+  return { body: Buffer.from(html, 'utf8'), csp: buildPageCsp(html) };
 }
 
-const indexPage = loadPage('index.html', true);
+const indexPage = loadPage('index.html', true, renderIndex);
 const notFoundPage = loadPage('404.html', false);
 
 const robotsTxt = `User-agent: *\nAllow: /\nSitemap: https://${DOMAIN}/sitemap.xml\n`;
@@ -438,6 +496,10 @@ function getClientIdentity(req) {
 const ipState = new Map(); // clientKey -> { active, timestamps[] }
 const claimHits = new Map(); // clientKey -> { count, resetAt }
 let totalConns = 0;
+
+// Interval counters for the periodic stats line. Aggregates only: nothing
+// here identifies a client, room or invoice. Reset by every sweep.
+const stats = { relayBytes: 0, rejected429: 0, stalls: 0 };
 
 function allowConnection({ key, isOnion }) {
   if (totalConns >= MAX_TOTAL_CONNS) return false;
@@ -793,6 +855,7 @@ async function handleBtcPayWebhook(req, res) {
 
 async function handleClaim(req, res, url) {
   if (!allowClaim(getClientIdentity(req))) {
+    stats.rejected429 += 1;
     return respondJson(req, res, 429, { ready: false }, { 'Retry-After': '60' });
   }
 
@@ -934,7 +997,10 @@ function onUpgrade(req, socket, head) {
   if (!isOriginAllowed(req)) return rejectUpgrade(socket, 403);
 
   const client = getClientIdentity(req);
-  if (!allowConnection(client)) return rejectUpgrade(socket, 429);
+  if (!allowConnection(client)) {
+    stats.rejected429 += 1;
+    return rejectUpgrade(socket, 429);
+  }
 
   // Tied to the TCP socket, so the slot is returned exactly once however the
   // connection ends (failed handshake, clean close, terminate, reset).
@@ -1024,6 +1090,7 @@ function handleRelayFrame(ws, data) {
     return;
   }
   room.relayBytes += data.length;
+  stats.relayBytes += data.length;
 
   peer.send(data, { binary: true }, (err) => {
     if (err) return;
@@ -1257,6 +1324,7 @@ function checkRelayStall(ws, now) {
   const peer = ws.room ? otherPeer(ws.room, ws) : null;
   if (!peer || peer.readyState !== WebSocket.OPEN) return;
   const notice = { type: 'error', reason: 'relay-stalled' };
+  stats.stalls += 1;
   sendJson(ws, notice);
   sendJson(peer, notice);
   peer.close(1008, 'relay-stalled');
@@ -1299,6 +1367,16 @@ const sweep = setInterval(() => {
     if (entry.forgetAt <= now) invoices.delete(key);
     else if (entry.token && entry.claimUntil <= now) entry.token = null;
   }
+
+  // Counters only, no IDs or per-client data. relayMB/rejected429/stalls
+  // cover the interval since the previous line; conns/rooms are current.
+  logInfo(
+    `stats conns=${totalConns} rooms=${rooms.size} relayRooms=${countRelayRooms()} ` +
+      `relayMB=${(stats.relayBytes / MB).toFixed(1)} rejected429=${stats.rejected429} stalls=${stats.stalls}`
+  );
+  stats.relayBytes = 0;
+  stats.rejected429 = 0;
+  stats.stalls = 0;
 }, SWEEP_MS);
 
 // ---------------------------------------------------------------------------
