@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate server.js syntax
+        run: node --check server.js
+
+      - name: Build Docker image
+        run: docker build -t darkp2p:ci .
+
+      - name: Smoke test /health endpoint
+        run: |
+          docker run -d --name darkp2p-test -p 3000:3000 darkp2p:ci
+          trap "docker rm -f darkp2p-test" EXIT
+          sleep 2
+          curl -fsS http://127.0.0.1:3000/health | grep -q "^ok$"

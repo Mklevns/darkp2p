@@ -70,7 +70,7 @@
             "name": "Does WebRTC hide my IP address?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "No. Direct peer-to-peer WebRTC connections exchange IP addresses between the two peers during NAT traversal. Use a zero-log VPN or Tor Browser if you need to mask your IP address from your peer."
+              "text": "No. Direct peer-to-peer WebRTC connections exchange IP addresses between the two peers during NAT traversal. Use Force WebSocket Relay, a Pro TURN token, a zero-log VPN, or Tor Browser to mask your IP address from your peer."
             }
           }
         ]
@@ -112,7 +112,37 @@
       box-shadow: 0 0 30px rgba(0, 240, 255, 0.05);
     }
     h1 { margin: 0 0 4px; font-size: 1.2rem; color: var(--accent); letter-spacing: 2px; }
-    .sub { font-size: 0.75rem; color: var(--muted); margin-bottom: 20px; }
+    .sub { font-size: 0.75rem; color: var(--muted); margin-bottom: 12px; }
+    .status-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 18px;
+      font-size: 0.68rem;
+      letter-spacing: 0.5px;
+    }
+    .badge {
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.35);
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .badge.ok {
+      border-color: #05ffa1;
+      color: #05ffa1;
+      background: rgba(5, 255, 161, 0.06);
+    }
+    .badge.warn {
+      border-color: var(--warn);
+      color: var(--warn);
+      background: rgba(255, 42, 109, 0.06);
+    }
+    .badge.accent {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(0, 240, 255, 0.06);
+    }
     .box {
       border: 1px dashed var(--border);
       padding: 16px;
@@ -127,6 +157,16 @@
       margin-bottom: 6px;
       color: var(--muted);
     }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      font-size: 0.72rem;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .toggle-row input { accent-color: var(--accent); }
     .link-btn {
       background: none;
       border: none;
@@ -282,9 +322,7 @@
       padding: 16px;
       z-index: 100;
     }
-    .modal-backdrop.open {
-      display: flex;
-    }
+    .modal-backdrop.open { display: flex; }
     .modal {
       width: 100%;
       max-width: 440px;
@@ -325,20 +363,9 @@
       flex-direction: column;
       justify-content: space-between;
     }
-    .tier-card.featured {
-      border-color: var(--accent);
-    }
-    .tier-name {
-      font-size: 0.75rem;
-      color: var(--text);
-      margin-bottom: 4px;
-    }
-    .tier-price {
-      font-size: 1.25rem;
-      color: var(--accent);
-      font-weight: bold;
-      margin-bottom: 8px;
-    }
+    .tier-card.featured { border-color: var(--accent); }
+    .tier-name { font-size: 0.75rem; color: var(--text); margin-bottom: 4px; }
+    .tier-price { font-size: 1.25rem; color: var(--accent); font-weight: bold; margin-bottom: 8px; }
     .tier-perks {
       list-style: none;
       padding: 0;
@@ -357,10 +384,7 @@
       font-size: 0.72rem;
       text-transform: uppercase;
     }
-    .tier-cta:hover {
-      background: var(--accent);
-      color: #000;
-    }
+    .tier-cta:hover { background: var(--accent); color: #000; }
     .modal-note {
       font-size: 0.68rem;
       color: var(--muted);
@@ -368,45 +392,16 @@
       padding-top: 10px;
       line-height: 1.4;
     }
-    .status-bar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-bottom: 18px;
-      font-size: 0.68rem;
-      letter-spacing: 0.5px;
-    }
-    .badge {
-      padding: 4px 8px;
-      border: 1px solid var(--border);
-      background: rgba(0, 0, 0, 0.35);
-      color: var(--muted);
-      text-transform: uppercase;
-    }
-    .badge.ok {
-      border-color: #05ffa1;
-      color: #05ffa1;
-      background: rgba(5, 255, 161, 0.06);
-    }
-    .badge.warn {
-      border-color: var(--warn);
-      color: var(--warn);
-      background: rgba(255, 42, 109, 0.06);
-    }
-    .badge.accent {
-      border-color: var(--accent);
-      color: var(--accent);
-      background: rgba(0, 240, 255, 0.06);
-    }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>DARKP2P // DEAD DROP</h1>
     <div class="sub">E2E AES-256-GCM + DTLS P2P STREAM • ZERO SERVER STORAGE</div>
+
     <div class="status-bar" aria-live="polite">
       <span class="badge" id="modeBadge">TUNNEL: STANDBY</span>
-      <span class="badge" id="ipBadge">PEER IP VISIBILITY: PENDING</span>
+      <span class="badge" id="ipBadge">IP STATUS: WAITING FOR PEER</span>
     </div>
 
     <div class="box">
@@ -415,6 +410,10 @@
         <input type="text" id="shareUrl" readonly />
         <button id="copyBtn">Copy</button>
       </div>
+      <label class="toggle-row">
+        <input type="checkbox" id="forceWsRelay" />
+        Force WebSocket relay (mask IP from peer • 50 MB free / 500 MB Pro)
+      </label>
     </div>
 
     <div class="box">
@@ -426,6 +425,10 @@
         <input type="text" id="proToken" placeholder="Paste token for strict NAT / firewall relay" />
         <button id="saveTokenBtn">Save</button>
       </div>
+      <label class="toggle-row">
+        <input type="checkbox" id="hideIpToggle" />
+        Hide my IP from peer (Pro — forces TURN relay, disables direct P2P)
+      </label>
     </div>
 
     <div class="box dropzone disabled" id="dropzone">
@@ -438,7 +441,7 @@
 
     <div class="monetize">
       <div class="vpn-banner">
-        WebRTC exposes your IP to your peer. Mask it with a
+        Direct WebRTC exposes your IP to your peer. Mask it with a
         <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a>.
       </div>
 
@@ -471,7 +474,7 @@
 
       <details>
         <summary>Does WebRTC hide my IP address?</summary>
-        <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. Use a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a> or Tor Browser if you want to mask your IP.</p>
+        <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. Use Force WebSocket Relay, a Pro TURN token, a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a>, or Tor Browser to mask your IP.</p>
       </details>
     </section>
 
@@ -529,6 +532,8 @@
     const HIGH_WATER = 1048576;
     const FRAME_CTRL = 1;
     const FRAME_DATA = 2;
+    const WS_RELAY_LIMIT_FREE = 50 * 1024 * 1024;
+    const WS_RELAY_LIMIT_PRO = 500 * 1024 * 1024;
 
     let iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
@@ -539,6 +544,8 @@
     const dropLabel = document.getElementById('dropLabel');
     const fileInput = document.getElementById('fileInput');
     const progressEl = document.getElementById('progress');
+    const modeBadge = document.getElementById('modeBadge');
+    const ipBadge = document.getElementById('ipBadge');
 
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
@@ -565,8 +572,6 @@
       return out;
     }
 
-    const modeBadge = document.getElementById('modeBadge');
-    const ipBadge = document.getElementById('ipBadge');
     let badgeSeq = 0;
     // True once we've signaled an ICE candidate that reveals one of our real IPs
     // to the current peer. Stays true for that peer even if TURN or the WS relay wins.
@@ -649,6 +654,9 @@
       if (route === 'relay') {
         setBadges('accent', 'TUNNEL: PRO TURN RELAY', ...(localIpSignaled ? exposed : masked));
       } else if (route === 'direct') {
+        // The peer now sees our address on the packets themselves; that sticks even
+        // if we later switch to TURN or the WS relay.
+        localIpSignaled = true;
         setBadges('ok', 'TUNNEL: DIRECT P2P (STUN)', ...exposed);
       } else {
         setBadges('accent', 'TUNNEL: P2P (ROUTE UNKNOWN)',
@@ -687,7 +695,6 @@
     const { roomId, keyBytes } = initRoomAndKey();
     shareUrlEl.value = location.href;
 
-    // Pro Token Modal
     const proModal = document.getElementById('proModal');
     document.getElementById('openProModalBtn').onclick = () => proModal.classList.add('open');
     document.getElementById('closeProModalBtn').onclick = () => proModal.classList.remove('open');
@@ -805,6 +812,7 @@
     let pc = null;
     let dc = null;
     let transportMode = 'webrtc'; // 'webrtc' | 'ws'
+    let relayEnabled = false;
     let iceTimer = null;
     let remoteDescSet = false;
     let iceQueue = [];
@@ -865,10 +873,19 @@
         updateStatusBadges('closed');
         return;
       }
-      log('WebRTC unavailable — E2E-encrypted WebSocket relay active.', 'ok');
+      log(localIpSignaled
+        ? 'E2E-encrypted WebSocket relay active (IP was already shared during the WebRTC attempt).'
+        : 'E2E-encrypted WebSocket relay active (IP masked from peer).', 'ok');
       setDropEnabled(true, readyDropLabel());
       updateStatusBadges('active');
     }
+
+    document.getElementById('forceWsRelay').onchange = (e) => {
+      if (e.target.checked && pc) {
+        log('Switching active tunnel to E2E WebSocket relay...');
+        activateWsFallback(true);
+      }
+    };
 
     async function flushIceQueue() {
       while (iceQueue.length && pc) {
@@ -1080,13 +1097,26 @@
     async function initPeer(initiator) {
       transportMode = 'webrtc';
       localIpSignaled = false;
-      if (typeof RTCPeerConnection === 'undefined') {
+      const forceWs = document.getElementById('forceWsRelay').checked;
+
+      if (forceWs || typeof RTCPeerConnection === 'undefined') {
         activateWsFallback(true);
         return;
       }
 
+      const hideIp = document.getElementById('hideIpToggle').checked;
+      if (hideIp && !relayEnabled) {
+        log('IP masking blocked: requires an active Pro TURN token.', 'err');
+        setDropEnabled(false, 'PRO TOKEN REQUIRED TO HIDE IP');
+        updateStatusBadges('closed');
+        return;
+      }
+
       cleanupPeer();
-      pc = new RTCPeerConnection(iceConfig);
+      pc = new RTCPeerConnection({
+        ...iceConfig,
+        iceTransportPolicy: hideIp ? 'relay' : 'all',
+      });
 
       iceTimer = setTimeout(() => {
         if (!dc || dc.readyState !== 'open') {
@@ -1140,6 +1170,25 @@
     async function sendFile(file) {
       const ch = getActiveChannel();
       if (!isChannelOpen(ch) || isTransferring) return;
+
+      if (transportMode === 'ws') {
+        const chunkCount = Math.ceil(file.size / CHUNK_SIZE);
+        const estimatedWireBytes = file.size + chunkCount * 33 + 512;
+        const cap = relayEnabled ? WS_RELAY_LIMIT_PRO : WS_RELAY_LIMIT_FREE;
+
+        if (estimatedWireBytes > cap) {
+          const capMb = Math.floor(cap / (1024 * 1024));
+          const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+          log(
+            `Blocked: ${file.name} (${fileMb} MB) exceeds the ${capMb} MB WebSocket relay cap.` +
+            (relayEnabled ? '' : ' Uncheck "Force WebSocket relay" for unlimited direct P2P, or activate a Pro token for 500 MB.'),
+            'err'
+          );
+          if (!relayEnabled) proModal.classList.add('open');
+          return;
+        }
+      }
+
       isTransferring = true;
       setDropEnabled(false, `SENDING: ${file.name}`);
       progressEl.value = 0;
@@ -1251,6 +1300,7 @@
       if (msg.type === 'peer-left') {
         log('Remote peer disconnected.', 'err');
         transportMode = 'webrtc';
+        relayEnabled = false;
         cleanupPeer();
         setDropEnabled(false, 'PEER DISCONNECTED — WAITING...');
         updateStatusBadges('standby');
@@ -1258,10 +1308,11 @@
       }
 
       if (msg.type === 'ready') {
+        relayEnabled = Boolean(msg.relayEnabled);
         if (Array.isArray(msg.iceServers) && msg.iceServers.length) {
           iceConfig = { iceServers: msg.iceServers };
         }
-        log(msg.relayEnabled ? 'Peer detected (Pro TURN relay active).' : 'Peer detected (Direct STUN mode).');
+        log(relayEnabled ? 'Peer detected (Pro TURN relay active).' : 'Peer detected (Direct STUN mode).');
         await initPeer(msg.initiator);
       } else if (msg.type === 'offer' && pc) {
         try {

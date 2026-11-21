@@ -1,8 +1,7 @@
 {
   "name": "darkp2p",
   "version": "1.0.0",
-  "description": "Zero-knowledge WebRTC dead-drop file transfer",
-  "main": "server.js",
+  "private": true,
   "scripts": {
     "start": "node server.js"
   },
