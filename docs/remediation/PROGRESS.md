@@ -183,7 +183,7 @@
 - **README envelope size:** left unchanged for now and added to the Step 6 checklist. Step 6 must update the README "Architecture" bullet ("33-byte encryption envelope", now 49 bytes or whatever Step 6 makes it) and the "Wire Format" diagram and text together, in one documentation pass once the format is final.
 - **Cross-session replay protection:** deferred to Step 6. Session key derivation will mix both peers' hello nonces with the URL-fragment room key through HKDF, bundled with the Step 6 wire-format changes so the handshake and session-state migration happens only once. Until then, the per-page-load `seenTransferIds` set (cap 64) is the only replay check.
 - **Sticky "Key mismatch":** kept as implemented. An unauthenticated control frame before the hello is verified fails closed until the next `ready`/`peer-left`, or a reload. It is not cleared by a later valid hello, so the tamper signal stays visible.
-- **Still unconfirmed:** the five Step 5 additions beyond the spec (transferId replay set, `meta.chunks` validation, silent drop of an aborted transfer's frames, `relay-busy` clearing the hello timer, a hello with `v !== 2` treated as outdated). They remain in place unless you say otherwise.
+- **Step 5 additions:** all five are kept (user, 2026-11-21): the transferId replay set, `meta.chunks` validation, silent drop of an aborted transfer's frames, `relay-busy` clearing the hello timer, and a hello with `v !== 2` treated as outdated.
 
 #### Step 6 checklist (carried over)
 - [ ] Session binding: HKDF over the room key plus both peers' hello nonces; per-transfer keys derived from the session key.
