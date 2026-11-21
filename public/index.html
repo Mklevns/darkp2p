@@ -1069,7 +1069,8 @@
         return { ack: this.chunks % ACK_EVERY === 0 ? seq : null };
       }
 
-      // Returns { ack } for the final acknowledgement (the last DATA seq).
+      // Returns { ack } for the final acknowledgement (the last DATA seq), sent as
+      // { type: 'ack', seq, done: true } so the sender can tell it from a chunk ack.
       onDone(seq, ctrl) {
         this.expectPhase('receiving', 'done');
         if (seq !== this.expectedSeq) {
@@ -1119,7 +1120,8 @@
         this.acceptTimeoutMs = acceptTimeoutMs;
         this.ackStallMs = ackStallMs;
         this.completeTimeoutMs = completeTimeoutMs;
-        this.phase = 'offered'; // offered | sending | awaiting-complete | delivered | declined | aborted
+        // offered | sending | awaiting-complete | delivered | unconfirmed | declined | aborted
+        this.phase = 'offered';
         this.dataSent = 0;
         this.acked = 0;
         this.forwardSeq = 0; // meta
@@ -1127,6 +1129,7 @@
         this.since = now; // start of the current wait (accept, ack credit, complete)
         this.declineReason = null;
         this.abortReason = null;
+        this.doneAcked = false; // the receiver acknowledged done (every frame reached it)
       }
 
       get active() {
@@ -1193,6 +1196,14 @@
             if (!Number.isSafeInteger(msg.seq) || msg.seq < this.acked || msg.seq > this.dataSent) {
               throw new ProtocolError('integrity', `Invalid ack ${msg.seq} (acked ${this.acked}, sent ${this.dataSent})`);
             }
+            if (msg.done === true) {
+              if (this.phase !== 'awaiting-complete' || msg.seq !== this.chunks || this.doneAcked) {
+                throw new ProtocolError('integrity', `Unexpected final ack (${this.phase})`);
+              }
+              this.doneAcked = true;
+            } else if (msg.done !== undefined) {
+              throw new ProtocolError('integrity', 'Invalid ack');
+            }
             if (msg.seq > this.acked) {
               this.acked = msg.seq;
               if (this.phase === 'sending') this.since = now;
@@ -1200,7 +1211,7 @@
             return 'ack';
           case 'complete':
             if (this.phase !== 'awaiting-complete') throw bad('complete');
-            if (this.acked !== this.chunks) throw new ProtocolError('integrity', 'complete before the final ack');
+            if (!this.doneAcked) throw new ProtocolError('integrity', 'complete before the final ack');
             this.phase = 'delivered';
             return 'complete';
           case 'abort':
@@ -1212,12 +1223,23 @@
         }
       }
 
-      // Which wait has timed out at `now`: 'accept' | 'ack' | 'complete' | null.
+      // Which wait has timed out at `now`: 'accept' | 'ack' | 'complete' | 'unconfirmed' | null.
+      // 'unconfirmed' is not a failure: done was acknowledged, only `complete` is missing.
       timedOut(now) {
         if (this.phase === 'offered' && now - this.since >= this.acceptTimeoutMs) return 'accept';
         if (this.phase === 'sending' && this.inFlight >= this.window && now - this.since >= this.ackStallMs) return 'ack';
-        if (this.phase === 'awaiting-complete' && now - this.since >= this.completeTimeoutMs) return 'complete';
+        if (this.phase === 'awaiting-complete' && now - this.since >= this.completeTimeoutMs) {
+          return this.doneAcked ? 'unconfirmed' : 'complete';
+        }
         return null;
+      }
+
+      // Ends a transfer whose done was acknowledged but whose `complete` never came
+      // (timeout, or the peer closed). Neutral outcome: nothing is sent to the peer.
+      endUnconfirmed() {
+        if (this.phase !== 'awaiting-complete' || !this.doneAcked) return false;
+        this.phase = 'unconfirmed';
+        return true;
       }
     }
     // ==END darkp2p-framing==
@@ -1337,7 +1359,12 @@
 
     // The transport is gone: end both directions without notifying the peer.
     function abortAllTransfersLocally() {
-      if (tx) abortTx(tx, null, `Send interrupted: ${tx.name}`);
+      if (tx && tx.window.endUnconfirmed()) {
+        log(`Sent — peer closed before final confirmation: ${tx.name}`);
+        wakeTx(tx);
+      } else if (tx) {
+        abortTx(tx, null, `Send interrupted: ${tx.name}`);
+      }
       if (rx) log(`Receive interrupted: ${rx.machine.meta.name}`, 'err');
       isTransferring = false;
       resetRxState();
@@ -1648,7 +1675,7 @@
 
     async function onIncomingDone(state, seq, ctrl) {
       const { ack } = state.machine.onDone(seq, ctrl);
-      rxReply(state, { type: 'ack', seq: ack });
+      rxReply(state, { type: 'ack', seq: ack, done: true });
       const { meta } = state.machine;
 
       let blob;
@@ -1972,11 +1999,17 @@
       const TIMEOUT_TEXT = {
         accept: 'no answer from the peer within 5 minutes',
         ack: 'the receiver stopped acknowledging chunks',
-        complete: 'the receiver did not confirm delivery within 5 minutes',
+        complete: 'the receiver did not acknowledge the end of the file within 5 minutes',
       };
       const watchdog = setInterval(() => {
         const what = win.timedOut(Date.now());
-        if (what) abortTx(state, 'timeout', `Send aborted: ${TIMEOUT_TEXT[what]}.`);
+        if (what === 'unconfirmed') {
+          win.endUnconfirmed();
+          log(`Sent — no final confirmation from the peer: ${file.name}`);
+          wakeTx(state);
+        } else if (what) {
+          abortTx(state, 'timeout', `Send aborted: ${TIMEOUT_TEXT[what]}.`);
+        }
       }, TX_WATCHDOG_MS);
 
       try {

@@ -186,7 +186,7 @@
 - **Step 5 additions:** all five are kept (user, 2026-11-21): the transferId replay set, `meta.chunks` validation, silent drop of an aborted transfer's frames, `relay-busy` clearing the hello timer, and a hello with `v !== 2` treated as outdated.
 
 #### Step 6 checklist (carried over)
-- [ ] Session binding: HKDF over the room key plus both peers' hello nonces; per-transfer keys derived from the session key. **Not in the Step 6 scope the user set; still open (see Step 6 open question 1).**
+- [ ] Session binding: HKDF over the room key plus both peers' hello nonces; per-transfer keys derived from the session key. **Moved to Step 6.5 (or the start of Step 7); see the decisions after Step 6.**
 - [x] README "Architecture" envelope size and "Wire Format" section updated together (done in Step 6).
 
 ### Step 6 — Transfer handshake, credit window, completion/abort (2026-11-21)
@@ -240,3 +240,34 @@
   2. Rule 7 says the wire format must be final at the end of Step 6. Session binding would change it again (new hello contents and key schedule).
   3. Values I chose that the spec did not give: ack-stall timeout 60 s, complete timeout 5 min, decline reasons `user | size | busy`, and the cap of 32 queued control frames.
   4. A sender that cannot reach `complete` (the receiver's download blocked, or the tab closed after saving) shows a `timeout` abort after 5 minutes, even though the file may have been saved.
+
+### Decisions after Step 6 (user, 2026-11-21)
+- **Session binding → Step 6.5 (or the start of Step 7):**
+  - Per-transfer keys become `HKDF-SHA256(roomKey, transferId ‖ initNonce ‖ respNonce, …)`.
+  - This needs a sequential hello → hello-ack handshake, so that both peers hold both nonces before deriving any transfer key.
+  - It is kept out of Step 6 so the state-machine diff stays isolated.
+- **Rule 7 amended** (`RULES.md`): the wire format changes in Steps 5, 6 and 6.5. It stabilizes once session-nonce binding lands, and must be final and consistent before deployment in Step 7. This resolves Step 6 open questions 1–2.
+- **Values kept** (Step 6 open question 3): 60 s ack stall, 5 min wait for `complete`, decline reasons `user | size | busy`, and the 32-frame control queue cap.
+- **Missing `complete` after `done` (Step 6 open question 4), implemented:**
+  - **Wire addition:** the receiver's acknowledgement of `done` is now `{type:'ack', seq:N, done:true}`. Without the flag it could not be told apart from a chunk ack: when N is a multiple of 64, an `ack {seq:N}` is also sent for the last chunk.
+  - **`TxWindow`:**
+    - `doneAcked` is set only by a `done:true` ack while awaiting completion, with `seq === chunks`, and only once. Any other `done` value is rejected.
+    - `complete` now requires `doneAcked`, not just `acked === chunks`.
+    - `timedOut()` returns `unconfirmed` instead of `complete` when `done` was acknowledged.
+    - New `endUnconfirmed()` moves to the terminal phase `unconfirmed`. No abort is sent, and `abortSeq` returns null afterwards.
+  - **App:**
+    - The watchdog's `unconfirmed` logs "Sent — no final confirmation from the peer: NAME".
+    - Transport loss after the done-ack (peer closed the tab) logs "Sent — peer closed before final confirmation: NAME".
+    - Both are neutral log lines (not `err`), and the sender is torn down cleanly.
+    - Before the done-ack, the behaviour is unchanged: "Send interrupted" on transport loss, or a `timeout` abort after 5 min ("the receiver did not acknowledge the end of the file within 5 minutes").
+  - **Tests:** 2 new protocol tests.
+    - Final-ack validation: rejected before `done`, with the wrong seq, when repeated, or with a non-boolean flag.
+    - Unconfirmed vs timeout vs mid-stream.
+    - The existing complete test now also checks that a chunk ack for N is not the final ack, and the lockstep simulation sends `done:true`.
+  - **README:** the Transfer diagram and the Completion bullet are updated.
+- **Gate re-run:** `npm run check` PASS; `npm test` 76/76 PASS.
+- **Browser check (not committed):**
+  - Receiver patched to swallow `complete`, then its tab closed: the sender logs the neutral "Sent — peer closed before final confirmation", with no `err` class and no "Delivered".
+  - Patched to swallow `complete` and the final ack: "Send interrupted" (`err`).
+  - That script passed 8 of 9 runs. The first run timed out at a step I did not capture; the 8 runs after it all passed, so the cause is unknown (most likely harness timing).
+  - The full Step 6 regression script passed 44/44 twice.

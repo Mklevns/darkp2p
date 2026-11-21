@@ -187,9 +187,20 @@ test('tx: done then complete only after the final ack', () => {
   ok.nextDataSeq(0);
   ok.doneSeq(0);
   ok.onReply(2, { type: 'ack', seq: 2 }, 0);
-  assert.equal(ok.onReply(3, { type: 'complete' }, 0), 'complete');
-  assert.equal(ok.phase, 'delivered');
-  assert.throws(() => ok.onReply(4, { type: 'complete' }, 0), /finished transfer/);
+  assert.throws(() => ok.onReply(3, { type: 'complete' }, 0), /complete before the final ack/,
+    'a chunk ack for N is not the final ack');
+
+  const fin = new TxWindow({ chunks: 2, now: 0 });
+  fin.onReply(1, { type: 'accept' }, 0);
+  fin.nextDataSeq(0);
+  fin.nextDataSeq(0);
+  fin.doneSeq(0);
+  fin.onReply(2, { type: 'ack', seq: 2 }, 0);
+  fin.onReply(3, { type: 'ack', seq: 2, done: true }, 0);
+  assert.equal(fin.doneAcked, true);
+  assert.equal(fin.onReply(4, { type: 'complete' }, 0), 'complete');
+  assert.equal(fin.phase, 'delivered');
+  assert.throws(() => fin.onReply(5, { type: 'complete' }, 0), /finished transfer/);
 });
 
 test('tx: replies must be in order and acks must be valid', () => {
@@ -339,7 +350,7 @@ test('lockstep: an honest receiver never has more than 256 chunks queued', () =>
           if (ack !== null) toTx.push({ seq: rx.nextReplySeq(), msg: { type: 'ack', seq: ack } });
         } else {
           const { ack } = rx.onDone(f.seq, { type: 'done', chunks, size });
-          toTx.push({ seq: rx.nextReplySeq(), msg: { type: 'ack', seq: ack } });
+          toTx.push({ seq: rx.nextReplySeq(), msg: { type: 'ack', seq: ack, done: true } });
           rx.complete();
           toTx.push({ seq: rx.nextReplySeq(), msg: { type: 'complete' } });
         }
@@ -353,4 +364,56 @@ test('lockstep: an honest receiver never has more than 256 chunks queued', () =>
   assert.equal(rx.phase, 'complete');
   assert.ok(maxQueued <= 256, `max queued ${maxQueued}`);
   assert.ok(maxQueued > 192, `window was exercised (max queued ${maxQueued})`);
+});
+
+test('tx: final ack (done: true) is only valid once, after done, for the last chunk', () => {
+  const ready = (chunks = 3) => {
+    const t = new TxWindow({ chunks, now: 0 });
+    t.onReply(1, { type: 'accept' }, 0);
+    for (let i = 0; i < chunks; i++) t.nextDataSeq(0);
+    return t;
+  };
+  assert.throws(() => ready().onReply(2, { type: 'ack', seq: 3, done: true }, 0), /Unexpected final ack \(sending\)/);
+  const wrongSeq = ready();
+  wrongSeq.doneSeq(0);
+  assert.throws(() => wrongSeq.onReply(2, { type: 'ack', seq: 2, done: true }, 0), /Unexpected final ack/);
+  const twice = ready();
+  twice.doneSeq(0);
+  twice.onReply(2, { type: 'ack', seq: 3, done: true }, 0);
+  assert.throws(() => twice.onReply(3, { type: 'ack', seq: 3, done: true }, 0), /Unexpected final ack/);
+  const junk = ready();
+  junk.doneSeq(0);
+  assert.throws(() => junk.onReply(2, { type: 'ack', seq: 3, done: 'yes' }, 0), /Invalid ack/);
+});
+
+test('tx: missing complete after the final ack is unconfirmed, not a timeout abort', () => {
+  const T = P.COMPLETE_TIMEOUT_MS;
+  const tx = new TxWindow({ chunks: 1, now: 0 });
+  tx.onReply(1, { type: 'accept' }, 0);
+  tx.nextDataSeq(0);
+  tx.doneSeq(10);
+  assert.equal(tx.endUnconfirmed(), false, 'done not acknowledged yet');
+  tx.onReply(2, { type: 'ack', seq: 1, done: true }, 20);
+  assert.equal(tx.timedOut(10 + T - 1), null);
+  assert.equal(tx.timedOut(10 + T), 'unconfirmed');
+  assert.equal(tx.endUnconfirmed(), true);
+  assert.equal(tx.phase, 'unconfirmed');
+  assert.equal(tx.active, false);
+  assert.equal(tx.abortSeq('timeout'), null, 'nothing is sent to the peer');
+  assert.equal(tx.timedOut(10 ** 12), null);
+  assert.equal(tx.endUnconfirmed(), false, 'only once');
+
+  // Transport lost before the final ack: still an interruption, not unconfirmed.
+  const early = new TxWindow({ chunks: 1, now: 0 });
+  early.onReply(1, { type: 'accept' }, 0);
+  early.nextDataSeq(0);
+  early.doneSeq(0);
+  assert.equal(early.endUnconfirmed(), false);
+  assert.equal(early.timedOut(T), 'complete');
+
+  // Mid-stream: never unconfirmed.
+  const mid = new TxWindow({ chunks: 5, now: 0 });
+  mid.onReply(1, { type: 'accept' }, 0);
+  mid.nextDataSeq(0);
+  assert.equal(mid.endUnconfirmed(), false);
 });

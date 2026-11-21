@@ -6,7 +6,7 @@
 4. Never log or persist IP addresses (raw or from `X-Forwarded-For`), room IDs, invoice IDs, tokens, TURN credentials, SDP/ICE payloads or file names. Use only the existing `logInfo` / `logWarn` / `logError`. When logging errors from `fetch()` or BTCPay, log only `err.name`, `err.code` or the HTTP status, never the message, URL or cause.
 5. Add no new runtime dependencies. Tests use only Node 22 built-ins (`node:test`, `node:assert`, `node:child_process`, `ws` from the existing dependency). Do not add eslint, prettier or jest.
 6. No `TODO`s or stubs on error, crypto, validation or serialization paths. Every new map, queue or counter needs an explicit cap and an eviction rule.
-7. The client wire format changes in Steps 5 and 6. It only needs to be final and consistent at the end of Step 6.
+7. The client wire format changes in Steps 5, 6 and 6.5. It stabilizes once session-nonce binding lands (Step 6.5, or the start of Step 7), and must be final and consistent before deployment in Step 7.
 8. **Start of every step:** read `RULES.md` and `PROGRESS.md`, then run `npm run check && npm test`. If either fails, STOP and report before editing anything.
 9. **End of every step:**
    - Run the step's gate.

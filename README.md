@@ -50,13 +50,15 @@ sender                                   receiver
   data 1..N     ───────────────────────►  (≤ 256 unacknowledged)
                 ◄───────────────────────  ack {seq} every 64 chunks
   done (N+1)    ───────────────────────►  verify counts and size
-                ◄───────────────────────  ack {seq: N}, then complete
+                ◄───────────────────────  ack {seq: N, done: true}, then complete
 "Delivered"
 ```
 
 * **Accept / decline:** the sender waits up to 5 minutes for an answer, then aborts with `timeout`. `decline` reasons are `user`, `size` and `busy`. A receiver without disk streaming (OPFS) declines files over 512 MB automatically (`size`), and a peer already in a transfer declines with `busy`.
 * **Credit window:** the receiver acknowledges every 64 chunks and after `done`. The sender keeps at most 256 chunks unacknowledged, in addition to the `bufferedAmount` limit. If more than 256 chunks are waiting to be processed, the receiver aborts. If the window stays full for 60 seconds with no new acknowledgement, the sender aborts with `timeout`.
-* **Completion:** the sender shows *"Sent, awaiting confirmation"* after `done`, and *"Delivered"* only once the receiver's `complete` arrives (after it has verified and saved the file). It waits up to 5 minutes for `complete`.
+* **Completion:** the sender shows *"Sent, awaiting confirmation"* after `done`, and *"Delivered"* only once the receiver's `complete` arrives (after it has verified and saved the file). The receiver's acknowledgement of `done` carries `done: true`, so it cannot be mistaken for a chunk ack.
+  * If `done` was acknowledged but `complete` never arrives (the peer closed the tab, or 5 minutes pass), the sender ends with a neutral status: *"Sent — peer closed before final confirmation"* or *"Sent — no final confirmation from the peer"*. No abort is sent.
+  * If `done` itself was never acknowledged, the transfer ends as an interruption, or as a `timeout` abort after 5 minutes.
 * **Abort:** either side can send `{type:"abort", reason}` with a reason of `user`, `integrity`, `disk` or `timeout`. Both sides then release the transfer's state, storage and UI. Late frames of an ended transfer are dropped quietly.
 
 The receiver rejects:
