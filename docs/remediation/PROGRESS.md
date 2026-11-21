@@ -186,5 +186,57 @@
 - **Step 5 additions:** all five are kept (user, 2026-11-21): the transferId replay set, `meta.chunks` validation, silent drop of an aborted transfer's frames, `relay-busy` clearing the hello timer, and a hello with `v !== 2` treated as outdated.
 
 #### Step 6 checklist (carried over)
-- [ ] Session binding: HKDF over the room key plus both peers' hello nonces; per-transfer keys derived from the session key.
-- [ ] README "Architecture" envelope size and "Wire Format" section updated together.
+- [ ] Session binding: HKDF over the room key plus both peers' hello nonces; per-transfer keys derived from the session key. **Not in the Step 6 scope the user set; still open (see Step 6 open question 1).**
+- [x] README "Architecture" envelope size and "Wire Format" section updated together (done in Step 6).
+
+### Step 6 — Transfer handshake, credit window, completion/abort (2026-11-21)
+- **Scope (user, 2026-11-21):**
+  - In scope: accept/decline, the credit window, complete/abort, and pure state machines with tests.
+  - The hello exchange stays as in Step 5, with no `hello-ack`; the two concurrent hellos act as mutual acknowledgement.
+  - Deferred to Step 7: transport resilience (surviving `peer-left`, sigQueue, signaling reconnects, split txActive/rxActive, dynamic relay caps, OPFS `showSaveFilePicker`/cleanup).
+- **Files changed:** `public/index.html`, `README.md` (Architecture "Back-Pressure & Chunking" bullet and the "Wire Format" section); new `test/protocol.test.mjs`. `server.js` is unchanged.
+- **Wire protocol:**
+  - Forward frames (sender → receiver) use one transferId: `meta` seq 0, DATA 1..N, `done` N+1, and `abort` the next seq.
+  - Replies (receiver → sender) use the same transferId under the receiver's role (AAD), numbered 1, 2, 3…: `accept`, `decline {reason: user|size|busy}`, `ack {seq}`, `complete`, `abort {reason}`.
+  - The sender requires the exact next reply number. The hello is still `v:2`.
+- **Pure logic (marked block):**
+  - `ProtocolError(reason)`.
+  - `RxStateMachine`: `parseMeta`, `autoDeclineReason`, phases offered → receiving → verifying → complete, or declined / aborted. It has `onData`, which returns an ack every 64 chunks, `onDone`, which returns the final ack, plus `onAbort`, `abort` and `nextReplySeq`.
+  - `TxWindow`: phases offered → sending → awaiting-complete → delivered, or declined / aborted. It has `canSendData` (window 256), `nextDataSeq`, `doneSeq`, `abortSeq`, `onReply` (ack must be non-decreasing and ≤ sent; `complete` needs the final ack) and `timedOut(now)` → `accept` (5 min) | `ack` (window full with no ack progress for 60 s) | `complete` (5 min).
+  - The time is passed in as a parameter, and nothing in the block uses the DOM.
+- **App:**
+  - The receiver prepares OPFS, then auto-declines (`size`) in RAM mode above 512 MB, or shows an Accept/Decline panel built with `createElement` and `textContent`.
+  - A `meta` that arrives while either direction is busy gets `decline busy`. An invalid `meta` gets `abort integrity`.
+  - Receive state and the meta validation now live in `RxStateMachine`. A disk write or close failure is reported as `abort disk`.
+  - The sender offers the file, waits for accept, sends DATA through `TxWindow` credit plus `bufferedAmount`, then `done`, then logs "Sent, awaiting confirmation" and "Delivered" only on `complete`. A 1 s watchdog applies `timedOut`.
+  - All outgoing frames go through one ordered queue (`sendQueued`), so seq order is preserved even though encryption is async.
+  - `rxQueue` is bounded: more than 256 unprocessed DATA frames (or 32 control frames) means the peer broke the window, so the frame is dropped and the receive is aborted (`integrity`) once.
+  - A "Cancel transfer" button sends `abort user` from either side.
+  - When the transport goes away, `abortAllTransfersLocally()` ends both directions without notifying the peer. It is called from `cleanupPeer`, DataChannel close, WS close, `failHandshake` and relay-limit.
+  - The single `droppedTransferHex` slot is replaced by `endedTransferIds` (capped at 16, oldest first), covering both directions. A `rejected` frame (one from an unknown transfer) no longer kills an unrelated active receive.
+- **Tests (`test/protocol.test.mjs`, 19):**
+  - Required cases: out-of-order seq (skip, duplicate, replay, 0), size overflow plus extra and empty chunks, duplicate/early/misnumbered/miscounted `done`, stalled ack window (fires only when the window is full; progress resets it; a repeated ack does not), mid-stream abort from either side (the forward abort seq matches the receiver's expected seq while offered, mid-stream and after `done`), and pre-data decline on both machines.
+  - Also: the `parseMeta` matrix, the 512 MB auto-decline, both happy paths, reply ordering and ack validation, accept and complete timeouts, and a deterministic lockstep simulation of 2000 chunks showing an honest receiver never has more than 256 chunks queued (the maximum observed was > 192, so the window is exercised).
+- **Mutation check:** each of these was applied and reverted, with the file restored byte-identical:
+  - no seq check in `onData`: out-of-order test fails;
+  - no size check: overflow test fails;
+  - `done` allowed twice: duplicate-done test fails;
+  - credit window ignored: window and lockstep tests fail;
+  - data allowed before accept: pre-data decline and abort tests fail;
+  - abort seq unchecked: abort test fails.
+- **Gate:** `npm run check` PASS. `npm test` 74/74 PASS (55 previous + 19 protocol), including the CSP-hash baseline.
+- **Extra verification (not committed):** a Playwright/Chromium script against a real server passed 44/44 checks with no page errors:
+  - direct and forced WS relay transfers of 0, 1, 16000, 16001, 1,024,000 and 10,000,000 bytes, plus one reverse transfer, all byte-identical; the sender log reads Offered → "Sent, awaiting confirmation" → "Delivered";
+  - decline reaches the sender, and both sides become ready again;
+  - a file name containing HTML is shown as text;
+  - with OPFS removed, a 600 MB file is auto-declined and the sender shows "too large for the peer's browser", while a small file still goes through;
+  - a mid-stream cancel from the sender and from the receiver on a 200 MB file: the peer logs the `user` abort, both sides become ready, there are no error-log lines, and a new transfer then succeeds;
+  - a full 200 MB direct transfer with matching SHA-256 (14.9 s);
+  - Step 5 regressions (wrong key, silent peer) still pass.
+- **Not exercised in a browser:** the receiver's credit-window overflow abort (it needs a misbehaving sender holding the room key; covered by logic and the lockstep test only), the 60 s ack-stall and 5 min accept/complete timeouts (covered by the `TxWindow` unit tests with injected time), and the `disk` abort.
+- **SKIPPED:** none.
+- **Open questions:**
+  1. Session binding (HKDF over both hello nonces), which was planned for Step 6 in the decisions after Step 5, was not in the Step 6 scope you set, so it is still open. It changes key derivation and the hello, so it should go into Step 7 or its own step. Until then, replay protection only lasts for one page load.
+  2. Rule 7 says the wire format must be final at the end of Step 6. Session binding would change it again (new hello contents and key schedule).
+  3. Values I chose that the spec did not give: ack-stall timeout 60 s, complete timeout 5 min, decline reasons `user | size | busy`, and the cap of 32 queued control frames.
+  4. A sender that cannot reach `complete` (the receiver's download blocked, or the tab closed after saving) shows a `timeout` abort after 5 minutes, even though the file may have been saved.

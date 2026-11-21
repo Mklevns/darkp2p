@@ -15,7 +15,7 @@ Live instance: [darkp2p.com](https://darkp2p.com)
   ```
   Browsers never transmit URL fragments (`#...`) over HTTP or WebSockets. Only `<roomId>` is sent to the signaling server.
 * **Low-RAM Disk Streaming:** Incoming chunks stream directly to disk via the browser's Origin Private File System (OPFS) when supported (falling back to in-memory `Blob` assembly otherwise), allowing multi-gigabyte transfers without crashing browser tabs.
-* **Back-Pressure & Chunking:** Files are sliced into `16,000`-byte chunks (leaving headroom for the 33-byte encryption envelope under the 16 KB cross-browser SCTP limit) with `bufferedAmount` flow control capped at 1 MB.
+* **Back-Pressure & Chunking:** Files are sliced into `16,000`-byte chunks (leaving headroom for the 49-byte encryption envelope under the 16 KB cross-browser SCTP limit). Flow control uses `bufferedAmount` (capped at 1 MB) plus an end-to-end credit window: at most 256 unacknowledged chunks in flight.
 * **Privacy-Preserving Rate Limiting:** Connection and message limits use a per-boot random salt to HMAC-hash client IPs in RAM—raw IP addresses are never stored or logged.
 * **Isolated Onion Listener:** Tor hidden-service traffic reaches the server on a dedicated port (`ONION_PORT`, `3001` in Docker Compose). Onion clients are identified by that listener alone, never by the `Host` or `X-Forwarded-For` headers, so they cannot pose as clearnet clients to dodge rate limits.
 
@@ -23,7 +23,7 @@ Live instance: [darkp2p.com](https://darkp2p.com)
 
 ## Wire Format (AES-256-GCM Framing)
 
-Wire format **v2**. Every control message (`hello`, `meta`, `done`) and binary file chunk is a separate frame, encrypted with Web Crypto (`AES-GCM`) and a fresh random 12-byte IV:
+Wire format **v2**. Every control message (`hello`, `meta`, `accept`, `decline`, `ack`, `done`, `complete`, `abort`) and binary file chunk is a separate frame, encrypted with Web Crypto (`AES-GCM`) and a fresh random 12-byte IV:
 
 ```text
 +---------+-----------------+--------------+----------+-----------------------------------+
@@ -32,16 +32,34 @@ Wire format **v2**. Every control message (`hello`, `meta`, `done`) and binary f
 |<---------------- 33B header ----------------------->|
 ```
 
-* `type`: `0x11` = JSON control frame (`hello` / `meta` / `done`), `0x12` = binary file chunk. The v1 types `1` and `2` are no longer accepted.
+* `type`: `0x11` = JSON control frame, `0x12` = binary file chunk. The v1 types `1` and `2` are no longer accepted.
 * `transferId`: 16 random bytes, new for every file and every `hello`.
-* `seq`: big-endian 32-bit counter within a transfer: `0` for `meta`, `1..N` for data chunks, `N+1` for `done`.
+* `seq`: big-endian 32-bit counter within a transfer, per direction (see **Transfer** below).
 * **Per-transfer key:** `HKDF-SHA256(ikm = 32-byte room key, salt = transferId, info = "darkp2p/v2/transfer")` gives an AES-GCM-256 key per transfer, so frames from one file never decrypt under another.
 * **AAD** = `"DP2" ‖ type ‖ senderRole ‖ transferId ‖ seq`. `senderRole` (`0x01` initiator, `0x02` responder, from the signaling `ready` message) is not sent on the wire. The receiver authenticates with its peer's role, so a frame reflected back to its sender fails.
 * Overhead is 49 bytes per frame: a 16,000-byte chunk becomes a 16,049-byte frame, under the 16 KB SCTP limit.
 
 **Handshake.** When a transport opens (DataChannel, or the WebSocket relay), each side sends `{type:"hello", v:2}` as a control frame (new `transferId`, `seq 0`). File selection is enabled only after the peer's hello authenticates. A hello that fails authentication shows *"Key mismatch — the link was altered"*. A v1 frame, or no hello within 5 s, shows *"Peer is running an outdated DARKP2P page — both sides reload"*. In both cases file selection stays disabled.
 
-**Transfer.** `meta` (`{type, name, size, mime, chunks: N}`, at `seq 0`), then `N` data chunks, then `done` (`seq N+1`), all under one `transferId`. The receiver rejects:
+**Transfer.** All frames of one file use one `transferId`. The sender's frames are numbered by `seq`: `meta` (`{type, name, size, mime, chunks: N}`) at `0`, data chunks `1..N`, `done` (`{type, chunks, size}`) at `N+1`, and an `abort` takes the next `seq`. The receiver's replies go under the same `transferId` and its own role, numbered `1, 2, 3, …`. The sender rejects any reply that is not the next number.
+
+```text
+sender                                   receiver
+  meta (seq 0)  ───────────────────────►  prompt: Accept / Decline
+                ◄───────────────────────  accept | decline {reason}
+  data 1..N     ───────────────────────►  (≤ 256 unacknowledged)
+                ◄───────────────────────  ack {seq} every 64 chunks
+  done (N+1)    ───────────────────────►  verify counts and size
+                ◄───────────────────────  ack {seq: N}, then complete
+"Delivered"
+```
+
+* **Accept / decline:** the sender waits up to 5 minutes for an answer, then aborts with `timeout`. `decline` reasons are `user`, `size` and `busy`. A receiver without disk streaming (OPFS) declines files over 512 MB automatically (`size`), and a peer already in a transfer declines with `busy`.
+* **Credit window:** the receiver acknowledges every 64 chunks and after `done`. The sender keeps at most 256 chunks unacknowledged, in addition to the `bufferedAmount` limit. If more than 256 chunks are waiting to be processed, the receiver aborts. If the window stays full for 60 seconds with no new acknowledgement, the sender aborts with `timeout`.
+* **Completion:** the sender shows *"Sent, awaiting confirmation"* after `done`, and *"Delivered"* only once the receiver's `complete` arrives (after it has verified and saved the file). It waits up to 5 minutes for `complete`.
+* **Abort:** either side can send `{type:"abort", reason}` with a reason of `user`, `integrity`, `disk` or `timeout`. Both sides then release the transfer's state, storage and UI. Late frames of an ended transfer are dropped quietly.
+
+The receiver rejects:
 * a data chunk or `done` from any transfer other than the active one;
 * any `seq` other than the next expected one;
 * a chunk that would take the byte count past `meta.size`;
