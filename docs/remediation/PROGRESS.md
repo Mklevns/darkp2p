@@ -481,5 +481,12 @@
   4. **`rejected429`** also counts `/api/claim` 429s, not just WS upgrades. A `full` room is not counted.
   5. **`SWEEP_MS`** is a new env var, added for testability. It also sets the stats interval, so it belongs in the Step 10 env table.
 
+### Decisions after Step 8 (user, 2026-11-21)
+- **All four Step 8 open questions are approved as implemented:**
+  1. Extra hiding: the tip jar is hidden when no address is set, and the "After payment settles…" note when there is no POS URL. The Pro modal stays openable for pasting a token.
+  2. An invalid `BTCPAY_POS_URL`, `TIP_XMR_ADDRESS` or `TIP_BTC_ADDRESS` stops the server at boot.
+  3. The tip address regexes accept mainnet only.
+  4. `rejected429` counts every 429 refusal (WS upgrades and `/api/claim`). Full-room replies are not counted.
+
 #### Step 10 checklist (added)
 - [ ] The env var table covers `BTCPAY_POS_URL`, `TIP_XMR_ADDRESS`, `TIP_BTC_ADDRESS` and `SWEEP_MS`, and documents the stats line format.
