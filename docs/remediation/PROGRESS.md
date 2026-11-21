@@ -334,3 +334,81 @@
 #### Step 10 checklist (carried over)
 - [ ] README threat model: a relay replaying a peer hello from an earlier page load can stall the handshake (DoS only; no confidentiality or integrity impact). This is an accepted limitation.
 - [ ] README documents wire format v3 throughout. Check that no v2 references remain.
+- [ ] README covers the Step 7 behaviour:
+  - `decline busy` now means "already receiving", not "any transfer";
+  - one send and one receive can run at the same time;
+  - the relay cap is per room and counts both directions, and the sender checks what is left;
+  - signaling reconnects, and a direct tunnel survives a signaling drop;
+  - the save picker with its OPFS/RAM fallback, and the 24 h OPFS temp-file cleanup.
+
+### Step 7 — Connection resilience (2026-11-21)
+- **Scope:** the deferred list from Step 6, plus mid-transfer switching. Your decisions (2026-11-21), all four the recommended options:
+  1. Transfers end cleanly and the page recovers, with no resume. Signaling reconnects automatically, and an open DataChannel survives a `peer-left`.
+  2. One send and one receive at the same time.
+  3. The relay cap comes from the server's `ready`.
+  4. The save picker when available, else OPFS, else RAM.
+- **Files changed:** `public/index.html`; new `test/resilience.test.mjs`. **`server.js` is unchanged:** its `ready` already carried `wsRelayCap` and `wsRelayRemaining`, which the client simply ignored until now. The wire format is unchanged (v3 stays final per rule 7). The README is left for Step 10 (checklist above).
+- **Pure helpers (marked block):**
+  - `reconnectDelay(attempt, rand)`: 1 s doubling to a 30 s cap, ±20 % jitter, safe on bad input.
+  - `RelayBudget {cap, remaining}`: `charge`, `fits`, and `wireBytes(size, chunk)`, which covers chunks, frame overhead, acks and control frames.
+  - `isStaleTempName(name, now)`: matches only `darkp2p-<ms>-<base36>` names older than 24 h.
+- **Signaling:**
+  - `ws` is now a reconnecting socket (`connectSignaling`). Stale sockets are ignored by identity, and the client rejoins with the same room and token.
+  - After a drop, a `full` reply is retried for 90 s, because the server notices a dead socket only within two heartbeats.
+  - Every inbound message, binary included, goes through one `sigQueue`, so an async handler (`ready` → `initPeer`, `offer` → answer) finishes before the next message is handled. Binary frames are only handed to `rxQueue` in order; they are not processed there.
+  - `ws.onclose` in relay mode ends both transfers and the session ("Send interrupted" / "Receive interrupted"). In direct mode it logs "direct tunnel still up" and leaves the tunnel alone.
+- **DataChannel survival:**
+  - When a verified DataChannel is open (`isDirectTunnelUp`), `peer-left` only logs and sets `peerAway`.
+  - A later `ready` (rejoin) keeps the tunnel, its roles and its session, and only refreshes the relay budget and Pro flag.
+  - If that DataChannel then closes while `peerAway` is set, `enterStandby()` runs (the same as `peer-left`).
+- **Separate send/receive:**
+  - `isTransferring` is removed. Sending depends only on `tx`, and receiving does not disable the drop zone.
+  - `decline busy` is sent only while already receiving.
+  - The receiver has its own panel (`#rxPanel`: label, `#rxProgress`, `#cancelRxBtn`), and `#cancelBtn` is now "Cancel send".
+  - `isChannelOpen` and `waitForBufferDrain` use `instanceof WebSocket`, so a replaced socket is never mistaken for a DataChannel.
+- **Relay budget:**
+  - Taken from `ready` (falling back to 50/500 MB defaults for an older server) and charged for every binary frame sent or received over the relay.
+  - The sender blocks a file that does not fit what the room has left (with the remaining and cap MB in the message). `relay-limit-exceeded` sets the remaining budget to 0.
+- **Saving:**
+  - With `showSaveFilePicker`, the offer says "save to a file you choose". Accept, a user gesture, opens the picker. Chunks stream to the chosen file, committed by `close()` only after verification, with no blob download.
+  - If the picker is cancelled or fails, the receiver uses OPFS, then RAM. A RAM-only receive over 512 MB is then declined with `size` at Accept time.
+  - Without a picker, OPFS is prepared at offer time as before.
+  - Storage prepared for a transfer that was torn down meanwhile is discarded (`discardStorage`).
+- **OPFS cleanup:** on load, the page iterates OPFS (at most 1000 names), removes stale `darkp2p-*` temp files and logs the count.
+- **Tests (`resilience.test.mjs`, 6):**
+  - the backoff schedule, jitter bounds and bad input;
+  - `RelayBudget` validation and charging;
+  - `wireBytes` is never below the real relay bytes of a transfer (computed from actual JSON sizes, 0 B … 499 MB, 200-character file name) and never more than 4 KB above;
+  - `fits` uses what is left, not the cap (a cap of 0 disables the relay);
+  - stale-name matching with boundary and look-alike names.
+- **Mutation check:** each was applied and reverted, with the file restored byte-identical:
+  - acks not counted in `wireBytes`: the wireBytes test fails;
+  - `fits` compared against the cap: the fits test fails;
+  - every `darkp2p-` name treated as stale: the cleanup test fails;
+  - no backoff cap: both backoff tests fail.
+- **Gate:** `npm run check` PASS; `npm test` 87/87 PASS (81 previous + 6 resilience), including the CSP-hash baseline.
+- **Extra verification (not committed):**
+  - **Step 7 Playwright/Chromium script, 20/20 PASS** with no page errors, against a real `server.js` on a fixed port:
+    - Server killed and restarted during a 200 MB direct transfer: the transfer completed with a matching SHA-256, both sides rejoined and kept the tunnel, and a reverse transfer worked afterwards.
+    - One side's signaling closed mid-transfer (30 MB): the peer logged "Peer lost its signaling connection — direct tunnel still up", the transfer completed, and the DataChannel was not torn down.
+    - Server restarted during a relay transfer: "Send interrupted" and "Receive interrupted" on both sides, signaling restored, the session renegotiated, and a new transfer worked.
+    - Concurrent 8 MB and 6 MB transfers in opposite directions: both delivered, the drop zone stayed enabled while receiving, and there were no `busy` declines.
+    - **Save picker (stubbed with an OPFS-backed handle):** the file was streamed to the chosen handle, with no blob download, and the log names the chosen file.
+    - **Picker cancelled:** the OPFS path plus a download worked.
+    - **`RELAY_CAP_FREE_MB=1`:** after a 600 KB file, a second 600 KB file was blocked client-side ("0.4 MB of this room's 1 MB left") with nothing offered to the peer, the Pro upsell was shown, and a 100 KB file still went through.
+    - **OPFS cleanup:** only the stale `darkp2p-*` file was removed; fresh and unrelated files were kept.
+  - **Step 6 regression, 45/45 PASS:**
+    - Selectors were updated for the new receive panel.
+    - The RAM-mode scenario now also removes the save picker, since a picker counts as disk streaming.
+    - New case: picker cancelled, no OPFS and a file over 512 MB is declined with `size` at Accept.
+  - **Step 6.5 regression, 13/13 PASS.**
+  - Two behaviour notes from these runs:
+    - Headless Chromium exposes `showSaveFilePicker` and rejects it with `AbortError`, so every Accept in these runs used the picker-cancel → OPFS fallback.
+    - A sender whose relay socket dies logged "Send aborted: Channel closed" before `onclose` ran. It now logs "Send interrupted: NAME" whenever the channel is closed.
+- **Not exercised:** the `full` retry needs an abrupt network loss (a clean close frees the slot at once), so it was not run in a browser.
+- **SKIPPED:** none.
+- **Open questions:**
+  1. **Newcomer while the DataChannel survives.** If a different link holder joins while the DataChannel peer's signaling is down, this side keeps its tunnel and ignores the newcomer's `ready`. If the newcomer then falls back to the relay (`ws-fallback`), this side switches to the relay and the tunnel to the original peer ends. Anyone with the link holds the key, so this is not a confidentiality issue.
+  2. **Empty file left by the save picker.** For a new file name, the picker may create an empty file, and an aborted transfer leaves it behind. It is deliberately not deleted: `handle.remove()` would also delete an existing file the user chose to overwrite (whose contents are untouched on abort).
+  3. **Data waits behind signaling.** Binary frames now wait behind any in-flight signaling handler. In practice that only happens during negotiation, but it does add latency there.
+  4. **Wrong wording on first connect.** A failed first connection logs "Signaling connection lost — reconnecting..." although nothing was ever connected.
