@@ -134,3 +134,47 @@
   1. The stalled receiver gets a graceful `close(1008)`. Because it is not reading, the close handshake cannot finish, so its queued data (at most the 512 KB high-water plus in-flight frames) is only freed when `ws` destroys the socket after its 30 s close timeout. `terminate()` would free it at once, but the receiver would then never see the 1008 code. Kept as specified.
   2. With `MAX_MSGS_PER_WINDOW = 120`, a client sending more than about 119 candidates within 10 s still hits the message limit before the 200-candidate cap.
   3. The new env settings (`HEARTBEAT_MS`, `RELAY_STALL_MS`, `MAX_RELAY_ROOMS`) are not documented in `.env.example` or `README.md` (this step was limited to `server.js` and tests).
+
+### Step 5 — Client wire format v2 (MIGRATE) (2026-11-21)
+- **Tasks:** 5 (v2 framing, per-transfer keys, role-bound AAD, hello handshake, receiver checks, README, tests).
+- **Files changed:** `public/index.html`, `README.md` ("Wire Format" section only); new `test/framing.test.mjs`. `server.js` is unchanged.
+- **Framing block** (`// ==BEGIN darkp2p-framing==` … `// ==END darkp2p-framing==`):
+  - Exports `importRoomKey`, `deriveTransferKey`, `encodeFrame({type, role, transferId, seq, payload, key})` and `decodeFrame(buf, peerRole, keyLookup)`, plus `createTransferKeyCache` (LRU, max 8, keyed by hex transferId, holding derivation promises), `FrameError` (`code`: `legacy` | `malformed` | `auth`) and the constants.
+  - It uses only `crypto.subtle`, `crypto.getRandomValues` and typed arrays. ASCII constants are built with `charCodeAt`, not `TextEncoder`.
+  - Header: `type | transferId(16) | seq(4, BE) | iv(12)`, 33 bytes, overhead 49. AAD = `"DP2" | type | senderRole | transferId | seq`.
+  - `keyLookup(transferId, {type, seq})` may reject, so the app refuses frames before running HKDF or decrypting.
+- **App:**
+  - `FRAME_CTRL`/`FRAME_DATA`, `cryptoKey`/`keyReady`, `encryptFrame`/`decryptFrame` are removed.
+  - Roles come from `ready.initiator`.
+  - The hello is sent on DataChannel `onopen` and in `activateWsFallback`. The drop zone is enabled only through `enableDropIfReady()` (hello verified, not transferring, channel open), which replaces the four direct `setDropEnabled(true…)` re-enable sites. `sendFile` also refuses unless the handshake is `ok`.
+  - An auth failure before the hello is verified shows the exact "Key mismatch" message, and a v1 type byte or the 5 s timeout shows the exact "outdated" message. Both are shown in the log and as the drop label. Both states stay until the next `ready` or `peer-left`.
+  - Receiver checks follow the spec: the transferId must match the active transfer, seq must equal expectedSeq, bytes may not exceed `meta.size`, and `done` must have the right seq and counts. `meta.size` must be a safe non-negative integer.
+- **Additions beyond the spec (please confirm):**
+  1. A `meta` or `hello` whose transferId was already seen in this page load is rejected (to stop a relay replaying a whole earlier file). The set is capped at 64, oldest evicted.
+  2. `meta.chunks` is validated: a safe integer, `size 0 ⇔ chunks 0`, otherwise `1 ≤ chunks ≤ size` and `≤ 2³²−2` so `done` fits in seq. The receiver also rejects more chunks than announced.
+  3. After a transfer is aborted, its remaining frames are dropped silently (`droppedTransferHex`) instead of logging one error per chunk.
+  4. `relay-busy` clears the hello timer, so a relay refusal is not reported as an outdated peer.
+  5. An authenticated hello with `v !== 2` is treated as "outdated".
+- **Tests (`test/framing.test.mjs`, 14):**
+  - Header is 33 bytes and overhead 49.
+  - CTRL and DATA round-trip, from both Uint8Array and ArrayBuffer input.
+  - Every one of the 264 header bit flips fails. Ciphertext and tag flips fail.
+  - Reflection: in both directions and for both types, a frame decoded by its own sender with its peer's role fails, while the honest peer decodes it.
+  - Splice, both variants: B's key with A's header, and A's frame with its transferId rewritten to B's.
+  - A different room key fails. v1 types give `legacy`. Truncated frames and unknown types give `malformed`. A rejecting `keyLookup` propagates.
+  - A 16000-byte payload gives exactly 16049 bytes. The LRU holds 8 keys and evicts the least recently used. `encodeFrame` and `importRoomKey` validate their inputs.
+- **Mutation check:** these were each applied and then reverted, with the file restored byte-identical:
+  - role removed from the AAD: the reflection test fails;
+  - transferId removed from the AAD plus a constant HKDF salt: the header-flip, splice and distinct-keys tests fail;
+  - seq removed from the AAD: the header-flip test fails.
+- **Gate 5:** `npm run check` PASS (1 inline script block OK). `npm test` 55/55 PASS (41 previous + 14 framing). This includes the baseline CSP-hash test, because the server hashes the inline script at startup.
+- **Extra verification (not committed):** a Playwright/Chromium script against a real `server.js` passed 26/26 checks with no page errors:
+  - direct DataChannel and forced WS relay, each sending 0, 1, 16000, 16001 and 250000-byte files plus one reverse transfer, with byte-identical downloads and the correct filenames;
+  - wrong key: "Key mismatch" on both sides, the drop zone disabled, and the message not overwritten by the 5 s timer;
+  - a silent raw-WS peer: "outdated" after 5028 ms;
+  - a peer sending a v1 frame: "outdated" after 508 ms.
+- **SKIPPED:** none.
+- **Open questions:**
+  1. The README "Architecture" bullet still says "the 33-byte encryption envelope". It is now 49 bytes, but that section was out of scope for this step.
+  2. Replay protection only lasts for one page load (and 64 transfers). Because the link key is long-lived, a relay could replay a file recorded in an earlier session of the same link. Fixing that needs session binding, for example mixing both peers' hello nonces into key derivation, which is a format decision for Step 6.
+  3. Before the hello is verified, a relay can inject one garbage CTRL frame to force a sticky "Key mismatch". That is a DoS the relay can already cause by dropping frames. Making the state non-sticky (accept a later valid hello) is possible if you prefer it.

@@ -530,8 +530,11 @@
   <script>
     const CHUNK_SIZE = 16000;
     const HIGH_WATER = 1048576;
-    const FRAME_CTRL = 1;
-    const FRAME_DATA = 2;
+    const HELLO_TIMEOUT_MS = 5000;
+    const TRANSFER_KEY_CACHE_MAX = 8;
+    const SEEN_TRANSFER_IDS_MAX = 64;
+    const MSG_KEY_MISMATCH = 'Key mismatch — the link was altered';
+    const MSG_PEER_OUTDATED = 'Peer is running an outdated DARKP2P page — both sides reload';
     const WS_RELAY_LIMIT_FREE = 50 * 1024 * 1024;
     const WS_RELAY_LIMIT_PRO = 500 * 1024 * 1024;
 
@@ -802,49 +805,198 @@
 
     const claimReady = autoClaimToken();
 
-    let cryptoKey = null;
-    const keyReady = crypto.subtle
-      .importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
-      .then((k) => { cryptoKey = k; });
+    // ==BEGIN darkp2p-framing==
+    // Wire format v2: type(1) | transferId(16) | seq(4, BE) | iv(12) | ciphertext||tag(16).
+    // AAD = "DP2" | type | senderRole | transferId | seq. Each transfer has its own
+    // AES-GCM-256 key: HKDF-SHA256(room key, salt = transferId, info = "darkp2p/v2/transfer").
+    // Pure Web Crypto and typed arrays only (no DOM): test/framing.test.mjs evaluates this block.
+    const FRAME_TYPE_CTRL = 0x11;
+    const FRAME_TYPE_DATA = 0x12;
+    const LEGACY_FRAME_TYPES = [1, 2];
+    const ROLE_INITIATOR = 0x01;
+    const ROLE_RESPONDER = 0x02;
+    const ROOM_KEY_LEN = 32;
+    const TRANSFER_ID_LEN = 16;
+    const FRAME_IV_LEN = 12;
+    const FRAME_TAG_LEN = 16;
+    const FRAME_HEADER_LEN = 1 + TRANSFER_ID_LEN + 4 + FRAME_IV_LEN; // 33
+    const FRAME_OVERHEAD = FRAME_HEADER_LEN + FRAME_TAG_LEN; // 49
 
-    async function encryptFrame(frameType, payloadBytes, seq) {
-      await keyReady;
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const aad = new Uint8Array(5);
-      aad[0] = frameType;
-      new DataView(aad.buffer).setUint32(1, seq, false);
-
-      const ct = await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData: aad },
-        cryptoKey,
-        payloadBytes
-      );
-
-      const out = new Uint8Array(17 + ct.byteLength);
-      out.set(aad, 0);
-      out.set(iv, 5);
-      out.set(new Uint8Array(ct), 17);
-      return out.buffer;
+    function asciiBytes(str) {
+      const out = new Uint8Array(str.length);
+      for (let i = 0; i < str.length; i++) out[i] = str.charCodeAt(i);
+      return out;
     }
 
-    async function decryptFrame(buffer) {
-      await keyReady;
-      const bytes = new Uint8Array(buffer);
-      if (bytes.byteLength < 33) throw new Error('Truncated frame');
+    const AAD_MAGIC = asciiBytes('DP2');
+    const HKDF_INFO = asciiBytes('darkp2p/v2/transfer');
 
-      const aad = bytes.subarray(0, 5);
-      const frameType = aad[0];
-      const seq = new DataView(bytes.buffer, bytes.byteOffset + 1, 4).getUint32(0, false);
-      const iv = bytes.subarray(5, 17);
-      const ct = bytes.subarray(17);
-
-      const pt = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv, additionalData: aad },
-        cryptoKey,
-        ct
-      );
-      return { frameType, seq, data: new Uint8Array(pt) };
+    class FrameError extends Error {
+      constructor(code, message) {
+        super(message);
+        this.name = 'FrameError';
+        this.code = code;
+      }
     }
+
+    function isRole(role) {
+      return role === ROLE_INITIATOR || role === ROLE_RESPONDER;
+    }
+
+    function checkTransferId(transferId) {
+      if (!(transferId instanceof Uint8Array) || transferId.length !== TRANSFER_ID_LEN) {
+        throw new FrameError('malformed', 'transferId must be 16 bytes');
+      }
+    }
+
+    function transferIdHex(transferId) {
+      let hex = '';
+      for (const b of transferId) hex += b.toString(16).padStart(2, '0');
+      return hex;
+    }
+
+    function buildAad(type, role, transferId, seq) {
+      const aad = new Uint8Array(AAD_MAGIC.length + 2 + TRANSFER_ID_LEN + 4);
+      aad.set(AAD_MAGIC, 0);
+      aad[3] = type;
+      aad[4] = role;
+      aad.set(transferId, 5);
+      new DataView(aad.buffer).setUint32(5 + TRANSFER_ID_LEN, seq, false);
+      return aad;
+    }
+
+    async function importRoomKey(keyBytes) {
+      if (!(keyBytes instanceof Uint8Array) || keyBytes.length !== ROOM_KEY_LEN) {
+        throw new FrameError('malformed', 'Room key must be 32 bytes');
+      }
+      return crypto.subtle.importKey('raw', keyBytes, 'HKDF', false, ['deriveKey']);
+    }
+
+    async function deriveTransferKey(roomKey, transferId) {
+      checkTransferId(transferId);
+      return crypto.subtle.deriveKey(
+        { name: 'HKDF', hash: 'SHA-256', salt: transferId, info: HKDF_INFO },
+        roomKey,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+      );
+    }
+
+    // LRU of derived transfer keys: at most `max` entries, least recently used evicted.
+    function createTransferKeyCache(roomKey, max) {
+      const entries = new Map(); // hex(transferId) -> Promise<CryptoKey>, oldest first
+      return function getTransferKey(transferId) {
+        checkTransferId(transferId);
+        const id = transferIdHex(transferId);
+        let pending = entries.get(id);
+        if (pending) {
+          entries.delete(id);
+          entries.set(id, pending);
+          return pending;
+        }
+        pending = deriveTransferKey(roomKey, transferId.slice());
+        pending.catch(() => { if (entries.get(id) === pending) entries.delete(id); });
+        entries.set(id, pending);
+        while (entries.size > max) entries.delete(entries.keys().next().value);
+        return pending;
+      };
+    }
+
+    async function encodeFrame({ type, role, transferId, seq, payload, key }) {
+      if (type !== FRAME_TYPE_CTRL && type !== FRAME_TYPE_DATA) {
+        throw new FrameError('malformed', 'Unknown frame type');
+      }
+      if (!isRole(role)) throw new FrameError('malformed', 'Invalid sender role');
+      checkTransferId(transferId);
+      if (!Number.isInteger(seq) || seq < 0 || seq > 0xffffffff) {
+        throw new FrameError('malformed', 'seq must be a uint32');
+      }
+      if (!(payload instanceof Uint8Array)) throw new FrameError('malformed', 'payload must be a Uint8Array');
+
+      const iv = crypto.getRandomValues(new Uint8Array(FRAME_IV_LEN));
+      const ct = new Uint8Array(await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv, additionalData: buildAad(type, role, transferId, seq), tagLength: 128 },
+        key,
+        payload
+      ));
+
+      const out = new Uint8Array(FRAME_HEADER_LEN + ct.length);
+      out[0] = type;
+      out.set(transferId, 1);
+      new DataView(out.buffer).setUint32(1 + TRANSFER_ID_LEN, seq, false);
+      out.set(iv, 5 + TRANSFER_ID_LEN);
+      out.set(ct, FRAME_HEADER_LEN);
+      return out;
+    }
+
+    // keyLookup(transferId, { type, seq }) resolves to the transfer key, or rejects
+    // to refuse the frame before decryption. peerRole is the SENDER's role.
+    async function decodeFrame(buf, peerRole, keyLookup) {
+      let bytes;
+      if (buf instanceof Uint8Array) bytes = buf;
+      else if (buf instanceof ArrayBuffer) bytes = new Uint8Array(buf);
+      else throw new FrameError('malformed', 'Frame must be binary');
+      if (bytes.length < 1) throw new FrameError('malformed', 'Empty frame');
+
+      const type = bytes[0];
+      if (LEGACY_FRAME_TYPES.includes(type)) throw new FrameError('legacy', 'Legacy (v1) frame');
+      if (type !== FRAME_TYPE_CTRL && type !== FRAME_TYPE_DATA) {
+        throw new FrameError('malformed', 'Unknown frame type');
+      }
+      if (bytes.length < FRAME_OVERHEAD) throw new FrameError('malformed', 'Truncated frame');
+      if (!isRole(peerRole)) throw new FrameError('malformed', 'Invalid peer role');
+
+      const transferId = bytes.slice(1, 1 + TRANSFER_ID_LEN);
+      const seq = new DataView(bytes.buffer, bytes.byteOffset + 1 + TRANSFER_ID_LEN, 4).getUint32(0, false);
+      const iv = bytes.slice(5 + TRANSFER_ID_LEN, FRAME_HEADER_LEN);
+      const key = await keyLookup(transferId, { type, seq });
+
+      let pt;
+      try {
+        pt = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv, additionalData: buildAad(type, peerRole, transferId, seq), tagLength: 128 },
+          key,
+          bytes.subarray(FRAME_HEADER_LEN)
+        );
+      } catch {
+        throw new FrameError('auth', 'Frame authentication failed');
+      }
+      return { type, transferId, seq, payload: new Uint8Array(pt) };
+    }
+    // ==END darkp2p-framing==
+
+    const transferKeyReady = importRoomKey(keyBytes)
+      .then((roomKey) => createTransferKeyCache(roomKey, TRANSFER_KEY_CACHE_MAX));
+
+    async function transferKey(transferId) {
+      return (await transferKeyReady)(transferId);
+    }
+
+    function sameTransferId(a, b) {
+      if (!a || !b || a.length !== b.length) return false;
+      let diff = 0;
+      for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+      return diff === 0;
+    }
+
+    // Transfer IDs already started by the peer (hello or meta), so a relay cannot
+    // replay an earlier file. Capped; the oldest ID is forgotten first.
+    const seenTransferIds = new Set();
+    function rememberTransferId(transferId) {
+      seenTransferIds.add(transferIdHex(transferId));
+      while (seenTransferIds.size > SEEN_TRANSFER_IDS_MAX) {
+        seenTransferIds.delete(seenTransferIds.values().next().value);
+      }
+    }
+
+    let myRole = null;
+    let peerRole = null;
+    // 'idle' | 'pending' | 'ok' | 'mismatch' | 'outdated'
+    let handshake = 'idle';
+    let helloTimer = null;
+    // A transfer the receiver already aborted: its remaining frames are dropped quietly.
+    let droppedTransferHex = null;
 
     let pc = null;
     let dc = null;
@@ -897,6 +1049,79 @@
       return ch === ws ? ch.readyState === WebSocket.OPEN : ch.readyState === 'open';
     }
 
+    // File selection is only offered once the peer's hello has authenticated.
+    function enableDropIfReady() {
+      if (handshake === 'ok' && !isTransferring && isChannelOpen(getActiveChannel())) {
+        setDropEnabled(true, readyDropLabel());
+      }
+    }
+
+    function resetHandshake() {
+      clearTimeout(helloTimer);
+      helloTimer = null;
+      handshake = 'idle';
+      droppedTransferHex = null;
+    }
+
+    function failHandshake(kind) {
+      clearTimeout(helloTimer);
+      helloTimer = null;
+      if (handshake === kind) return;
+      handshake = kind;
+      const msg = kind === 'mismatch' ? MSG_KEY_MISMATCH : MSG_PEER_OUTDATED;
+      isTransferring = false;
+      resetRxState();
+      log(msg, 'err');
+      setDropEnabled(false, msg);
+    }
+
+    async function sendHello(channel) {
+      try {
+        const transferId = crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN));
+        const frame = await encodeFrame({
+          type: FRAME_TYPE_CTRL,
+          role: myRole,
+          transferId,
+          seq: 0,
+          payload: encoder.encode(JSON.stringify({ type: 'hello', v: 2 })),
+          key: await transferKey(transferId),
+        });
+        if (isChannelOpen(channel)) channel.send(frame.buffer);
+      } catch (err) {
+        log(`Hello failed: ${err.message}`, 'err');
+      }
+    }
+
+    // Called whenever a transport opens (DataChannel or WS relay).
+    function startHandshake(channel) {
+      sendHello(channel);
+      if (handshake === 'mismatch' || handshake === 'outdated') return;
+      if (handshake === 'ok') {
+        enableDropIfReady();
+        return;
+      }
+      handshake = 'pending';
+      setDropEnabled(false, 'VERIFYING PEER KEY...');
+      clearTimeout(helloTimer);
+      helloTimer = setTimeout(() => {
+        helloTimer = null;
+        if (handshake === 'pending' && isChannelOpen(getActiveChannel())) failHandshake('outdated');
+      }, HELLO_TIMEOUT_MS);
+    }
+
+    function acceptHello(ctrl) {
+      if (ctrl.v !== 2) {
+        failHandshake('outdated');
+        return;
+      }
+      if (handshake === 'ok') return;
+      clearTimeout(helloTimer);
+      helloTimer = null;
+      handshake = 'ok';
+      log('Peer key verified (wire format v2).', 'ok');
+      enableDropIfReady();
+    }
+
     function activateWsFallback(notifyPeer = false) {
       if (transportMode === 'ws') return;
       cleanupPeer();
@@ -905,7 +1130,7 @@
         ws.send(JSON.stringify({ type: 'ws-fallback' }));
       }
       log('E2E-encrypted WebSocket relay active (IP masked from peer).', 'ok');
-      setDropEnabled(true, readyDropLabel());
+      startHandshake(ws);
       updateStatusBadges('active');
     }
 
@@ -955,11 +1180,20 @@
       });
     }
 
-    async function startRxFile(meta) {
+    async function startRxFile(transferId, meta) {
       await resetRxState();
+      const { size, chunks } = meta;
+      const validSize = Number.isSafeInteger(size) && size >= 0;
+      if (!validSize || !Number.isSafeInteger(chunks) || chunks < 0 || chunks > 0xfffffffe ||
+          (size === 0 ? chunks !== 0 : chunks < 1 || chunks > size)) {
+        droppedTransferHex = transferIdHex(transferId);
+        throw new Error(validSize ? 'Invalid chunk count in metadata' : 'Invalid file size in metadata');
+      }
       const safeName = String(meta.name || 'download.bin').replace(/[\\/]/g, '_');
+      const mime = typeof meta.mime === 'string' && meta.mime ? meta.mime : 'application/octet-stream';
       const state = {
-        meta: { name: safeName, size: Number(meta.size) || 0, mime: meta.mime || 'application/octet-stream' },
+        transferId,
+        meta: { name: safeName, size, mime, chunks },
         expectedSeq: 1,
         bytes: 0,
         chunks: 0,
@@ -992,13 +1226,17 @@
       log(`Receiving: ${safeName} (${(state.meta.size / 1048576).toFixed(2)} MB, ${mode})`);
     }
 
-    async function finishRxFile(ctrl) {
+    async function finishRxFile(seq, ctrl) {
       if (!rx) return;
       const state = rx;
       rx = null;
 
       try {
-        if (state.bytes !== state.meta.size || state.chunks !== ctrl.chunks) {
+        if (seq !== state.expectedSeq) {
+          throw new Error(`Out-of-order done (expected ${state.expectedSeq}, got ${seq})`);
+        }
+        if (state.bytes !== state.meta.size || ctrl.size !== state.meta.size ||
+            state.chunks !== ctrl.chunks || state.chunks !== state.meta.chunks) {
           throw new Error(`Integrity mismatch (got ${state.bytes}/${state.meta.size} bytes)`);
         }
 
@@ -1033,53 +1271,108 @@
         log(`Receive failed: ${err.message}`, 'err');
       } finally {
         isTransferring = false;
-        if (isChannelOpen(getActiveChannel())) {
-          setDropEnabled(true, readyDropLabel());
-        }
+        enableDropIfReady();
       }
     }
 
-    async function handleIncomingFrame(buffer) {
-      const { frameType, seq, data } = await decryptFrame(buffer);
+    // Refuses frames before decryption: DATA and done only for the active
+    // transfer, and a new transfer (seq 0) only with an unseen transferId.
+    function lookupRxKey(transferId, { type, seq }) {
+      const active = rx && sameTransferId(transferId, rx.transferId);
+      if (!active && droppedTransferHex === transferIdHex(transferId)) {
+        throw new FrameError('dropped', 'Frame of an aborted transfer');
+      }
+      if (type === FRAME_TYPE_DATA || seq !== 0) {
+        if (!active || handshake !== 'ok') throw new FrameError('rejected', 'Frame from an unknown transfer');
+      } else if (seenTransferIds.has(transferIdHex(transferId))) {
+        throw new FrameError('rejected', 'Replayed transfer');
+      }
+      return transferKey(transferId);
+    }
 
-      if (frameType === FRAME_CTRL) {
-        const ctrl = JSON.parse(decoder.decode(data));
-        if (ctrl.type === 'meta') {
-          await startRxFile(ctrl);
-        } else if (ctrl.type === 'done') {
-          await finishRxFile(ctrl);
+    async function handleIncomingFrame(buffer) {
+      if (peerRole === null || handshake === 'mismatch' || handshake === 'outdated') return;
+
+      let frame;
+      try {
+        frame = await decodeFrame(buffer, peerRole, lookupRxKey);
+      } catch (err) {
+        if (err.code === 'legacy') {
+          failHandshake('outdated');
+          return;
         }
+        // Before the hello is verified only seq-0 CTRL frames reach decryption.
+        if (err.code === 'auth' && handshake !== 'ok') {
+          failHandshake('mismatch');
+          return;
+        }
+        throw err;
+      }
+
+      if (frame.type === FRAME_TYPE_CTRL) {
+        let ctrl;
+        try {
+          ctrl = JSON.parse(decoder.decode(frame.payload));
+        } catch {
+          throw new Error('Malformed control frame');
+        }
+        if (!ctrl || typeof ctrl !== 'object') throw new Error('Malformed control frame');
+
+        if (frame.seq === 0) {
+          rememberTransferId(frame.transferId);
+          if (ctrl.type === 'hello') {
+            acceptHello(ctrl);
+            return;
+          }
+          if (handshake !== 'ok') throw new Error('Control frame before peer hello');
+          if (ctrl.type === 'meta') {
+            await startRxFile(frame.transferId, ctrl);
+            return;
+          }
+          throw new Error('Unexpected control frame');
+        }
+
+        if (!rx || !sameTransferId(frame.transferId, rx.transferId)) {
+          throw new Error('Control frame from an unknown transfer');
+        }
+        if (ctrl.type !== 'done') throw new Error('Unexpected control frame');
+        await finishRxFile(frame.seq, ctrl);
         return;
       }
 
-      if (frameType === FRAME_DATA && rx) {
-        if (seq !== rx.expectedSeq) {
-          throw new Error(`Out-of-order chunk (expected ${rx.expectedSeq}, got ${seq})`);
-        }
-        rx.expectedSeq++;
-        rx.chunks++;
-        rx.bytes += data.byteLength;
-
-        if (rx.writable) {
-          await rx.writable.write(data);
-        } else {
-          rx.buffers.push(data);
-        }
-
-        progressEl.value = rx.meta.size > 0 ? (rx.bytes / rx.meta.size) * 100 : 100;
+      // DATA
+      const data = frame.payload;
+      if (!rx || !sameTransferId(frame.transferId, rx.transferId)) {
+        throw new Error('Chunk from an unknown transfer');
       }
+      if (frame.seq !== rx.expectedSeq) {
+        throw new Error(`Out-of-order chunk (expected ${rx.expectedSeq}, got ${frame.seq})`);
+      }
+      if (rx.chunks >= rx.meta.chunks) throw new Error('More chunks than announced');
+      if (rx.bytes + data.byteLength > rx.meta.size) throw new Error('Chunk exceeds announced file size');
+      rx.expectedSeq++;
+      rx.chunks++;
+      rx.bytes += data.byteLength;
+
+      if (rx.writable) {
+        await rx.writable.write(data);
+      } else {
+        rx.buffers.push(data);
+      }
+
+      progressEl.value = rx.meta.size > 0 ? (rx.bytes / rx.meta.size) * 100 : 100;
     }
 
     function enqueueIncomingBinary(buffer) {
       rxQueue = rxQueue
         .then(() => handleIncomingFrame(buffer))
         .catch((err) => {
+          if (err.code === 'dropped') return;
           log(`Decrypt/receive error: ${err.message}`, 'err');
+          if (rx) droppedTransferHex = transferIdHex(rx.transferId);
           isTransferring = false;
           resetRxState();
-          if (isChannelOpen(getActiveChannel())) {
-            setDropEnabled(true, readyDropLabel());
-          }
+          enableDropIfReady();
         });
     }
 
@@ -1091,7 +1384,7 @@
         clearTimeout(iceTimer);
         iceTimer = null;
         log('E2E encrypted P2P tunnel established.', 'ok');
-        setDropEnabled(true, readyDropLabel());
+        startHandshake(channel);
         updateStatusBadges('active');
       };
 
@@ -1180,11 +1473,11 @@
 
     async function sendFile(file) {
       const ch = getActiveChannel();
-      if (!isChannelOpen(ch) || isTransferring) return;
+      if (!isChannelOpen(ch) || isTransferring || handshake !== 'ok') return;
+      const chunkCount = Math.ceil(file.size / CHUNK_SIZE);
 
       if (transportMode === 'ws') {
-        const chunkCount = Math.ceil(file.size / CHUNK_SIZE);
-        const estimatedWireBytes = file.size + chunkCount * 33 + 512;
+        const estimatedWireBytes = file.size + chunkCount * FRAME_OVERHEAD + 512;
         const cap = relayEnabled ? WS_RELAY_LIMIT_PRO : WS_RELAY_LIMIT_FREE;
 
         if (estimatedWireBytes > cap) {
@@ -1206,10 +1499,15 @@
 
       try {
         log(`Sending: ${file.name} (${(file.size / 1048576).toFixed(2)} MB)`);
-        const metaBytes = encoder.encode(
-          JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime: file.type })
-        );
-        ch.send(await encryptFrame(FRAME_CTRL, metaBytes, 0));
+        const transferId = crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN));
+        const key = await transferKey(transferId);
+        const frameOf = async (type, seq, payload) =>
+          (await encodeFrame({ type, role: myRole, transferId, seq, payload, key })).buffer;
+        const ctrlFrame = (seq, obj) => frameOf(FRAME_TYPE_CTRL, seq, encoder.encode(JSON.stringify(obj)));
+
+        ch.send(await ctrlFrame(0, {
+          type: 'meta', name: file.name, size: file.size, mime: file.type, chunks: chunkCount,
+        }));
 
         let offset = 0;
         let seq = 1;
@@ -1221,7 +1519,7 @@
 
           const slice = file.slice(offset, offset + CHUNK_SIZE);
           const buf = await slice.arrayBuffer();
-          const frame = await encryptFrame(FRAME_DATA, new Uint8Array(buf), seq++);
+          const frame = await frameOf(FRAME_TYPE_DATA, seq++, new Uint8Array(buf));
 
           if (!isChannelOpen(ch)) throw new Error('Peer disconnected');
           ch.send(frame);
@@ -1232,8 +1530,7 @@
         }
 
         await waitForBufferDrain(ch);
-        const doneBytes = encoder.encode(JSON.stringify({ type: 'done', chunks, size: file.size }));
-        ch.send(await encryptFrame(FRAME_CTRL, doneBytes, seq));
+        ch.send(await ctrlFrame(seq, { type: 'done', chunks, size: file.size }));
 
         progressEl.value = 100;
         log(`Sent: ${file.name}`, 'ok');
@@ -1241,9 +1538,7 @@
         log(`Send aborted: ${err.message}`, 'err');
       } finally {
         isTransferring = false;
-        if (isChannelOpen(getActiveChannel())) {
-          setDropEnabled(true, readyDropLabel());
-        }
+        enableDropIfReady();
       }
     }
 
@@ -1302,10 +1597,13 @@
           log('WS relay cap reached (50 MB free / 500 MB Pro). Use direct P2P or a Pro token.', 'err');
           isTransferring = false;
           resetRxState();
-          if (isChannelOpen(getActiveChannel())) {
-            setDropEnabled(true, readyDropLabel());
-          }
+          enableDropIfReady();
         } else {
+          // A relay that will not carry our hello is not an outdated peer.
+          if (msg.reason === 'relay-busy') {
+            clearTimeout(helloTimer);
+            helloTimer = null;
+          }
           log(`Signaling error: ${msg.reason}`, 'err');
         }
         return;
@@ -1316,12 +1614,17 @@
         transportMode = 'webrtc';
         relayEnabled = false;
         cleanupPeer();
+        resetHandshake();
+        myRole = peerRole = null;
         setDropEnabled(false, 'PEER DISCONNECTED — WAITING...');
         updateStatusBadges('standby');
         return;
       }
 
       if (msg.type === 'ready') {
+        resetHandshake();
+        myRole = msg.initiator ? ROLE_INITIATOR : ROLE_RESPONDER;
+        peerRole = msg.initiator ? ROLE_RESPONDER : ROLE_INITIATOR;
         relayEnabled = Boolean(msg.relayEnabled);
         if (Array.isArray(msg.iceServers) && msg.iceServers.length) {
           iceConfig = { iceServers: msg.iceServers };

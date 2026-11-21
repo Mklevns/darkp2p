@@ -23,18 +23,30 @@ Live instance: [darkp2p.com](https://darkp2p.com)
 
 ## Wire Format (AES-256-GCM Framing)
 
-Every control message (`meta`, `done`) and binary file chunk is encrypted independently using Web Crypto (`AES-GCM`) with a fresh 12-byte random IV:
+Wire format **v2**. Every control message (`hello`, `meta`, `done`) and binary file chunk is a separate frame, encrypted with Web Crypto (`AES-GCM`) and a fresh random 12-byte IV:
 
 ```text
-+---------------+------------------+------------+-----------------------------------+
-| 1B frameType  | 4B uint32 seq    | 12B IV     | AES-256-GCM ciphertext + 16B tag  |
-+---------------+------------------+------------+-----------------------------------+
-|<--- 5B AAD (authenticated) ----->|
++---------+-----------------+--------------+----------+-----------------------------------+
+| 1B type | 16B transferId  | 4B seq (BE)  | 12B IV   | AES-256-GCM ciphertext + 16B tag  |
++---------+-----------------+--------------+----------+-----------------------------------+
+|<---------------- 33B header ----------------------->|
 ```
 
-* `frameType`: `1` = JSON control frame (`meta` / `done`), `2` = binary file chunk.
-* `seq`: Big-endian 32-bit sequence counter (`0` for `meta`, `1..N` for data chunks, `N+1` for `done`).
-* Binding `[frameType || seq]` as Additional Authenticated Data (AAD) prevents chunk reordering, injection, or truncation. The receiver verifies both total byte count and chunk count before saving.
+* `type`: `0x11` = JSON control frame (`hello` / `meta` / `done`), `0x12` = binary file chunk. The v1 types `1` and `2` are no longer accepted.
+* `transferId`: 16 random bytes, new for every file and every `hello`.
+* `seq`: big-endian 32-bit counter within a transfer: `0` for `meta`, `1..N` for data chunks, `N+1` for `done`.
+* **Per-transfer key:** `HKDF-SHA256(ikm = 32-byte room key, salt = transferId, info = "darkp2p/v2/transfer")` gives an AES-GCM-256 key per transfer, so frames from one file never decrypt under another.
+* **AAD** = `"DP2" ‖ type ‖ senderRole ‖ transferId ‖ seq`. `senderRole` (`0x01` initiator, `0x02` responder, from the signaling `ready` message) is not sent on the wire. The receiver authenticates with its peer's role, so a frame reflected back to its sender fails.
+* Overhead is 49 bytes per frame: a 16,000-byte chunk becomes a 16,049-byte frame, under the 16 KB SCTP limit.
+
+**Handshake.** When a transport opens (DataChannel, or the WebSocket relay), each side sends `{type:"hello", v:2}` as a control frame (new `transferId`, `seq 0`). File selection is enabled only after the peer's hello authenticates. A hello that fails authentication shows *"Key mismatch — the link was altered"*. A v1 frame, or no hello within 5 s, shows *"Peer is running an outdated DARKP2P page — both sides reload"*. In both cases file selection stays disabled.
+
+**Transfer.** `meta` (`{type, name, size, mime, chunks: N}`, at `seq 0`), then `N` data chunks, then `done` (`seq N+1`), all under one `transferId`. The receiver rejects:
+* a data chunk or `done` from any transfer other than the active one;
+* any `seq` other than the next expected one;
+* a chunk that would take the byte count past `meta.size`;
+* a `done` whose chunk or byte counts differ from what was announced and received;
+* a `meta` reusing a `transferId` already seen in this page session, so a whole earlier file cannot be replayed.
 
 ---
 
