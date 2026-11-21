@@ -14,7 +14,7 @@ www.{$DOMAIN} {
 {$DOMAIN} {
     header -Server
     encode zstd gzip
-    request_body /webhook/btcpay {
+    request_body /webhook/nowpayments {
         max_size 64KB
     }
     reverse_proxy darkp2p:3000 {

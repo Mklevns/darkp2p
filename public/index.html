@@ -383,6 +383,10 @@
     }
     .tier-cta {
       display: block;
+      width: 100%;
+      background: none;
+      font: inherit;
+      cursor: pointer;
       text-align: center;
       border: 1px solid var(--accent);
       color: var(--accent);
@@ -391,7 +395,8 @@
       font-size: 0.72rem;
       text-transform: uppercase;
     }
-    .tier-cta:hover { background: var(--accent); color: #000; }
+    .tier-cta:hover:not(:disabled) { background: var(--accent); color: #000; }
+    .tier-cta:disabled { opacity: 0.5; cursor: wait; }
     .tier-cta[hidden], .tip-jar[hidden], .tip-btn[hidden], .modal-note[hidden] { display: none; }
     .modal-note {
       font-size: 0.68rem;
@@ -514,9 +519,9 @@
                 <li>• One-off dead drops</li>
               </ul>
             </div>
-            <a class="tier-cta" data-item-code="pro-1d" target="_blank" rel="noopener noreferrer" hidden>
+            <button type="button" class="tier-cta" data-tier="pro-1d" hidden>
               Pay BTC / XMR
-            </a>
+            </button>
           </div>
 
           <div class="tier-card featured">
@@ -529,14 +534,14 @@
                 <li>• Best for frequent use</li>
               </ul>
             </div>
-            <a class="tier-cta" data-item-code="pro-30d" target="_blank" rel="noopener noreferrer" hidden>
+            <button type="button" class="tier-cta" data-tier="pro-30d" hidden>
               Pay BTC / XMR
-            </a>
+            </button>
           </div>
         </div>
 
         <div class="modal-note" hidden>
-          After payment settles on BTCPay Server, you will be redirected back here and your Pro token will auto-claim and save locally.
+          Checkout runs on NOWPayments. Once the payment is finished you are redirected back here, and your Pro token is claimed and saved locally.
         </div>
       </div>
     </div>
@@ -729,18 +734,33 @@
     const CLAIM_MAX_DELAY_MS = 30_000;
     const CLAIM_MAX_RETRY_AFTER_MS = 10 * 60 * 1000;
     const CLAIM_JOIN_WAIT_MS = 5000;
-    const INVOICE_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+    // NOWPayments payment and invoice IDs are decimal integers.
+    const NP_ID_RE = /^[1-9][0-9]{0,19}$/;
     let joinSent = false;
 
+    // A pending claim is {paymentId, startedAt} or {invoiceId, startedAt}.
+    // Only a payment ID survives a server restart before the token is fetched.
     function readPendingClaim() {
       try {
         const c = JSON.parse(localStorage.getItem(PENDING_CLAIM_KEY) || 'null');
-        if (c && typeof c.invoiceId === 'string' && INVOICE_ID_RE.test(c.invoiceId) &&
-            Number.isFinite(c.startedAt)) {
-          return { invoiceId: c.invoiceId, startedAt: c.startedAt };
+        if (c && Number.isFinite(c.startedAt)) {
+          if (typeof c.paymentId === 'string' && NP_ID_RE.test(c.paymentId)) {
+            return { paymentId: c.paymentId, startedAt: c.startedAt };
+          }
+          if (typeof c.invoiceId === 'string' && NP_ID_RE.test(c.invoiceId)) {
+            return { invoiceId: c.invoiceId, startedAt: c.startedAt };
+          }
         }
+        // Anything else (an older-format claim) can no longer be claimed.
+        if (c !== null) clearPendingClaim();
       } catch {}
       return null;
+    }
+
+    function claimQuery(claim) {
+      return claim.paymentId
+        ? `paymentId=${encodeURIComponent(claim.paymentId)}`
+        : `invoiceId=${encodeURIComponent(claim.invoiceId)}`;
     }
 
     function writePendingClaim(claim) {
@@ -753,9 +773,9 @@
 
     // One claim request. Resolves to { token } on success, otherwise to
     // { retryAfterMs } (null when the server gave no Retry-After).
-    async function claimOnce(invoiceId) {
+    async function claimOnce(claim) {
       try {
-        const res = await fetch(`/api/claim?invoiceId=${encodeURIComponent(invoiceId)}`, {
+        const res = await fetch(`/api/claim?${claimQuery(claim)}`, {
           cache: 'no-store',
         });
         if (res.ok) {
@@ -782,11 +802,11 @@
       for (let first = true; ; first = false) {
         if (Date.now() - claim.startedAt > CLAIM_MAX_AGE_MS) {
           clearPendingClaim();
-          log('Pro token claim expired (48 h). Contact support with your invoice if you paid.', 'err');
+          log('Pro token claim expired (48 h). Contact support with your payment ID if you paid.', 'err');
           return;
         }
 
-        const result = await claimOnce(claim.invoiceId);
+        const result = await claimOnce(claim);
         if (first) onFirstAttempt();
 
         if (result.token) {
@@ -809,15 +829,22 @@
 
     // Returns a promise that settles after the first claim attempt (or at once
     // if there is nothing to claim). Polling continues in the background.
+    // NOWPayments returns the buyer to success_url with ?NP_id=<payment id>;
+    // ?invoiceId= is accepted as well.
     function autoClaimToken() {
-      const invoiceId = new URLSearchParams(location.search).get('invoiceId');
-      if (invoiceId && INVOICE_ID_RE.test(invoiceId)) {
+      const params = new URLSearchParams(location.search);
+      const paymentId = params.get('NP_id');
+      const invoiceId = params.get('invoiceId');
+      const fresh = paymentId && NP_ID_RE.test(paymentId)
+        ? { paymentId }
+        : invoiceId && NP_ID_RE.test(invoiceId) ? { invoiceId } : null;
+      if (fresh) {
         const existing = readPendingClaim();
-        if (!existing || existing.invoiceId !== invoiceId) {
-          writePendingClaim({ invoiceId, startedAt: Date.now() });
-        }
+        const same = existing &&
+          existing.paymentId === fresh.paymentId && existing.invoiceId === fresh.invoiceId;
+        if (!same) writePendingClaim({ ...fresh, startedAt: Date.now() });
       }
-      if (invoiceId !== null) {
+      if (paymentId !== null || invoiceId !== null) {
         const cleanUrl = `${location.pathname}${location.hash}`;
         history.replaceState(null, '', cleanUrl);
         shareUrlEl.value = location.href;
@@ -2582,8 +2609,8 @@
       if (!fileInput.disabled && e.dataTransfer.files[0]) sendFile(e.dataTransfer.files[0]);
     };
 
-    // Payment details injected by the server at boot (BTCPAY_POS_URL,
-    // TIP_XMR_ADDRESS, TIP_BTC_ADDRESS). Anything unset stays hidden.
+    // Payment details injected by the server at boot (checkout on/off and
+    // prices, TIP_XMR_ADDRESS, TIP_BTC_ADDRESS). Anything unset stays hidden.
     function readPageConfig() {
       try {
         const cfg = JSON.parse(document.getElementById('darkp2p-config')?.textContent || '{}');
@@ -2603,11 +2630,45 @@
     }
 
     const pageConfig = readPageConfig();
-    const btcpayPosUrl = httpsUrl(pageConfig.btcpayPosUrl);
-    if (btcpayPosUrl) {
-      document.querySelectorAll('.tier-cta').forEach((a) => {
-        a.href = `${btcpayPosUrl}?itemCode=${encodeURIComponent(a.dataset.itemCode)}`;
-        a.hidden = false;
+
+    // Checkout: the server creates a NOWPayments invoice for the tier and
+    // returns its URL; this tab then navigates there (an open transfer ends).
+    async function startCheckout(tier, buttons) {
+      buttons.forEach((b) => { b.disabled = true; });
+      try {
+        const res = await fetch('/api/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tier }),
+          cache: 'no-store',
+        });
+        const data = res.ok ? await res.json() : null;
+        const invoiceUrl = httpsUrl(data && data.invoiceUrl);
+        if (invoiceUrl) {
+          log('Redirecting to NOWPayments checkout...', 'ok');
+          location.assign(invoiceUrl);
+          return;
+        }
+        log(res.status === 429
+          ? 'Too many checkout attempts — wait a minute and try again.'
+          : 'Checkout is unavailable right now — try again later.', 'err');
+      } catch {
+        log('Checkout is unavailable right now — try again later.', 'err');
+      }
+      buttons.forEach((b) => { b.disabled = false; });
+    }
+
+    if (pageConfig.checkoutEnabled === true) {
+      const buttons = [...document.querySelectorAll('.tier-cta')];
+      const prices = pageConfig.priceUsd && typeof pageConfig.priceUsd === 'object' ? pageConfig.priceUsd : {};
+      buttons.forEach((btn) => {
+        const price = prices[btn.dataset.tier];
+        const priceEl = btn.closest('.tier-card')?.querySelector('.tier-price');
+        if (priceEl && typeof price === 'number' && price > 0) {
+          priceEl.textContent = `$${Number.isInteger(price) ? price : price.toFixed(2)}`;
+        }
+        btn.onclick = () => startCheckout(btn.dataset.tier, buttons);
+        btn.hidden = false;
       });
       document.querySelector('.modal-note').hidden = false;
     }

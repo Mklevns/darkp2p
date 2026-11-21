@@ -11,7 +11,8 @@ import {
   startServer,
   STATS_LINE_RE,
   TEST_PRO_TOKEN_SECRET,
-  TEST_BTCPAY_WEBHOOK_SECRET,
+  finishedIpn,
+  postIpn,
 } from './helpers/server.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -209,47 +210,35 @@ test('a valid Pro token makes turnEnabled follow TURN_* env', async () => {
   for (const s of secrets) assert.ok(!noTurn.logs.all.includes(s), 'secret leaked into logs');
 });
 
-function signedWebhook(body, secret = TEST_BTCPAY_WEBHOOK_SECRET) {
-  const raw = JSON.stringify(body);
-  const sig = 'sha256=' + createHmac('sha256', secret).update(raw).digest('hex');
-  return fetch(`${base()}/webhook/btcpay`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'BTCPay-Sig': sig },
-    body: raw,
-  });
-}
-
-test('webhook with a bad signature gets 401', async () => {
-  const invoiceId = remember(`inv${randomBytes(8).toString('hex')}`);
-  const res = await signedWebhook(
-    { type: 'InvoiceSettled', invoiceId, metadata: { itemCode: 'pro-1d' } },
-    'not-the-webhook-secret'
-  );
+test('IPN with a bad signature gets 401', async () => {
+  const ipn = finishedIpn();
+  remember(String(ipn.payment_id), String(ipn.invoice_id), ipn.order_id);
+  const res = await postIpn(srv.port, ipn, { secret: 'not-the-ipn-secret' });
   assert.equal(res.status, 401);
   await res.arrayBuffer();
 });
 
-test('settled pro-1d invoice can be claimed for a ~1 day token', async () => {
-  const invoiceId = remember(`inv${randomBytes(8).toString('hex')}`);
-  const res = await signedWebhook({ type: 'InvoiceSettled', invoiceId, metadata: { itemCode: 'pro-1d' } });
+test('finished pro-1d IPN can be claimed for a 1-day token anchored at created_at', async () => {
+  const createdS = Math.floor(Date.now() / 1000) - 600;
+  const ipn = finishedIpn({ created_at: new Date(createdS * 1000).toISOString() });
+  remember(String(ipn.payment_id), String(ipn.invoice_id), ipn.order_id);
+  const res = await postIpn(srv.port, ipn);
   assert.equal(res.status, 200);
-  await res.arrayBuffer();
+  assert.deepEqual(await res.json(), { ok: true });
 
-  const claim = await fetch(`${base()}/api/claim?invoiceId=${encodeURIComponent(invoiceId)}`);
+  const claim = await fetch(`${base()}/api/claim?paymentId=${ipn.payment_id}`);
   assert.equal(claim.status, 200);
   const body = await claim.json();
   assert.equal(body.ready, true);
   assert.equal(typeof body.token, 'string');
   remember(body.token, body.token.split('.')[1]);
 
-  const exp = Number(body.token.split('.')[0]);
-  const expected = Math.floor(Date.now() / 1000) + 86400;
-  assert.ok(Math.abs(exp - expected) <= 10, `exp ${exp} not within 10s of ${expected}`);
+  const exp = createdS + 86400 + 6 * 3600;
   const sig = createHmac('sha256', TEST_PRO_TOKEN_SECRET).update(String(exp)).digest('hex');
   assert.equal(body.token, `${exp}.${sig}`);
 });
 
-test('log hygiene: no addresses, room IDs, invoice IDs or tokens in logs', async () => {
+test('log hygiene: no addresses, room IDs, payment/invoice/order IDs or tokens in logs', async () => {
   // Let any in-flight close/cleanup logging flush, and at least one stats
   // line be written after all the baseline traffic.
   const statsLines = () => srv.logs.stdout.split('\n').filter((l) => l.includes(' stats '));
