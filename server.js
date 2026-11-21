@@ -67,6 +67,9 @@ const ONION_V3_RE = /^[a-z2-7]{56}\.onion$/;
 const PORT = envInt('PORT', 3000, 1, 65535);
 const DOMAIN = (envStr('DOMAIN') || 'darkp2p.com').toLowerCase();
 const ONION_HOST = envStr('ONION_HOST').toLowerCase();
+// Dedicated listener for Tor hidden-service traffic. Anything arriving on it
+// is onion traffic, whatever its Host header says. 0 disables it.
+const ONION_PORT = envInt('ONION_PORT', 0, 0, 65535);
 const TURN_HOST = envStr('TURN_HOST').toLowerCase();
 const TURN_SECRET = envStr('TURN_SECRET');
 const TURN_TTL = envInt('TURN_TTL', 3600, 60, 86400);
@@ -91,16 +94,27 @@ const CONN_WINDOW_MS = 60_000;
 const MAX_CONNS_PER_WINDOW = 20;
 const MAX_ONION_CONNS_PER_WINDOW = 120;
 const MSG_WINDOW_MS = 10_000;
-const MAX_MSGS_PER_WINDOW = 40; // JSON control messages only
+const MAX_MSGS_PER_WINDOW = 120; // JSON control messages only
+const MAX_CANDIDATES_PER_PEER = 200; // ICE candidates per socket, per peer pairing
 const CLAIM_WINDOW_MS = 60_000;
 const MAX_CLAIMS_PER_WINDOW = 30;
 const MAX_ONION_CLAIMS_PER_WINDOW = 120;
 
-const HEARTBEAT_MS = 30_000;
+const HEARTBEAT_MS = envInt('HEARTBEAT_MS', 30_000, 1000, 300_000);
+// A sender paused this long because its receiver is not draining means the
+// receiver has stopped reading: its queued data is pinned in our RAM.
+const RELAY_STALL_MS = envInt('RELAY_STALL_MS', 60_000, 1000, 600_000);
 const SWEEP_MS = 5 * 60 * 1000;
 const SHUTDOWN_GRACE_MS = 5_000;
-const CLAIM_TTL_MS = 15 * 60 * 1000;
+// How long a minted token stays claimable by invoice ID.
+const CLAIM_TTL_MS = envInt('CLAIM_TTL_HOURS', 48, 1, 168) * 3600e3;
 const INVOICE_DEDUPE_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_INVOICES = 20_000; // evicts the earliest forgetAt first
+const SETTLEMENT_GRACE_S = 6 * 3600; // added to deterministic token expiry
+const CLAIM_MISS_TTL_MS = 30_000; // negative cache for BTCPay lookups
+const MAX_CLAIM_MISSES = 5_000; // evicts the oldest entry first
+const CLAIM_RETRY_AFTER_S = 30;
+const WEBHOOK_MAX_AGE_S = 30 * 86400;
 const MAX_WEBHOOK_BYTES = 64 * 1024;
 const MAX_WS_PAYLOAD = 64 * 1024;
 const BTCPAY_API_TIMEOUT_MS = 5_000;
@@ -111,8 +125,9 @@ const RELAY_CAP_FREE = envInt('RELAY_CAP_FREE_MB', 50, 0, 1024 * 1024) * MB;
 const RELAY_CAP_PRO = envInt('RELAY_CAP_PRO_MB', 500, 0, 1024 * 1024) * MB;
 const RELAY_RATE_FREE = 1 * MB; // bytes per second, per sender
 const RELAY_RATE_PRO = 4 * MB;
-const RELAY_HIGH_WATER = 1 * MB; // pause the sender above this much queued for the receiver
-const RELAY_LOW_WATER = 256 * 1024;
+const RELAY_HIGH_WATER = 512 * 1024; // pause the sender above this much queued for the receiver
+const RELAY_LOW_WATER = 128 * 1024;
+const MAX_RELAY_ROOMS = envInt('MAX_RELAY_ROOMS', 50, 1, 10000); // rooms with relayActive
 const MIN_THROTTLE_MS = 25;
 
 const ROOM_ID_RE = /^[a-f0-9]{16,64}$/i;
@@ -168,9 +183,19 @@ function validateConfig() {
   if (ONION_HOST && !ONION_V3_RE.test(ONION_HOST)) {
     fatal('ONION_HOST is not a valid v3 .onion hostname');
   }
+  if (ONION_HOST && ONION_PORT === 0) {
+    fatal('ONION_HOST is set but ONION_PORT is not: onion traffic would share the clearnet listener');
+  }
+  if (ONION_PORT === PORT) fatal('ONION_PORT must differ from PORT');
+  if (ONION_PORT > 0 && !ONION_HOST) {
+    logWarn('ONION_PORT is set without ONION_HOST: onion traffic is isolated, but Onion-Location and the onion CSP origin are disabled');
+  }
   if (TURN_HOST && !HOSTNAME_RE.test(TURN_HOST)) fatal('TURN_HOST is not a valid hostname');
   if (!['auto', '1', 'true', '0', 'false'].includes(TRUST_PROXY)) {
     fatal('TRUST_PROXY must be auto, 1 or 0');
+  }
+  if (CLAIM_TTL_MS > INVOICE_DEDUPE_MS) {
+    fatal('CLAIM_TTL_HOURS must not exceed the invoice dedupe window');
   }
   if (BTCPAY_WEBHOOK_SECRET && !PRO_TOKEN_SECRET) {
     fatal('BTCPAY_WEBHOOK_SECRET is set but PRO_TOKEN_SECRET is not');
@@ -376,19 +401,18 @@ function shouldTrustProxy(remote) {
   return remote !== null && PRIVATE_NETS.check(remote.ip, remote.family);
 }
 
-function isOnionRequest(req) {
-  if (!ONION_HOST) return false;
-  const host = (req.headers.host || '').split(':')[0].trim().toLowerCase();
-  return host === ONION_HOST;
+// Onion traffic is identified by the listener it arrived on, never by the
+// client-controlled Host header.
+function isOnionSocket(req) {
+  return ONION_PORT > 0 && req.socket.localPort === ONION_PORT;
 }
 
 // Returns a salted hash identifying the client's address (or /64), plus whether
 // the request arrived via the Tor hidden service. The raw address never leaves
-// this function, and X-Forwarded-For is never trusted on .onion traffic because
+// this function, and X-Forwarded-For is never read on the onion listener because
 // Tor forwards raw TCP without appending a trusted proxy hop.
 function getClientIdentity(req) {
-  const isOnion = isOnionRequest(req);
-  if (isOnion) {
+  if (isOnionSocket(req)) {
     return { key: 'onion', isOnion: true };
   }
 
@@ -463,10 +487,14 @@ function allowClaim({ key, isOnion }) {
 // Pro tokens, TURN credentials, BTCPay
 // ---------------------------------------------------------------------------
 
-function mintProToken(days) {
-  const exp = String(Math.floor(Date.now() / 1000) + days * 86400);
+function mintProTokenAt(expUnix) {
+  const exp = String(expUnix);
   const sig = crypto.createHmac('sha256', PRO_TOKEN_SECRET).update(exp).digest('hex');
   return `${exp}.${sig}`;
+}
+
+function mintProToken(days) {
+  return mintProTokenAt(Math.floor(Date.now() / 1000) + days * 86400);
 }
 
 function verifyProToken(token) {
@@ -550,13 +578,65 @@ function readRawBody(req, limitBytes) {
 // invoiceKey -> { token: string|null, claimUntil, forgetAt }
 // The token can be read until claimUntil. The record itself is kept until
 // forgetAt so a webhook redelivery cannot mint a second token.
+// Capped at MAX_INVOICES; the entry with the earliest forgetAt is evicted.
 const invoices = new Map();
+
+// invoiceKey -> expiresAt. Recent BTCPay lookups that minted nothing, so a
+// polling client cannot turn every claim into an API call. Capped at
+// MAX_CLAIM_MISSES; Map order is insertion order, so the oldest goes first.
+const claimMisses = new Map();
 
 function invoiceKey(invoiceId) {
   return crypto.createHmac('sha256', BOOT_SALT).update(`invoice:${invoiceId}`).digest('hex');
 }
 
-async function fetchInvoiceItemCode(invoiceId) {
+function rememberInvoice(key, token) {
+  if (!invoices.has(key) && invoices.size >= MAX_INVOICES) {
+    let oldestKey = null;
+    let oldestAt = Infinity;
+    for (const [k, entry] of invoices) {
+      if (entry.forgetAt < oldestAt) {
+        oldestAt = entry.forgetAt;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey !== null) invoices.delete(oldestKey);
+  }
+  const now = Date.now();
+  invoices.set(key, { token, claimUntil: now + CLAIM_TTL_MS, forgetAt: now + INVOICE_DEDUPE_MS });
+}
+
+function rememberClaimMiss(key) {
+  claimMisses.delete(key);
+  while (claimMisses.size >= MAX_CLAIM_MISSES) {
+    claimMisses.delete(claimMisses.keys().next().value);
+  }
+  claimMisses.set(key, Date.now() + CLAIM_MISS_TTL_MS);
+}
+
+function isRecentClaimMiss(key) {
+  const expiresAt = claimMisses.get(key);
+  if (expiresAt === undefined) return false;
+  if (expiresAt > Date.now()) return true;
+  claimMisses.delete(key);
+  return false;
+}
+
+function btcPayError(code, status) {
+  return Object.assign(new Error('BTCPay lookup failed'), { name: 'BtcPayError', code, status });
+}
+
+// Safe to log: never the message, URL or cause (they can carry invoice IDs).
+function describeLookupError(err) {
+  const parts = [`name=${err && err.name ? err.name : 'Error'}`];
+  if (err && typeof err.code === 'string') parts.push(`code=${err.code}`);
+  if (err && Number.isInteger(err.status)) parts.push(`status=${err.status}`);
+  return parts.join(' ');
+}
+
+// Fetches an invoice from the BTCPay Greenfield API. Returns null when BTCPay
+// says it does not exist; throws when BTCPay cannot give a usable answer.
+async function fetchInvoice(invoiceId) {
   const url =
     `${BTCPAY_URL}/api/v1/stores/${encodeURIComponent(BTCPAY_STORE_ID)}` +
     `/invoices/${encodeURIComponent(invoiceId)}`;
@@ -565,10 +645,55 @@ async function fetchInvoiceItemCode(invoiceId) {
     redirect: 'error',
     signal: AbortSignal.timeout(BTCPAY_API_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`BTCPay API responded ${res.status}`);
-  const invoice = await res.json();
-  const code = invoice && invoice.metadata && invoice.metadata.itemCode;
-  return typeof code === 'string' ? code.trim().toLowerCase() : null;
+  if (res.status === 404) {
+    await res.body?.cancel();
+    return null;
+  }
+  if (!res.ok) {
+    await res.body?.cancel();
+    throw btcPayError('E_BTCPAY_STATUS', res.status);
+  }
+
+  let invoice;
+  try {
+    invoice = await res.json();
+  } catch {
+    throw btcPayError('E_BTCPAY_BODY');
+  }
+  if (
+    !isObject(invoice) ||
+    typeof invoice.status !== 'string' ||
+    !Number.isInteger(invoice.createdTime) ||
+    invoice.createdTime <= 0 ||
+    !optional(invoice.storeId, 'string') ||
+    (invoice.metadata !== undefined && invoice.metadata !== null && !isObject(invoice.metadata))
+  ) {
+    throw btcPayError('E_BTCPAY_BODY');
+  }
+  const code = invoice.metadata ? invoice.metadata.itemCode : undefined;
+  return {
+    status: invoice.status,
+    createdTime: invoice.createdTime,
+    itemCode: typeof code === 'string' && code.trim() ? code.trim().toLowerCase() : null,
+    storeId: typeof invoice.storeId === 'string' ? invoice.storeId : null,
+  };
+}
+
+// Deterministic token for a looked-up invoice: the same invoice always yields
+// the same token, so one re-minted after a restart is byte-identical.
+// Returns null when the invoice does not qualify, including once its claim
+// window (createdTime + settlement grace + CLAIM_TTL) has passed: a restart
+// must not let a leaked invoice ID re-fetch the token for its whole lifetime.
+function tokenForInvoice(invoice) {
+  if (!invoice || invoice.status !== 'Settled') return null;
+  if (invoice.storeId !== null && invoice.storeId !== BTCPAY_STORE_ID) return null;
+  const days = invoice.itemCode === null ? undefined : PRO_TIERS.get(invoice.itemCode);
+  if (!days) return null;
+  const nowS = Math.floor(Date.now() / 1000);
+  if (nowS > invoice.createdTime + SETTLEMENT_GRACE_S + CLAIM_TTL_MS / 1000) return null;
+  const exp = invoice.createdTime + days * 86400 + SETTLEMENT_GRACE_S;
+  if (exp <= nowS) return null;
+  return mintProTokenAt(exp);
 }
 
 async function handleBtcPayWebhook(req, res) {
@@ -598,6 +723,15 @@ async function handleBtcPayWebhook(req, res) {
     return respond(req, res, 400, TYPE_TEXT, 'Invalid event');
   }
 
+  // A validly signed but old delivery is acknowledged and dropped.
+  if (
+    typeof event.timestamp === 'number' &&
+    Math.floor(Date.now() / 1000) - event.timestamp > WEBHOOK_MAX_AGE_S
+  ) {
+    logWarn('Stale webhook ignored');
+    return respond(req, res, 200, TYPE_TEXT, 'ignored');
+  }
+
   // Anything we do not act on is acknowledged so BTCPay stops retrying it.
   if (event.type !== 'InvoiceSettled') return respond(req, res, 200, TYPE_TEXT, 'ok');
   if (typeof event.invoiceId !== 'string' || !INVOICE_ID_RE.test(event.invoiceId)) {
@@ -613,17 +747,32 @@ async function handleBtcPayWebhook(req, res) {
   const key = invoiceKey(event.invoiceId);
   if (invoices.has(key)) return respond(req, res, 200, TYPE_TEXT, 'ok');
 
-  const rawCode = event.metadata?.itemCode ?? event.data?.metadata?.itemCode;
-  let itemCode = typeof rawCode === 'string' && rawCode.trim() ? rawCode.trim().toLowerCase() : null;
-  if (itemCode === null && BTCPAY_LOOKUP_ENABLED) {
+  // With lookup enabled, the invoice itself is the source of truth and the
+  // token is derived from it deterministically (see tokenForInvoice).
+  if (BTCPAY_LOOKUP_ENABLED) {
+    let invoice;
     try {
-      itemCode = await fetchInvoiceItemCode(event.invoiceId);
+      invoice = await fetchInvoice(event.invoiceId);
     } catch (err) {
-      logError('BTCPay invoice lookup failed', err);
+      logError(`BTCPay invoice lookup failed (${describeLookupError(err)})`);
       // Non-2xx makes BTCPay retry the delivery later.
       return respond(req, res, 502, TYPE_TEXT, 'Invoice lookup failed');
     }
+    const token = tokenForInvoice(invoice);
+    if (!token) {
+      logWarn('Settled webhook for an invoice that does not qualify: no token minted');
+      return respond(req, res, 200, TYPE_TEXT, 'ignored');
+    }
+    if (!invoices.has(key)) {
+      rememberInvoice(key, token);
+      claimMisses.delete(key);
+      logInfo('Pro token minted');
+    }
+    return respond(req, res, 200, TYPE_TEXT, 'ok');
   }
+
+  const rawCode = event.metadata?.itemCode ?? event.data?.metadata?.itemCode;
+  const itemCode = typeof rawCode === 'string' && rawCode.trim() ? rawCode.trim().toLowerCase() : null;
 
   const days = itemCode === null ? undefined : PRO_TIERS.get(itemCode);
   if (!days) {
@@ -636,31 +785,52 @@ async function handleBtcPayWebhook(req, res) {
   }
 
   if (!invoices.has(key)) {
-    const now = Date.now();
-    invoices.set(key, {
-      token: mintProToken(days),
-      claimUntil: now + CLAIM_TTL_MS,
-      forgetAt: now + INVOICE_DEDUPE_MS,
-    });
+    rememberInvoice(key, mintProToken(days));
     logInfo(`Pro token minted (${days}d)`);
   }
   return respond(req, res, 200, TYPE_TEXT, 'ok');
 }
 
-function handleClaim(req, res, url) {
+async function handleClaim(req, res, url) {
   if (!allowClaim(getClientIdentity(req))) {
     return respondJson(req, res, 429, { ready: false }, { 'Retry-After': '60' });
   }
 
   const invoiceId = url.searchParams.get('invoiceId') || '';
-  const entry = INVOICE_ID_RE.test(invoiceId) ? invoices.get(invoiceKey(invoiceId)) : undefined;
+  if (!INVOICE_ID_RE.test(invoiceId)) return respondJson(req, res, 404, { ready: false });
+  const key = invoiceKey(invoiceId);
+  const entry = invoices.get(key);
 
   // The token stays readable for the whole claim window, so a response lost
   // in transit does not cost the buyer their token.
-  if (!entry || !entry.token || entry.claimUntil <= Date.now()) {
+  if (entry) {
+    if (!entry.token || entry.claimUntil <= Date.now()) {
+      return respondJson(req, res, 404, { ready: false });
+    }
+    return respondJson(req, res, 200, { ready: true, token: entry.token });
+  }
+
+  // Cache miss (not settled yet, webhook not delivered, or we restarted):
+  // ask BTCPay directly and re-derive the deterministic token.
+  if (!BTCPAY_LOOKUP_ENABLED || !PRO_TOKEN_SECRET || isRecentClaimMiss(key)) {
     return respondJson(req, res, 404, { ready: false });
   }
-  return respondJson(req, res, 200, { ready: true, token: entry.token });
+
+  let invoice;
+  try {
+    invoice = await fetchInvoice(invoiceId);
+  } catch (err) {
+    logWarn(`BTCPay invoice lookup failed (${describeLookupError(err)})`);
+    return respondJson(req, res, 503, { ready: false }, { 'Retry-After': String(CLAIM_RETRY_AFTER_S) });
+  }
+
+  const token = tokenForInvoice(invoice);
+  if (!token) {
+    rememberClaimMiss(key);
+    return respondJson(req, res, 404, { ready: false });
+  }
+  if (!invoices.has(key)) rememberInvoice(key, token);
+  return respondJson(req, res, 200, { ready: true, token });
 }
 
 // ---------------------------------------------------------------------------
@@ -679,7 +849,7 @@ async function handleRequest(req, res) {
   const isRead = req.method === 'GET' || req.method === 'HEAD';
 
   if (isRead && pathname === '/') {
-    const extra = ONION_HOST && !isOnionRequest(req)
+    const extra = ONION_HOST && !isOnionSocket(req)
       ? { 'Onion-Location': `http://${ONION_HOST}/` }
       : undefined;
     return respondPage(req, res, 200, indexPage, extra);
@@ -689,23 +859,31 @@ async function handleRequest(req, res) {
   }
   if (isRead && pathname === '/robots.txt') return respond(req, res, 200, TYPE_TEXT, robotsTxt);
   if (isRead && pathname === '/sitemap.xml') return respond(req, res, 200, TYPE_XML, sitemapXml);
-  if (isRead && pathname === '/api/claim') return handleClaim(req, res, url);
+  if (isRead && pathname === '/api/claim') return await handleClaim(req, res, url);
   if (req.method === 'POST' && pathname === '/webhook/btcpay') return handleBtcPayWebhook(req, res);
 
   return respondNotFound(req, res);
 }
 
-const server = http.createServer((req, res) => {
+function onRequest(req, res) {
   handleRequest(req, res).catch((err) => {
     logError('Request handler failed', err);
     if (res.headersSent) res.destroy();
     else respond(req, res, 500, TYPE_TEXT, 'Internal Server Error', { Connection: 'close' });
   });
-});
+}
 
-server.headersTimeout = 15_000;
-server.requestTimeout = 30_000;
-server.keepAliveTimeout = 5_000;
+function createListener() {
+  const srv = http.createServer(onRequest);
+  srv.headersTimeout = 15_000;
+  srv.requestTimeout = 30_000;
+  srv.keepAliveTimeout = 5_000;
+  return srv;
+}
+
+const server = createListener();
+const onionServer = ONION_PORT > 0 ? createListener() : null;
+const listeners = onionServer ? [server, onionServer] : [server];
 
 // ---------------------------------------------------------------------------
 // WebSocket signaling and relay
@@ -742,7 +920,7 @@ function rejectUpgrade(socket, status) {
   );
 }
 
-server.on('upgrade', (req, socket, head) => {
+function onUpgrade(req, socket, head) {
   // Present from the first moment so a reset during rejection cannot crash us.
   socket.on('error', () => {});
 
@@ -763,7 +941,9 @@ server.on('upgrade', (req, socket, head) => {
   socket.once('close', () => releaseConnection(client.key));
 
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-});
+}
+
+for (const srv of listeners) srv.on('upgrade', onUpgrade);
 
 function sendJson(ws, obj) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -784,6 +964,12 @@ function updatePause(ws) {
   const shouldPause = ws.throttleTimer !== null || ws.backpressured;
   if (shouldPause && !ws.isPaused) ws.pause();
   else if (!shouldPause && ws.isPaused) ws.resume();
+}
+
+function setBackpressured(ws, value) {
+  if (ws.backpressured === value) return;
+  ws.backpressured = value;
+  ws.backpressuredSince = value ? Date.now() : 0;
 }
 
 function chargeRelayBudget(ws, bytes, rate) {
@@ -845,13 +1031,13 @@ function handleRelayFrame(ws, data) {
     // stuck behind queued data on a slow link.
     peer.isAlive = true;
     if (ws.backpressured && peer.bufferedAmount <= RELAY_LOW_WATER) {
-      ws.backpressured = false;
+      setBackpressured(ws, false);
       updatePause(ws);
     }
   });
 
   if (!ws.backpressured && peer.bufferedAmount > RELAY_HIGH_WATER) {
-    ws.backpressured = true;
+    setBackpressured(ws, true);
     updatePause(ws);
   }
   chargeRelayBudget(ws, data.length, room.isPro ? RELAY_RATE_PRO : RELAY_RATE_FREE);
@@ -923,8 +1109,11 @@ function handleJoin(ws, msg) {
   ws.room = room;
   ws.roomId = roomId;
 
+  ws.candidateCount = 0;
   if (room.peers.size !== 2) return;
 
+  // New pairing: both peers start a fresh ICE candidate budget.
+  for (const peer of room.peers) peer.candidateCount = 0;
   room.isPro = [...room.peers].some((p) => p.isPro);
   room.relayActive = false;
   const turnEnabled = room.isPro && TURN_ENABLED;
@@ -966,8 +1155,28 @@ function handleControlMessage(ws, data) {
   const clean = sanitizeSignal(msg);
   if (!clean) return;
 
-  if (clean.type === 'ws-fallback') room.relayActive = true;
+  if (clean.type === 'candidate') {
+    ws.candidateCount += 1;
+    if (ws.candidateCount > MAX_CANDIDATES_PER_PEER) {
+      ws.close(1008, 'too-many-candidates');
+      return;
+    }
+  }
+
+  if (clean.type === 'ws-fallback' && !room.relayActive) {
+    if (countRelayRooms() >= MAX_RELAY_ROOMS) {
+      sendJson(ws, { type: 'error', reason: 'relay-busy' });
+      return;
+    }
+    room.relayActive = true;
+  }
   sendJson(otherPeer(room, ws), clean);
+}
+
+function countRelayRooms() {
+  let n = 0;
+  for (const room of rooms.values()) if (room.relayActive) n += 1;
+  return n;
 }
 
 function leaveRoom(ws) {
@@ -980,7 +1189,8 @@ function leaveRoom(ws) {
 
   for (const peer of room.peers) {
     // The peer may have been paused waiting on this socket's queue.
-    peer.backpressured = false;
+    setBackpressured(peer, false);
+    peer.candidateCount = 0;
     updatePause(peer);
     sendJson(peer, { type: 'peer-left' });
   }
@@ -1008,6 +1218,8 @@ wss.on('connection', (ws) => {
   ws.msgWindowStart = Date.now();
   ws.cleanedUp = false;
   ws.backpressured = false;
+  ws.backpressuredSince = 0;
+  ws.candidateCount = 0;
   ws.throttleTimer = null;
   ws.bucket = 0;
   ws.bucketAt = 0;
@@ -1038,11 +1250,27 @@ wss.on('error', (err) => logError('WebSocket server error', err));
 // Timers
 // ---------------------------------------------------------------------------
 
+// The sender is paused on a receiver that has not drained for RELAY_STALL_MS:
+// the receiver is alive but not reading, so close it and free its queue.
+function checkRelayStall(ws, now) {
+  if (!ws.backpressured || now - ws.backpressuredSince <= RELAY_STALL_MS) return;
+  const peer = ws.room ? otherPeer(ws.room, ws) : null;
+  if (!peer || peer.readyState !== WebSocket.OPEN) return;
+  const notice = { type: 'error', reason: 'relay-stalled' };
+  sendJson(ws, notice);
+  sendJson(peer, notice);
+  peer.close(1008, 'relay-stalled');
+}
+
 const heartbeat = setInterval(() => {
+  const now = Date.now();
   for (const ws of wss.clients) {
     // A paused socket is one we chose not to read; its pongs cannot arrive.
     // It resumes as soon as its peer drains or leaves, then is checked again.
-    if (ws.isPaused) continue;
+    if (ws.isPaused) {
+      checkRelayStall(ws, now);
+      continue;
+    }
 
     if (!ws.isAlive) {
       cleanupSocket(ws);
@@ -1063,6 +1291,9 @@ const sweep = setInterval(() => {
   }
   for (const [key, entry] of claimHits) {
     if (entry.resetAt <= now) claimHits.delete(key);
+  }
+  for (const [key, expiresAt] of claimMisses) {
+    if (expiresAt <= now) claimMisses.delete(key);
   }
   for (const [key, entry] of invoices) {
     if (entry.forgetAt <= now) invoices.delete(key);
@@ -1086,17 +1317,23 @@ function shutdown(signal) {
 
   // Stop accepting, then close every WebSocket: ws v8 does not do this for us
   // and server.close() waits for all sockets, upgraded ones included.
-  server.close(() => process.exit(0));
+  let open = listeners.length;
+  for (const srv of listeners) {
+    srv.close(() => {
+      open -= 1;
+      if (open === 0) process.exit(0);
+    });
+  }
   for (const ws of wss.clients) {
     if (ws.isPaused) ws.resume();
     ws.close(1001, 'Server shutting down');
   }
   wss.close();
-  server.closeIdleConnections();
+  for (const srv of listeners) srv.closeIdleConnections();
 
   setTimeout(() => {
     for (const ws of wss.clients) ws.terminate();
-    server.closeAllConnections();
+    for (const srv of listeners) srv.closeAllConnections();
   }, SHUTDOWN_GRACE_MS / 2).unref();
   setTimeout(() => process.exit(0), SHUTDOWN_GRACE_MS).unref();
 }
@@ -1117,12 +1354,24 @@ server.on('error', (err) => {
   logError('HTTP server error', err);
   process.exit(1);
 });
+if (onionServer) {
+  onionServer.on('error', (err) => {
+    logError('Onion HTTP server error', err);
+    process.exit(1);
+  });
+}
 
-server.listen(PORT, () => {
+let pendingListeners = listeners.length;
+function onListening() {
+  pendingListeners -= 1;
+  if (pendingListeners > 0) return;
   logInfo(
-    `Signaling node listening on :${PORT} ` +
+    `Signaling node listening on :${PORT}` +
+      `${onionServer ? ` and onion :${ONION_PORT}` : ''} ` +
       `(turn=${TURN_ENABLED ? 'on' : 'off'}, pro=${PRO_TOKEN_SECRET ? 'on' : 'off'}, ` +
       `onion=${ONION_HOST ? 'on' : 'off'}, webhook=${BTCPAY_WEBHOOK_SECRET ? 'on' : 'off'}, ` +
       `relay cap=${RELAY_CAP_FREE / MB}/${RELAY_CAP_PRO / MB} MB)`
   );
-});
+}
+server.listen(PORT, onListening);
+if (onionServer) onionServer.listen(ONION_PORT, onListening);
