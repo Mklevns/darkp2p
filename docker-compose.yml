@@ -1,8 +1,19 @@
 services:
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.9-alpine
     container_name: darkp2p-caddy
     restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - "no-new-privileges:true"
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "80:80"
       - "443:443"
@@ -26,6 +37,17 @@ services:
     read_only: true
     cap_drop:
       - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 384m
+    pids_limit: 128
+    tmpfs:
+      - /tmp
     env_file:
       - .env
     environment:
@@ -35,16 +57,23 @@ services:
       - internal
 
   tor:
-    image: alpine:3.20
+    build: ./tor
     container_name: darkp2p-tor
     restart: unless-stopped
-    command: >
-      sh -c "apk add --no-cache tor &&
-      mkdir -p /var/lib/tor/hidden_service &&
-      chmod 700 /var/lib/tor/hidden_service &&
-      printf 'HiddenServiceDir /var/lib/tor/hidden_service/\nHiddenServicePort 80 darkp2p:3001\n' > /etc/tor/torrc &&
-      tor -f /etc/tor/torrc"
+    security_opt:
+      - "no-new-privileges:true"
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # The image runs tor as the unprivileged `tor` user. A tor_data volume
+    # created by the old root-run container must be handed over once, keeping
+    # the onion address:
+    #   docker compose run --rm --no-deps --user root --entrypoint \
+    #     chown tor -R tor:tor /var/lib/tor
     volumes:
+      - ./tor/torrc:/etc/tor/torrc:ro
       - tor_data:/var/lib/tor
     depends_on:
       darkp2p:
@@ -62,57 +91,25 @@ services:
     container_name: darkp2p-coturn
     restart: unless-stopped
     network_mode: host
+    security_opt:
+      - "no-new-privileges:true"
     # coturn logs the address of every client and peer, so its output is
     # discarded and never reaches the host disk. To debug temporarily, set
-    # `driver: json-file` here and swap --no-stdout-log/--log-file=/dev/null
-    # below for --log-file=stdout, then revert and remove the container
-    # (docker compose rm -sf coturn) so the saved log is deleted.
+    # `driver: json-file` here and swap no-stdout-log/log-file=/dev/null in
+    # scripts/gen-turnserver-conf.sh for log-file=stdout, then revert and
+    # remove the container (docker compose rm -sf coturn) so the saved log is
+    # deleted.
     logging:
       driver: "none"
     read_only: true
     tmpfs:
       - /var/tmp
       - /var/lib/coturn
-    command:
-      - --listening-port=3478
-      - --realm=${TURN_HOST}
-      - --use-auth-secret
-      - --static-auth-secret=${TURN_SECRET}
-      - --fingerprint
-      - --min-port=49160
-      - --max-port=49200
-      - --user-quota=4
-      - --total-quota=40
-      - --max-bps=5000000
-      - --bps-capacity=50000000
-      - --max-allocate-lifetime=1800
-      - --stale-nonce=600
-      - --no-cli
-      - --no-tls
-      - --no-dtls
-      - --no-software-attribute
-      - --no-multicast-peers
-      - --no-tcp-relay
-      - --denied-peer-ip=0.0.0.0-0.255.255.255
-      - --denied-peer-ip=10.0.0.0-10.255.255.255
-      - --denied-peer-ip=100.64.0.0-100.127.255.255
-      - --denied-peer-ip=127.0.0.0-127.255.255.255
-      - --denied-peer-ip=169.254.0.0-169.254.255.255
-      - --denied-peer-ip=172.16.0.0-172.31.255.255
-      - --denied-peer-ip=192.0.0.0-192.0.0.255
-      - --denied-peer-ip=192.168.0.0-192.168.255.255
-      - --denied-peer-ip=198.18.0.0-198.19.255.255
-      - --denied-peer-ip=240.0.0.0-255.255.255.255
-      - --denied-peer-ip=${TURN_PUBLIC_IP:?Set TURN_PUBLIC_IP to the server's public IPv4}
-      - "--denied-peer-ip=::-::"
-      - --denied-peer-ip=::1
-      - --denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255
-      - --denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
-      - --denied-peer-ip=2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-      - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-      - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-      - --no-stdout-log
-      - --log-file=/dev/null
+    # All flags, including the TURN secret, live in this file, generated from
+    # .env by: sudo scripts/gen-turnserver-conf.sh
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
 
 networks:
   internal:

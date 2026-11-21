@@ -490,3 +490,78 @@
 
 #### Step 10 checklist (added)
 - [ ] The env var table covers `BTCPAY_POS_URL`, `TIP_XMR_ADDRESS`, `TIP_BTC_ADDRESS` and `SWEEP_MS`, and documents the stats line format.
+
+### Step 9 — Infrastructure hardening (2026-11-21)
+- **Tasks:** 9.1, 9.2, 9.3, 9.4, 9.5, 9.6.
+- **Files changed:** `Dockerfile`, `docker-compose.yml`, `Caddyfile`, `setup-ufw.sh`, `.gitignore`, `.env.example` (one comment), `test/compose.test.mjs`; new `tor/Dockerfile`, `tor/torrc`, `scripts/gen-turnserver-conf.sh`. `server.js` and `public/` are unchanged.
+- **9.1:** `FROM node:22.23.5-alpine3.24` (newest 22.x patch on Docker Hub), `ENV NODE_ENV=production`. `USER node` and the HEALTHCHECK are kept.
+- **9.2:**
+  - Every service has `no-new-privileges:true`. caddy, darkp2p and tor use the `local` driver with 10m × 3 files; coturn keeps `none`.
+  - darkp2p: `mem_limit: 384m`, `pids_limit: 128`, `tmpfs: [/tmp]`.
+  - caddy: `cap_drop: [ALL]`, `cap_add: [NET_BIND_SERVICE]`, image `caddy:2.11.9-alpine`. Its Hub digest equals the current `caddy:2-alpine` digest.
+- **9.3:**
+  - `tor/Dockerfile`: `FROM alpine:3.20.10`, `apk add --no-cache tor=0.4.9.11-r0`, `/var/lib/tor` and `hidden_service` chowned to `tor` with mode 700, and `USER tor`.
+  - `tor/torrc` has the five required lines plus `DataDirectory /var/lib/tor`, so the data dir is fixed whatever tor's non-root default is. It is mounted read-only, and the runtime `apk add`/`printf` command is gone.
+  - A new `tor_data` volume inherits the image's ownership. A compose comment gives the one-time `chown` for a volume created by the old root-run container.
+- **9.4:**
+  - `scripts/gen-turnserver-conf.sh [ENV_FILE] [OUT_FILE]` parses `.env` without sourcing it. It validates `TURN_HOST`, `TURN_PUBLIC_IP` (dotted IPv4, each octet ≤255) and `TURN_SECRET` (≥16 printable characters, no space or `#`).
+  - It writes every Step 2 flag, including `static-auth-secret`, through a umask 077 temp file, then `chmod 0600`, then `chown 65534:65533`, then an atomic `mv`.
+  - That owner is coturn's `nobody:nogroup`; `nogroup` is gid 65533 in this image. `COTURN_OWNER` overrides it, and empty skips the chown. A failed chown exits 1 with "re-run with sudo".
+  - The secret is never printed.
+  - Compose mounts the file read-only with `command: ["-c", "/etc/coturn/turnserver.conf"]`. The compose file has no `TURN_*` reference and no secret, and `coturn/turnserver.conf` is gitignored. The `TURN_PUBLIC_IP` requirement moved from compose to the script. No `turns:`/TLS was added.
+- **9.5:**
+  - A global `servers { timeouts { read_header 10s } }`.
+  - `header -Server` in both site blocks: the www redirect block also sent `Server: Caddy`.
+  - `request_body /webhook/btcpay { max_size 64KB }`, and `reverse_proxy darkp2p:3000 { stream_close_delay 5m }`.
+  - No access log.
+- **9.6:**
+  - `set -euo pipefail` and a root check.
+  - `SSH_PORT="${SSH_PORT:-22}"`.
+  - `IPV6=yes` is set in `/etc/default/ufw`, with a warning if it can't be confirmed.
+  - A header comment says Docker-published ports bypass UFW.
+  - The relay range is `TURN_MIN_PORT`/`TURN_MAX_PORT`, cross-referenced with the generator script.
+- **Tests (`compose.test.mjs`, 5 → 8):**
+  - Three tests were rewritten for the new layout:
+    - **tor:** no runtime command, built from `./tor`, torrc read-only and with the required lines, pinned `FROM` and package, `USER tor`.
+    - **coturn:** `-c` only, read-only mount, logging `none`, tag+digest pin, no `TURN_SECRET`/`static-auth-secret` in the compose file or render.
+    - **TURN_PUBLIC_IP:** now checked in the generator.
+  - New:
+    - every service has `no-new-privileges`, with the log driver and rotation checked for all but coturn;
+    - the darkp2p limits, caddy caps and image pins;
+    - the generator writes the Step 2 flags in a 0600 file without printing the secret, and refuses a missing or bad IP or secret without leaving a file;
+    - the UFW relay range equals the generator's range.
+  - The generator and UFW tests run without docker.
+- **Mutation check:** each was applied and reverted, with the files restored byte-identical. Each failed exactly its own test:
+  - UFW max port changed;
+  - `--static-auth-secret=${TURN_SECRET}` added to the coturn command;
+  - no-new-privileges removed from caddy;
+  - `HiddenServiceMaxStreamsCloseCircuit` removed from torrc.
+- **Gate:**
+  - `npm run check`: PASS.
+  - `npm test`: 103/103 PASS (100 previous + 3 new compose tests), 0 skipped.
+  - `bash -n` on each of `setup-ufw.sh`, `scripts/compose-gate.sh` and `scripts/gen-turnserver-conf.sh`: PASS (run per file, since `bash -n a b` only parses `a`).
+  - `shellcheck`: **SKIPPED (tool unavailable)**. Installing it with pip was not permitted in this session.
+  - `docker compose --env-file test/fixtures/compose.env config -q` (via `npm run check:compose`): PASS.
+  - `caddy validate` inside `caddy:2.11.9-alpine` with `DOMAIN=test.local`: "Valid configuration", exit 0.
+    - `caddy adapt` confirms `read_header_timeout` 10 s, `stream_close_delay` 5 m, `max_size` 64000 and `delete: [Server]`.
+    - Caddy reads `64KB` as SI, so the limit is 64,000 bytes.
+  - `docker build -t darkp2p:audit .`: PASS. The sandbox proxy re-signs TLS (npm got `SELF_SIGNED_CERT_IN_CHAIN`), so the unchanged Dockerfile was built with `--build-context node:22.23.5-alpine3.24=docker-image://<the same image plus the sandbox CA>`.
+  - `docker build -t darkp2p-tor:audit tor/`: **FAILED (network policy)**. The session proxy denies `dl-cdn.alpinelinux.org` (403), so `apk` sees no `tor` package. This is an environment block, not a Dockerfile error, but the build and the pinned version are unverified. The version came from `community/tor/APKBUILD` on the aports `3.20-stable` branch (GitHub mirror).
+- **Extra verification (not committed):**
+  - `darkp2p:audit` run with the compose hardening (`--read-only`, `cap-drop ALL`, no-new-privileges, 384m, pids 128, tmpfs `/tmp`, local logs): healthy, uid 1000 `node`, `NODE_ENV=production`, node v22.23.5.
+  - The pinned coturn image ran from a generated conf (fixture env, mode 0600, owner 65534:65533), read-only, with tmpfs and no-new-privileges. It started and ran as `nobody` with `-c /etc/coturn/turnserver.conf`.
+- **SKIPPED:** shellcheck (tool unavailable). The tor image build was blocked by network policy; see above.
+- **Open questions:**
+  1. **coturn still writes a log file, a Step 2 bug that is not fixed here.**
+     - With `log-file=/dev/null` and no `simple-log`, coturn appends a date, fails to open `/dev/null_<date>.log`, and falls back to `/var/tmp/turn_1_<date>.log` on the tmpfs.
+     - It held 9 listener/address lines at startup and would also record client and peer addresses. It is in RAM only, never on the host disk, but it is a log.
+     - Adding `simple-log` to the generated conf was verified to leave only `turnserver.pid` in `/var/tmp`.
+     - Apply it? It is one line in `gen-turnserver-conf.sh` plus a test assertion.
+  2. **Tor image unverified.** Allow `dl-cdn.alpinelinux.org` in this environment so `tor/` can be built and the `tor=0.4.9.11-r0` pin confirmed, or verify it on the deploy host. Alpine 3.20 is past end of support; moving tor to a supported Alpine branch would need a new pin. Your call.
+  3. **Existing `tor_data` volume:** the onion keys are root-owned from the old container, so tor (now uid `tor`) will refuse them until the one-time `chown` in the compose comment is run. Should Step 10's deploy docs include it?
+  4. **Pin by digest?** node and caddy are pinned by tag only, as specified. coturn is pinned by tag and digest. Should these match coturn?
+  5. **`header -Server`** was also added to the www redirect block. Say if you want it only on the main site.
+  6. **`IPV6=yes`** is written into `/etc/default/ufw` rather than only checked. The warning fires only if that fails.
+
+#### Step 10 checklist (added)
+- [ ] README deploy steps: run `sudo scripts/gen-turnserver-conf.sh` before `docker compose up`, and after any change to `TURN_HOST`, `TURN_PUBLIC_IP` or `TURN_SECRET`. Note the one-time `tor_data` chown for existing installs. Update the "No TURN Logs" line, which still names the Step 2 command-line flags.
