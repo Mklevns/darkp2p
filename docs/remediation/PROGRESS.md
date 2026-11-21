@@ -323,3 +323,14 @@
      - the nonce encoded as base64url inside the encrypted hello JSON;
      - a missing hello-ack giving a warning, not a sticky failure;
      - a new nonce on every transport open.
+
+### Decisions after Step 6.5 (user, 2026-11-21)
+- **Stale hello replay (DoS only):** accepted as a limitation, with no challenge-response handshake. The README threat model is to note it in Step 10.
+- **Mid-transfer connection switching:** stays out of scope here and is handled with connection resilience in Step 7.
+- **Wire format v3 is final** under rule 7, unless Step 7 needs a wire-level change. Step 10's README updates must document v3 (the "Wire Format" section already describes v3 as of Step 6.5).
+- **All five Step 6.5 design choices are approved:** the separate hello type and type numbers; the `darkp2p/v3/hello` / `darkp2p/v3/transfer` HKDF labels and the `"DP3"` AAD magic; the base64url nonce inside the encrypted hello; a missing `hello-ack` giving a warning, not a hard failure; and a fresh nonce on every connection open.
+  - On the condition attached to the hello-ack warning: the drop zone is gated more strictly than "a valid peer hello". It opens only after the peer's `hello-ack` decrypts under the current session, which requires a valid peer hello first. While only the warning is showing, the drop zone stays disabled (`handshake` remains `pending`).
+
+#### Step 10 checklist (carried over)
+- [ ] README threat model: a relay replaying a peer hello from an earlier page load can stall the handshake (DoS only; no confidentiality or integrity impact). This is an accepted limitation.
+- [ ] README documents wire format v3 throughout. Check that no v2 references remain.
