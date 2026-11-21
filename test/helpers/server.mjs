@@ -11,7 +11,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const TEST_PRO_TOKEN_SECRET = 'test-pro-token-secret-0123456789abcdef';
 export const TEST_BTCPAY_WEBHOOK_SECRET = 'test-btcpay-webhook-secret-0123456789ab';
 
-async function freePort() {
+export async function freePort() {
   const srv = createServer();
   srv.listen(0, '127.0.0.1');
   await once(srv, 'listening');

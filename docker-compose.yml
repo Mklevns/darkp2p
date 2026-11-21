@@ -27,15 +27,10 @@ services:
     cap_drop:
       - ALL
     env_file:
-      - .env 
+      - .env
     environment:
       - PORT=3000
-      - DOMAIN=${DOMAIN}
-      - ONION_HOST=${ONION_HOST:-}
-      - TURN_HOST=${TURN_HOST}
-      - TURN_SECRET=${TURN_SECRET}
-      - TURN_TTL=${TURN_TTL:-3600} - PRO_TOKEN_SECRET=${PRO_TOKEN_SECRET}
-      - PRO_TOKEN_DAYS=${PRO_TOKEN_DAYS:-30} - BTCPAY_WEBHOOK_SECRET=${BTCPAY_WEBHOOK_SECRET}
+      - ONION_PORT=3001
     networks:
       - internal
 
@@ -47,7 +42,7 @@ services:
       sh -c "apk add --no-cache tor &&
       mkdir -p /var/lib/tor/hidden_service &&
       chmod 700 /var/lib/tor/hidden_service &&
-      printf 'HiddenServiceDir /var/lib/tor/hidden_service/\nHiddenServicePort 80 darkp2p:3000\n' > /etc/tor/torrc &&
+      printf 'HiddenServiceDir /var/lib/tor/hidden_service/\nHiddenServicePort 80 darkp2p:3001\n' > /etc/tor/torrc &&
       tor -f /etc/tor/torrc"
     volumes:
       - tor_data:/var/lib/tor

@@ -67,6 +67,9 @@ const ONION_V3_RE = /^[a-z2-7]{56}\.onion$/;
 const PORT = envInt('PORT', 3000, 1, 65535);
 const DOMAIN = (envStr('DOMAIN') || 'darkp2p.com').toLowerCase();
 const ONION_HOST = envStr('ONION_HOST').toLowerCase();
+// Dedicated listener for Tor hidden-service traffic. Anything arriving on it
+// is onion traffic, whatever its Host header says. 0 disables it.
+const ONION_PORT = envInt('ONION_PORT', 0, 0, 65535);
 const TURN_HOST = envStr('TURN_HOST').toLowerCase();
 const TURN_SECRET = envStr('TURN_SECRET');
 const TURN_TTL = envInt('TURN_TTL', 3600, 60, 86400);
@@ -167,6 +170,13 @@ function validateConfig() {
   if (!HOSTNAME_RE.test(DOMAIN)) fatal('DOMAIN is not a valid hostname');
   if (ONION_HOST && !ONION_V3_RE.test(ONION_HOST)) {
     fatal('ONION_HOST is not a valid v3 .onion hostname');
+  }
+  if (ONION_HOST && ONION_PORT === 0) {
+    fatal('ONION_HOST is set but ONION_PORT is not: onion traffic would share the clearnet listener');
+  }
+  if (ONION_PORT === PORT) fatal('ONION_PORT must differ from PORT');
+  if (ONION_PORT > 0 && !ONION_HOST) {
+    logWarn('ONION_PORT is set without ONION_HOST: onion traffic is isolated, but Onion-Location and the onion CSP origin are disabled');
   }
   if (TURN_HOST && !HOSTNAME_RE.test(TURN_HOST)) fatal('TURN_HOST is not a valid hostname');
   if (!['auto', '1', 'true', '0', 'false'].includes(TRUST_PROXY)) {
@@ -376,19 +386,18 @@ function shouldTrustProxy(remote) {
   return remote !== null && PRIVATE_NETS.check(remote.ip, remote.family);
 }
 
-function isOnionRequest(req) {
-  if (!ONION_HOST) return false;
-  const host = (req.headers.host || '').split(':')[0].trim().toLowerCase();
-  return host === ONION_HOST;
+// Onion traffic is identified by the listener it arrived on, never by the
+// client-controlled Host header.
+function isOnionSocket(req) {
+  return ONION_PORT > 0 && req.socket.localPort === ONION_PORT;
 }
 
 // Returns a salted hash identifying the client's address (or /64), plus whether
 // the request arrived via the Tor hidden service. The raw address never leaves
-// this function, and X-Forwarded-For is never trusted on .onion traffic because
+// this function, and X-Forwarded-For is never read on the onion listener because
 // Tor forwards raw TCP without appending a trusted proxy hop.
 function getClientIdentity(req) {
-  const isOnion = isOnionRequest(req);
-  if (isOnion) {
+  if (isOnionSocket(req)) {
     return { key: 'onion', isOnion: true };
   }
 
@@ -679,7 +688,7 @@ async function handleRequest(req, res) {
   const isRead = req.method === 'GET' || req.method === 'HEAD';
 
   if (isRead && pathname === '/') {
-    const extra = ONION_HOST && !isOnionRequest(req)
+    const extra = ONION_HOST && !isOnionSocket(req)
       ? { 'Onion-Location': `http://${ONION_HOST}/` }
       : undefined;
     return respondPage(req, res, 200, indexPage, extra);
@@ -695,17 +704,25 @@ async function handleRequest(req, res) {
   return respondNotFound(req, res);
 }
 
-const server = http.createServer((req, res) => {
+function onRequest(req, res) {
   handleRequest(req, res).catch((err) => {
     logError('Request handler failed', err);
     if (res.headersSent) res.destroy();
     else respond(req, res, 500, TYPE_TEXT, 'Internal Server Error', { Connection: 'close' });
   });
-});
+}
 
-server.headersTimeout = 15_000;
-server.requestTimeout = 30_000;
-server.keepAliveTimeout = 5_000;
+function createListener() {
+  const srv = http.createServer(onRequest);
+  srv.headersTimeout = 15_000;
+  srv.requestTimeout = 30_000;
+  srv.keepAliveTimeout = 5_000;
+  return srv;
+}
+
+const server = createListener();
+const onionServer = ONION_PORT > 0 ? createListener() : null;
+const listeners = onionServer ? [server, onionServer] : [server];
 
 // ---------------------------------------------------------------------------
 // WebSocket signaling and relay
@@ -742,7 +759,7 @@ function rejectUpgrade(socket, status) {
   );
 }
 
-server.on('upgrade', (req, socket, head) => {
+function onUpgrade(req, socket, head) {
   // Present from the first moment so a reset during rejection cannot crash us.
   socket.on('error', () => {});
 
@@ -763,7 +780,9 @@ server.on('upgrade', (req, socket, head) => {
   socket.once('close', () => releaseConnection(client.key));
 
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-});
+}
+
+for (const srv of listeners) srv.on('upgrade', onUpgrade);
 
 function sendJson(ws, obj) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -1086,17 +1105,23 @@ function shutdown(signal) {
 
   // Stop accepting, then close every WebSocket: ws v8 does not do this for us
   // and server.close() waits for all sockets, upgraded ones included.
-  server.close(() => process.exit(0));
+  let open = listeners.length;
+  for (const srv of listeners) {
+    srv.close(() => {
+      open -= 1;
+      if (open === 0) process.exit(0);
+    });
+  }
   for (const ws of wss.clients) {
     if (ws.isPaused) ws.resume();
     ws.close(1001, 'Server shutting down');
   }
   wss.close();
-  server.closeIdleConnections();
+  for (const srv of listeners) srv.closeIdleConnections();
 
   setTimeout(() => {
     for (const ws of wss.clients) ws.terminate();
-    server.closeAllConnections();
+    for (const srv of listeners) srv.closeAllConnections();
   }, SHUTDOWN_GRACE_MS / 2).unref();
   setTimeout(() => process.exit(0), SHUTDOWN_GRACE_MS).unref();
 }
@@ -1117,12 +1142,24 @@ server.on('error', (err) => {
   logError('HTTP server error', err);
   process.exit(1);
 });
+if (onionServer) {
+  onionServer.on('error', (err) => {
+    logError('Onion HTTP server error', err);
+    process.exit(1);
+  });
+}
 
-server.listen(PORT, () => {
+let pendingListeners = listeners.length;
+function onListening() {
+  pendingListeners -= 1;
+  if (pendingListeners > 0) return;
   logInfo(
-    `Signaling node listening on :${PORT} ` +
+    `Signaling node listening on :${PORT}` +
+      `${onionServer ? ` and onion :${ONION_PORT}` : ''} ` +
       `(turn=${TURN_ENABLED ? 'on' : 'off'}, pro=${PRO_TOKEN_SECRET ? 'on' : 'off'}, ` +
       `onion=${ONION_HOST ? 'on' : 'off'}, webhook=${BTCPAY_WEBHOOK_SECRET ? 'on' : 'off'}, ` +
       `relay cap=${RELAY_CAP_FREE / MB}/${RELAY_CAP_PRO / MB} MB)`
   );
-});
+}
+server.listen(PORT, onListening);
+if (onionServer) onionServer.listen(ONION_PORT, onListening);
