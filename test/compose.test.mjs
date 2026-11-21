@@ -53,7 +53,8 @@ test('darkp2p env has no merged list items and keeps .env values', { skip }, () 
   assert.equal(env.TURN_TTL, fixture.TURN_TTL, 'TURN_TTL from .env was overridden');
   assert.equal(env.PRO_TOKEN_DAYS, fixture.PRO_TOKEN_DAYS);
   assert.equal(env.PRO_TOKEN_SECRET, fixture.PRO_TOKEN_SECRET);
-  assert.equal(env.BTCPAY_WEBHOOK_SECRET, fixture.BTCPAY_WEBHOOK_SECRET);
+  assert.equal(env.NOWPAYMENTS_API_KEY, fixture.NOWPAYMENTS_API_KEY);
+  assert.equal(env.NOWPAYMENTS_IPN_SECRET, fixture.NOWPAYMENTS_IPN_SECRET);
   assert.equal(env.PORT, '3000');
   assert.equal(env.ONION_PORT, '3001');
 });

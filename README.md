@@ -88,8 +88,8 @@ The receiver rejects:
 
 | Service | Image | Role | Hardening and logging |
 |---|---|---|---|
-| `caddy` | `caddy:2.11.9-alpine` (tag + digest) | TLS termination and reverse proxy for `DOMAIN` (and the `www.` redirect). Publishes `80/tcp`, `443/tcp` and `443/udp` (HTTP/3). | `cap_drop: ALL` plus `NET_BIND_SERVICE`. Strips the `Server` header, a 10 s header read timeout, a 64 KB body limit on `/webhook/btcpay`, and keeps proxied WebSockets open for up to 5 min after a Caddy config reload (`stream_close_delay`). No access log. Docker `local` log driver, 3 × 10 MB. |
-| `darkp2p` | built from `Dockerfile` (`node:22.23.5-alpine3.24`, tag + digest) | The signaling server: page, WebSocket signaling and relay, `/api/claim`, `/webhook/btcpay`, `/health`. Listens on `3000` (via Caddy) and the onion-only `3001`. | Runs as `node` with `NODE_ENV=production`, a read-only root, `cap_drop: ALL`, tmpfs `/tmp`, `mem_limit: 384m`, `pids_limit: 128`, and a `/health` healthcheck. `local` logs, 3 × 10 MB. Logs contain no addresses, room IDs, invoice IDs or tokens. |
+| `caddy` | `caddy:2.11.9-alpine` (tag + digest) | TLS termination and reverse proxy for `DOMAIN` (and the `www.` redirect). Publishes `80/tcp`, `443/tcp` and `443/udp` (HTTP/3). | `cap_drop: ALL` plus `NET_BIND_SERVICE`. Strips the `Server` header, a 10 s header read timeout, a 64 KB body limit on `/webhook/nowpayments`, and keeps proxied WebSockets open for up to 5 min after a Caddy config reload (`stream_close_delay`). No access log. Docker `local` log driver, 3 × 10 MB. |
+| `darkp2p` | built from `Dockerfile` (`node:22.23.5-alpine3.24`, tag + digest) | The signaling server: page, WebSocket signaling and relay, `/api/checkout`, `/api/claim`, `/webhook/nowpayments`, `/health`. Listens on `3000` (via Caddy) and the onion-only `3001`. | Runs as `node` with `NODE_ENV=production`, a read-only root, `cap_drop: ALL`, tmpfs `/tmp`, `mem_limit: 384m`, `pids_limit: 128`, and a `/health` healthcheck. `local` logs, 3 × 10 MB. Logs contain no addresses, room IDs, payment/invoice/order IDs or tokens. |
 | `tor` | built from `tor/Dockerfile` (`alpine:3.23.8`, `tor=0.4.9.17-r0`) | v3 onion service: `http://<onion>/` forwards to `darkp2p:3001`. No SOCKS port. | Runs as user `tor`. `tor/torrc` is mounted read-only. Keys persist in the `tor_data` volume. `HiddenServiceMaxStreams 256` with `HiddenServiceMaxStreamsCloseCircuit 1`. `local` logs, 3 × 10 MB. |
 | `coturn` | `coturn/coturn:4.6.3-r3-alpine` (tag + digest) | STUN on `3478` and TURN with ephemeral credentials for Pro rooms. UDP relay ports `49160-49200`. Host networking. | Runs as `nobody` with a read-only root and tmpfs state. All flags, including the secret, come from a generated `coturn/turnserver.conf` (see below). Docker logging driver `none`. |
 
@@ -141,17 +141,16 @@ All configuration lives in `.env`. Compose passes the whole file to `darkp2p` (`
 | `TURN_PUBLIC_IP` | — (**required for coturn**) | The server's public IPv4. It is read only by `scripts/gen-turnserver-conf.sh`, which denies it as a relay peer and refuses to run without it. |
 | `TURN_TTL` | `3600` | Lifetime of TURN credentials in seconds (60–86400). |
 | `STUN_URLS` | empty | Comma-separated `stun:`/`stuns:` URLs that override the STUN server. Without it and without `TURN_HOST`, the page falls back to `stun.l.google.com` (with a warning). |
-| `PRO_TOKEN_SECRET` | empty | HMAC key for Pro tokens. Without it, Pro is disabled. Required if `BTCPAY_WEBHOOK_SECRET` is set. |
-| `PRO_TOKEN_DAYS` | `30` | Lifetime of the default `pro-30d` tier, in days (1–3650). |
-| `PRO_TIERS` | `pro-1d:1,pro-30d:${PRO_TOKEN_DAYS}` | BTCPay item code → token days, as `code:days,…`. Fatal if malformed. |
-| `CLAIM_TTL_HOURS` | `48` | How long a paid token can be claimed by invoice ID (1–168). See **Pro payments and claims**. |
-| `BTCPAY_WEBHOOK_SECRET` | empty | Enables `POST /webhook/btcpay`, which verifies the `BTCPay-Sig` HMAC signature. |
-| `BTCPAY_URL` | empty | BTCPay base URL (https). Together with `BTCPAY_API_KEY` and `BTCPAY_STORE_ID` it enables invoice lookup and restart-safe claims. |
-| `BTCPAY_API_KEY` | empty | Greenfield API key with permission to view invoices. |
-| `BTCPAY_STORE_ID` | empty | Binds webhooks and lookups to one store. |
-| `BTCPAY_POS_URL` | empty | https URL of the BTCPay PoS app, with no query, fragment or credentials. Purchase buttons link to `?itemCode=…` and are hidden when it is unset. |
-| `TIP_XMR_ADDRESS` | empty | Monero address for the tip button (mainnet, 95 or 106 characters). The button is hidden when unset. |
-| `TIP_BTC_ADDRESS` | empty | Bitcoin address for the tip button (mainnet lowercase `bc1…`, or legacy `1…`/`3…`). The button is hidden when unset. |
+| `PRO_TOKEN_SECRET` | empty | HMAC key for Pro tokens. Without it, Pro is disabled. Required if `NOWPAYMENTS_API_KEY` is set. |
+| `PRO_TOKEN_DAYS` | `30` | Lifetime of the `pro-30d` tier, in days (1–3650). `pro-1d` is always 1 day. |
+| `CLAIM_TTL_HOURS` | `48` | How long a paid token can be claimed (1–168), counted from the payment's `created_at` + 6 h. See **Pro payments and claims**. |
+| `NOWPAYMENTS_API_KEY` | empty | Enables checkout (`POST /api/checkout`), the IPN webhook (`POST /webhook/nowpayments`) and payment lookups. Without it the checkout buttons are hidden. |
+| `NOWPAYMENTS_IPN_SECRET` | empty | IPN secret from the NOWPayments dashboard. Verifies `x-nowpayments-sig` (HMAC-SHA512 over the key-sorted JSON). Required with `NOWPAYMENTS_API_KEY`, and fatal without it. |
+| `NOWPAYMENTS_API_URL` | `https://api.nowpayments.io` | API base URL (https, no query or credentials), e.g. `https://api-sandbox.nowpayments.io` for testing. |
+| `PRO_1D_PRICE_USD` | `2` | Price of the 24-hour pass in USD (positive, ≤ 2 decimals). Shown on the page and charged. |
+| `PRO_30D_PRICE_USD` | `5` | Price of the 30-day pass in USD. |
+| `TIP_XMR_ADDRESS` | empty | Monero address for the tip button: mainnet standard (`4…`) or subaddress (`8…`), 95 characters, or integrated (106). The button is hidden when unset. |
+| `TIP_BTC_ADDRESS` | empty | Bitcoin address for the tip button: mainnet lowercase `bc1q…`/`bc1p…` (Taproot), or legacy `1…`/`3…`. The button is hidden when unset. |
 | `MAX_TOTAL_CONNS` | `1000` | Global WebSocket cap (2–100000). |
 | `MAX_CONNS_PER_IP` | `6` | Concurrent WebSockets per hashed client address (1–10000). |
 | `MAX_ONION_CONNS` | `100` | Concurrent WebSockets on the onion listener, which shares one bucket (2–10000). |
@@ -174,20 +173,33 @@ Every `SWEEP_MS` the server logs one counters-only line:
 
 ## Pro payments and claims
 
-1. The buyer pays through the BTCPay PoS (`BTCPAY_POS_URL`) and returns to the page with the invoice ID.
-2. The page stores the pending claim in `localStorage`, so it resumes after a reload or a browser restart. It polls `GET /api/claim` with back-off (3 s up to 30 s) for up to 6 hours, honours `Retry-After`, and gives up after 48 hours.
-3. BTCPay's `InvoiceSettled` webhook (`POST /webhook/btcpay`, signed with `BTCPAY_WEBHOOK_SECRET`) mints the token. Webhooks older than 30 days are ignored.
+Payments run on [NOWPayments](https://nowpayments.io). darkp2p creates the invoices itself, so the only dashboard setup is an API key and an IPN secret (`NOWPAYMENTS_API_KEY`, `NOWPAYMENTS_IPN_SECRET`). Nothing about NOWPayments needs to run on this server or share `DOMAIN`.
 
-**With invoice lookup** (`BTCPAY_URL`, `BTCPAY_API_KEY` and `BTCPAY_STORE_ID` set), every webhook and every cache-missing claim is checked against the BTCPay API. The invoice must be `Settled`, from the configured store, and carry a known item code. The token is then derived deterministically:
-* its expiry is the invoice creation time + tier days + 6 h;
-* a claim after a server restart, or one that arrives before the webhook, returns the same token;
-* the claim window runs from invoice creation plus the 6 h grace, plus `CLAIM_TTL_HOURS`;
-* if BTCPay is unreachable, a claim gets `503` with `Retry-After: 30` and a webhook gets `502` (so BTCPay retries);
-* "not settled yet" answers are cached for 30 s.
+1. **Checkout.** The buyer picks a tier. The page sends `POST /api/checkout {"tier":"pro-1d"|"pro-30d"}`, which:
+   * is rate-limited per client (10 per minute; all onion clients share 60) and capped at 4 KB, and needs `Content-Type: application/json`, so other sites cannot trigger it;
+   * calls NOWPayments `POST /v1/invoice` with:
+     * `price_amount` (`PRO_1D_PRICE_USD` / `PRO_30D_PRICE_USD`), `price_currency: "usd"`;
+     * `order_id` set to `<tier>:<random>`;
+     * `ipn_callback_url: https://<DOMAIN>/webhook/nowpayments`;
+     * `success_url` and `cancel_url` set to `https://<DOMAIN>/`;
+   * returns `{invoiceUrl}`, and the tab navigates to it.
+2. **Return.** After paying, NOWPayments sends the buyer back to `https://<DOMAIN>/?NP_id=<payment id>`; `?invoiceId=` is accepted too.
+   * The page stores the pending claim in `localStorage` and removes the ID from the address bar, so the claim resumes after a reload or a browser restart.
+   * It polls `GET /api/claim?paymentId=…` with back-off (3 s up to 30 s) for up to 6 hours, honours `Retry-After`, and gives up after 48 hours.
+3. **IPN.** NOWPayments posts each status change to `/webhook/nowpayments`, signed in `x-nowpayments-sig`. The signature is an HMAC-SHA512 with `NOWPAYMENTS_IPN_SECRET` over the JSON body with its keys sorted recursively, compared in constant time.
+   * Only `payment_status: "finished"` mints a token.
+   * `waiting`, `confirming`, `confirmed`, `sending`, `partially_paid`, `failed` and `expired` get `200 {"ok":true,"ignored":true}`.
 
-**Without lookup**, the webhook mints a token that expires that many days after it arrives. It can be claimed for `CLAIM_TTL_HOURS` from then, and an unclaimed token is lost on restart.
+**Deterministic, restart-safe tokens.** A token is minted only for a finished payment whose `order_id` is one of ours (`pro-1d:`/`pro-30d:` + 32 hex), in USD, with `price_amount` at least the tier's price. Its expiry is `created_at + tier days + 6 h`, so the same payment always yields the same token:
+* the IPN carries `created_at`, so it mints without an API call; an IPN without it is resolved through `GET /v1/payment/{payment_id}`;
+* a claim by payment ID that misses the in-memory record is answered from `GET /v1/payment/{payment_id}`. That covers a claim after a server restart, or one that arrives before the IPN, and returns the same token;
+* a claim by `invoiceId` is answered only from the record of a received IPN, because NOWPayments has no lookup by invoice ID with an API key;
+* the claim window runs from `created_at` plus the 6 h grace, plus `CLAIM_TTL_HOURS`;
+* if NOWPayments is unreachable, a claim gets `503` with `Retry-After: 30`, and an IPN that needed a lookup gets `502` (so NOWPayments retries);
+* "not finished yet" answers are cached for 30 s;
+* a redelivered IPN never mints twice.
 
-After the window, `/api/claim` returns `404`. Logs never contain invoice IDs, tokens or lookup URLs.
+After the window, `/api/claim` returns `404`. Logs never contain payment, invoice or order IDs, tokens, the API key or lookup URLs.
 
 ---
 
@@ -213,7 +225,8 @@ TURN_TTL=3600
 PRO_TOKEN_SECRET=$(openssl rand -hex 32)
 PRO_TOKEN_DAYS=30
 CLAIM_TTL_HOURS=48
-BTCPAY_WEBHOOK_SECRET=
+NOWPAYMENTS_API_KEY=
+NOWPAYMENTS_IPN_SECRET=
 EOF
 chmod 600 .env
 ```
@@ -291,7 +304,7 @@ console.log(`${exp}.${sig}`);
 '
 ```
 
-To automate token issuance with crypto payments, point a BTCPay Server `InvoiceSettled` webhook to `https://yourdomain.com/webhook/btcpay` and set `BTCPAY_WEBHOOK_SECRET` (plus, for restart-safe claims, `BTCPAY_URL`, `BTCPAY_API_KEY` and `BTCPAY_STORE_ID`). See **Pro payments and claims** above.
+To sell tokens automatically with crypto payments, set `NOWPAYMENTS_API_KEY` and `NOWPAYMENTS_IPN_SECRET`. See **Pro payments and claims** above.
 
 With a Pro token, either peer can tick *Hide my IP from peer*. This forces TURN-only ICE (`iceTransportPolicy: "relay"`), so the other side sees coturn's address instead of yours; without TURN the page refuses rather than fall back to a direct connection. *Force WebSocket relay* skips WebRTC entirely and relays the encrypted frames through the server, within the room's relay budget.
 

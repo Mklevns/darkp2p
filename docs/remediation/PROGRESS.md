@@ -668,3 +668,27 @@
 - **Caddyfile formatting warning:** no decision was requested, and it stays cosmetic and unchanged.
 - **`docs/remediation/`:** kept in the repository as the historical changelog and audit trail. It gives future sessions the context behind `simple-log`, `ONION_PORT`, wire format v3 and the other remediation decisions.
 - **Status:** the remediation is complete (Steps 0–10). No further changes are planned. Two Step 10 items remain for the deploy host and the browser: the tor image build and pin check, and the manual browser checklist.
+
+### Post-remediation — NOWPayments replaces BTCPay (2026-11-21)
+- **Files changed:** `server.js`, `public/index.html`, `Caddyfile`, `.env.example`, `README.md`, `test/helpers/server.mjs`, `test/claim.test.mjs` (rewritten), `test/baseline.test.mjs`, `test/config.test.mjs`, `test/compose.test.mjs`, `test/fixtures/compose.env`. The local `.env` holds the tip addresses and is gitignored.
+- **Server:**
+  - `NOWPAYMENTS_API_KEY`, `NOWPAYMENTS_IPN_SECRET`, `NOWPAYMENTS_API_URL` (https, default `https://api.nowpayments.io`), `PRO_1D_PRICE_USD` (2) and `PRO_30D_PRICE_USD` (5) replace every `BTCPAY_*` var and `PRO_TIERS`.
+  - `POST /api/checkout`: per-client rate limit 10/min, onion clients share 60/min, 10 000 tracked clients with the oldest evicted. Body cap 4 KB, JSON content type only. It creates a NOWPayments invoice with `order_id = <tier>:<32 hex>` and returns `{invoiceUrl}`.
+  - `POST /webhook/nowpayments`: `x-nowpayments-sig` is checked as HMAC-SHA512 over the recursively key-sorted JSON, with `timingSafeEqual`. Only `finished` mints; other statuses get `200 {ok:true, ignored:true}`.
+  - Tokens are deterministic: `exp = created_at + days·86400 + 6 h`, with the Step 3 claim window, negative cache, 503/502 handling and log hygiene.
+  - `/api/claim` takes `paymentId` (restart-safe through `GET /v1/payment/{id}`) or `invoiceId` (from the recorded IPN only).
+- **Client:** the config is `{checkoutEnabled, priceUsd, tipXmr, tipBtc}`. The buttons post to `/api/checkout` and follow the invoice URL. `?NP_id=` and `?invoiceId=` are captured, persisted, stripped from the URL and polled as in Step 3. Old pending claims are discarded.
+- **Gate:** `npm run check` PASS; `npm test` 122/122 PASS.
+  - The real tip addresses were boot-tested out of tree: exact config JSON, CSP 1/1, not in the logs.
+  - A Playwright/Chromium run against a mock NOWPayments passed 12/12.
+  - Mutation checks (unsorted signature, minting on `confirmed`, no price check) were each caught.
+- **Decisions (user, 2026-11-21):** all 8 design calls are approved as implemented:
+  1. The signed IPN mints from its own `created_at`, and a lookup is used only for restart or pre-IPN claims and for an IPN without `created_at`.
+  2. Restart-safe claims need the payment ID; there is no lookup by invoice ID.
+  3. `NP_id` is treated as the payment ID. Verify this once in the sandbox.
+  4. Before minting, the order prefix, USD and `price_amount ≥` the tier price are required.
+  5. `priceUsd` is added to the page config.
+  6. Checkout requires a JSON content type and redirects in the same tab.
+  7. `PRO_TIERS` is removed.
+  8. Boot is fatal on mismatched NOWPayments, IPN and Pro secrets; an IPN secret under 32 characters only warns.
+  - **Tests keep synthetic look-alike addresses.** The personal tip addresses stay out of tracked files.
