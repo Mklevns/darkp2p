@@ -56,3 +56,12 @@
   - coturn logging is disabled.
   - Four containers.
   - This resolves Step 1 open question 2 and Step 2 open question 2. The gate was re-run: check PASS, 22/22 tests PASS.
+
+### Decisions after Step 2 (user, 2026-11-21)
+- **coturn pin:** coturn is pinned by tag and digest: `coturn/coturn:4.6.3-r3-alpine@sha256:e2bca2f7…46be`. This is the multi-arch manifest-list digest from `docker buildx imagetools inspect`, and it matches the RepoDigest of the image flag-checked in Step 2. The update procedure is a comment above the `image:` line. The compose test now requires the tag+digest form.
+- **Compose gate:** run it with `npm run check:compose` (`scripts/compose-gate.sh`).
+  - It creates a temporary `.env` from `test/fixtures/compose.env` with noclobber, runs `docker compose --env-file test/fixtures/compose.env config -q`, and removes the `.env` through an EXIT trap. INT, TERM and HUP are routed through that trap.
+  - It refuses (exit 2) if a `.env` already exists, and prints SKIPPED if docker compose is missing.
+  - Verified paths: success, compose error, existing `.env` (left untouched) and SIGTERM mid-run. In every case no `.env` is left behind. `.env` is also gitignored.
+  - Later steps' "docker compose … config -q" gate means `npm run check:compose`.
+- **Gate re-run:** `npm run check` PASS; `npm test` 22/22 PASS; `npm run check:compose` PASS. `shellcheck` is SKIPPED for `scripts/compose-gate.sh` (tool unavailable).

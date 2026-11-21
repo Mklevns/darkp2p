@@ -53,7 +53,12 @@ services:
       - internal
 
   coturn:
-    image: coturn/coturn:4.6.3-r3-alpine
+    # Pinned by tag and multi-arch index digest. To update, pick an exact tag
+    # (https://hub.docker.com/r/coturn/coturn/tags), then take the top-level
+    # "Digest:" line (the manifest list, not a per-platform one) from:
+    #   docker buildx imagetools inspect coturn/coturn:<tag>
+    # and re-check flags with: docker run --rm coturn/coturn:<tag> --help
+    image: coturn/coturn:4.6.3-r3-alpine@sha256:e2bca2f79a4269d7240de5872ab60a9305013ad37296d2acf14f9510874346be
     container_name: darkp2p-coturn
     restart: unless-stopped
     network_mode: host

@@ -86,7 +86,11 @@ test('coturn: no TCP relay, mapped-IPv4 deny, no stdout log, logging disabled', 
   assert.ok(cmd.includes('--log-file=/dev/null'));
   assert.ok(cmd.includes('--total-quota=40'));
   assert.equal(coturn.logging?.driver, 'none');
-  assert.match(coturn.image, /^coturn\/coturn:4\.6\.\d+-r\d+-alpine$/, 'coturn image not pinned to an exact 4.6.x tag');
+  assert.match(
+    coturn.image,
+    /^coturn\/coturn:4\.6\.\d+-r\d+-alpine@sha256:[a-f0-9]{64}$/,
+    'coturn image not pinned to an exact 4.6.x tag and digest'
+  );
 });
 
 test('compose refuses to render without TURN_PUBLIC_IP', { skip }, () => {
