@@ -412,3 +412,9 @@
   2. **Empty file left by the save picker.** For a new file name, the picker may create an empty file, and an aborted transfer leaves it behind. It is deliberately not deleted: `handle.remove()` would also delete an existing file the user chose to overwrite (whose contents are untouched on abort).
   3. **Data waits behind signaling.** Binary frames now wait behind any in-flight signaling handler. In practice that only happens during negotiation, but it does add latency there.
   4. **Wrong wording on first connect.** A failed first connection logs "Signaling connection lost — reconnecting..." although nothing was ever connected.
+
+### Decisions after Step 7 (user, 2026-11-21)
+- **Newcomer falling back to the relay:** kept as-is. Anyone with the room link holds the key, so a newcomer's `ws-fallback` is a valid peer switch.
+- **Empty file left by the save picker on abort:** kept as-is. The handle is never deleted, so an existing file the user chose to overwrite is never wiped.
+- **Data waiting behind signaling:** kept as-is. Signaling is quiet during a transfer, and one ordered queue avoids concurrency races.
+- **First-connect wording:** cosmetic and not changed now. If `connectSignaling()` is touched again, log "Could not connect to signaling — retrying..." when the socket never opened, instead of "Signaling connection lost".
