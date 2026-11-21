@@ -110,3 +110,27 @@
 - **Docs:** `CLAIM_TTL_HOURS=48` is now in `.env.example` (with a comment) and in the README `.env` example. The README also explains the claim flow and window, and the optional lookup variables (`BTCPAY_URL`, `BTCPAY_API_KEY`, `BTCPAY_STORE_ID`) that make claims restart-safe.
 - **Gate re-run:** `npm run check` PASS; `npm test` 36/36 PASS.
 - Step 3 open questions 1–3 are resolved.
+
+### Step 4 — Relay memory pinning, control-message budget (2026-11-21)
+- **Tasks:** 4.A, 4.B
+- **Files changed:** `server.js`; new `test/relay.test.mjs`.
+- **4.A:**
+  - `RELAY_HIGH_WATER` is now 512 KB and `RELAY_LOW_WATER` 128 KB.
+  - `HEARTBEAT_MS` is env-tunable (1000–300000, default 30000). New settings: `RELAY_STALL_MS` (1000–600000, default 60000) and `MAX_RELAY_ROOMS` (1–10000, default 50).
+  - `setBackpressured()` keeps `backpressuredSince` consistent wherever `backpressured` changes (relay send, its drain callback and `leaveRoom`).
+  - The heartbeat still skips pings to paused sockets, but now runs `checkRelayStall()` on them. If a socket has been paused for backpressure for more than `RELAY_STALL_MS` and its receiver is still OPEN, both peers get `{type:'error', reason:'relay-stalled'}` and the receiver is closed with `1008 'relay-stalled'`. The OPEN check stops the notice repeating while that close completes.
+  - When `ws-fallback` arrives in a non-relay room and the number of `relayActive` rooms (counted by iterating `rooms`) is at the cap, the sender gets `relay-busy`, `relayActive` is not set and nothing is forwarded.
+- **4.B:**
+  - `MAX_MSGS_PER_WINDOW` is now 120.
+  - A per-socket `candidateCount` resets on join, when a second peer arrives (for both peers), and for the remaining peer on `leaveRoom`. Above 200 sanitized candidates the socket is closed with `1008 'too-many-candidates'`, and the 201st candidate is not forwarded.
+- **Tests (5):**
+  - The stall test fires at about 3 s (2 s stall plus 1 s heartbeat granularity) and the receiver gets 1008 `relay-stalled`.
+  - The receiver must keep sending control messages while not reading, as in the root cause. A silent receiver is already killed by the existing pong check, so the stall path would never be reached.
+  - Also: `relay-busy`, with no forward, no relaying, and the slot freed when the first room closes; 120 messages allowed and the 121st closes with 1008; 200 candidates allowed and the 201st closes with `too-many-candidates` and is not forwarded; the candidate budget resets on a new peer.
+  - All 5 fail against the Step 3 `server.js`. The stall test's keepalive and pump timers are cleaned up in `finally`, so a failure cannot hang the runner.
+- **Gate:** `npm run check` PASS; `npm test` 41/41 PASS.
+- **SKIPPED:** none.
+- **Open questions:**
+  1. The stalled receiver gets a graceful `close(1008)`. Because it is not reading, the close handshake cannot finish, so its queued data (at most the 512 KB high-water plus in-flight frames) is only freed when `ws` destroys the socket after its 30 s close timeout. `terminate()` would free it at once, but the receiver would then never see the 1008 code. Kept as specified.
+  2. With `MAX_MSGS_PER_WINDOW = 120`, a client sending more than about 119 candidates within 10 s still hits the message limit before the 200-candidate cap.
+  3. The new env settings (`HEARTBEAT_MS`, `RELAY_STALL_MS`, `MAX_RELAY_ROOMS`) are not documented in `.env.example` or `README.md` (this step was limited to `server.js` and tests).

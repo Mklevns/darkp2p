@@ -94,12 +94,16 @@ const CONN_WINDOW_MS = 60_000;
 const MAX_CONNS_PER_WINDOW = 20;
 const MAX_ONION_CONNS_PER_WINDOW = 120;
 const MSG_WINDOW_MS = 10_000;
-const MAX_MSGS_PER_WINDOW = 40; // JSON control messages only
+const MAX_MSGS_PER_WINDOW = 120; // JSON control messages only
+const MAX_CANDIDATES_PER_PEER = 200; // ICE candidates per socket, per peer pairing
 const CLAIM_WINDOW_MS = 60_000;
 const MAX_CLAIMS_PER_WINDOW = 30;
 const MAX_ONION_CLAIMS_PER_WINDOW = 120;
 
-const HEARTBEAT_MS = 30_000;
+const HEARTBEAT_MS = envInt('HEARTBEAT_MS', 30_000, 1000, 300_000);
+// A sender paused this long because its receiver is not draining means the
+// receiver has stopped reading: its queued data is pinned in our RAM.
+const RELAY_STALL_MS = envInt('RELAY_STALL_MS', 60_000, 1000, 600_000);
 const SWEEP_MS = 5 * 60 * 1000;
 const SHUTDOWN_GRACE_MS = 5_000;
 // How long a minted token stays claimable by invoice ID.
@@ -121,8 +125,9 @@ const RELAY_CAP_FREE = envInt('RELAY_CAP_FREE_MB', 50, 0, 1024 * 1024) * MB;
 const RELAY_CAP_PRO = envInt('RELAY_CAP_PRO_MB', 500, 0, 1024 * 1024) * MB;
 const RELAY_RATE_FREE = 1 * MB; // bytes per second, per sender
 const RELAY_RATE_PRO = 4 * MB;
-const RELAY_HIGH_WATER = 1 * MB; // pause the sender above this much queued for the receiver
-const RELAY_LOW_WATER = 256 * 1024;
+const RELAY_HIGH_WATER = 512 * 1024; // pause the sender above this much queued for the receiver
+const RELAY_LOW_WATER = 128 * 1024;
+const MAX_RELAY_ROOMS = envInt('MAX_RELAY_ROOMS', 50, 1, 10000); // rooms with relayActive
 const MIN_THROTTLE_MS = 25;
 
 const ROOM_ID_RE = /^[a-f0-9]{16,64}$/i;
@@ -961,6 +966,12 @@ function updatePause(ws) {
   else if (!shouldPause && ws.isPaused) ws.resume();
 }
 
+function setBackpressured(ws, value) {
+  if (ws.backpressured === value) return;
+  ws.backpressured = value;
+  ws.backpressuredSince = value ? Date.now() : 0;
+}
+
 function chargeRelayBudget(ws, bytes, rate) {
   const now = Date.now();
   if (ws.bucketAt === 0) ws.bucket = rate; // first relayed frame: start with a full bucket
@@ -1020,13 +1031,13 @@ function handleRelayFrame(ws, data) {
     // stuck behind queued data on a slow link.
     peer.isAlive = true;
     if (ws.backpressured && peer.bufferedAmount <= RELAY_LOW_WATER) {
-      ws.backpressured = false;
+      setBackpressured(ws, false);
       updatePause(ws);
     }
   });
 
   if (!ws.backpressured && peer.bufferedAmount > RELAY_HIGH_WATER) {
-    ws.backpressured = true;
+    setBackpressured(ws, true);
     updatePause(ws);
   }
   chargeRelayBudget(ws, data.length, room.isPro ? RELAY_RATE_PRO : RELAY_RATE_FREE);
@@ -1098,8 +1109,11 @@ function handleJoin(ws, msg) {
   ws.room = room;
   ws.roomId = roomId;
 
+  ws.candidateCount = 0;
   if (room.peers.size !== 2) return;
 
+  // New pairing: both peers start a fresh ICE candidate budget.
+  for (const peer of room.peers) peer.candidateCount = 0;
   room.isPro = [...room.peers].some((p) => p.isPro);
   room.relayActive = false;
   const turnEnabled = room.isPro && TURN_ENABLED;
@@ -1141,8 +1155,28 @@ function handleControlMessage(ws, data) {
   const clean = sanitizeSignal(msg);
   if (!clean) return;
 
-  if (clean.type === 'ws-fallback') room.relayActive = true;
+  if (clean.type === 'candidate') {
+    ws.candidateCount += 1;
+    if (ws.candidateCount > MAX_CANDIDATES_PER_PEER) {
+      ws.close(1008, 'too-many-candidates');
+      return;
+    }
+  }
+
+  if (clean.type === 'ws-fallback' && !room.relayActive) {
+    if (countRelayRooms() >= MAX_RELAY_ROOMS) {
+      sendJson(ws, { type: 'error', reason: 'relay-busy' });
+      return;
+    }
+    room.relayActive = true;
+  }
   sendJson(otherPeer(room, ws), clean);
+}
+
+function countRelayRooms() {
+  let n = 0;
+  for (const room of rooms.values()) if (room.relayActive) n += 1;
+  return n;
 }
 
 function leaveRoom(ws) {
@@ -1155,7 +1189,8 @@ function leaveRoom(ws) {
 
   for (const peer of room.peers) {
     // The peer may have been paused waiting on this socket's queue.
-    peer.backpressured = false;
+    setBackpressured(peer, false);
+    peer.candidateCount = 0;
     updatePause(peer);
     sendJson(peer, { type: 'peer-left' });
   }
@@ -1183,6 +1218,8 @@ wss.on('connection', (ws) => {
   ws.msgWindowStart = Date.now();
   ws.cleanedUp = false;
   ws.backpressured = false;
+  ws.backpressuredSince = 0;
+  ws.candidateCount = 0;
   ws.throttleTimer = null;
   ws.bucket = 0;
   ws.bucketAt = 0;
@@ -1213,11 +1250,27 @@ wss.on('error', (err) => logError('WebSocket server error', err));
 // Timers
 // ---------------------------------------------------------------------------
 
+// The sender is paused on a receiver that has not drained for RELAY_STALL_MS:
+// the receiver is alive but not reading, so close it and free its queue.
+function checkRelayStall(ws, now) {
+  if (!ws.backpressured || now - ws.backpressuredSince <= RELAY_STALL_MS) return;
+  const peer = ws.room ? otherPeer(ws.room, ws) : null;
+  if (!peer || peer.readyState !== WebSocket.OPEN) return;
+  const notice = { type: 'error', reason: 'relay-stalled' };
+  sendJson(ws, notice);
+  sendJson(peer, notice);
+  peer.close(1008, 'relay-stalled');
+}
+
 const heartbeat = setInterval(() => {
+  const now = Date.now();
   for (const ws of wss.clients) {
     // A paused socket is one we chose not to read; its pongs cannot arrive.
     // It resumes as soon as its peer drains or leaves, then is checked again.
-    if (ws.isPaused) continue;
+    if (ws.isPaused) {
+      checkRelayStall(ws, now);
+      continue;
+    }
 
     if (!ws.isAlive) {
       cleanupSocket(ws);
