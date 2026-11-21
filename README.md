@@ -11,10 +11,10 @@ Live instance: [darkp2p.com](https://darkp2p.com)
 * **Zero Server Storage:** `server.js` is a stateless Node.js WebSocket signaling broker (`ws` only) that pairs two peers in RAM and relays SDP offers/answers and ICE candidates. File payloads never touch the server.
 * **Client-Side E2EE (Anti-MITM):** Standard WebRTC DTLS protects against passive observers, but a compromised signaling server could swap SDP certificate fingerprints. DARKP2P adds an application-layer **AES-256-GCM** stream using a 256-bit key generated locally in the URL fragment:
   ```text
-  [https://darkp2p.com/#](https://darkp2p.com/#)<32-hex-roomId>:<base64url-256bit-key>
+  https://darkp2p.com/#<32-hex-roomId>:<base64url-256bit-key>
   ```
   Browsers never transmit URL fragments (`#...`) over HTTP or WebSockets. Only `<roomId>` is sent to the signaling server.
-* **Low-RAM Disk Streaming:** Incoming chunks stream directly to disk via the browser's Origin Private File System (OPFS) when supported (falling back to in-memory `Blob` assembly otherwise), allowing multi-gigabyte transfers without crashing browser tabs.
+* **Low-RAM Disk Streaming:** Incoming chunks stream directly to disk: to a file the receiver picks (`showSaveFilePicker`) where supported, otherwise to the browser's Origin Private File System (OPFS), and only as a last resort to an in-memory `Blob` (capped at 512 MB). Multi-gigabyte transfers do not crash browser tabs.
 * **Back-Pressure & Chunking:** Files are sliced into `16,000`-byte chunks (leaving headroom for the 49-byte encryption envelope under the 16 KB cross-browser SCTP limit). Flow control uses `bufferedAmount` (capped at 1 MB) plus an end-to-end credit window: at most 256 unacknowledged chunks in flight.
 * **Privacy-Preserving Rate Limiting:** Connection and message limits use a per-boot random salt to HMAC-hash client IPs in RAM—raw IP addresses are never stored or logged.
 * **Isolated Onion Listener:** Tor hidden-service traffic reaches the server on a dedicated port (`ONION_PORT`, `3001` in Docker Compose). Onion clients are identified by that listener alone, never by the `Host` or `X-Forwarded-For` headers, so they cannot pose as clearnet clients to dodge rate limits.
@@ -66,7 +66,7 @@ sender                                   receiver
 "Delivered"
 ```
 
-* **Accept / decline:** the sender waits up to 5 minutes for an answer, then aborts with `timeout`. `decline` reasons are `user`, `size` and `busy`. A receiver without disk streaming (OPFS) declines files over 512 MB automatically (`size`), and a peer already in a transfer declines with `busy`.
+* **Accept / decline:** the sender waits up to 5 minutes for an answer, then aborts with `timeout`. `decline` reasons are `user`, `size` and `busy`. A receiver without disk streaming (no save picker and no OPFS) declines files over 512 MB automatically (`size`), and a peer that is already receiving a file declines with `busy`. Sending and receiving are independent, so both peers can send at the same time.
 * **Credit window:** the receiver acknowledges every 64 chunks and after `done`. The sender keeps at most 256 chunks unacknowledged, in addition to the `bufferedAmount` limit. If more than 256 chunks are waiting to be processed, the receiver aborts. If the window stays full for 60 seconds with no new acknowledgement, the sender aborts with `timeout`.
 * **Completion:** the sender shows *"Sent, awaiting confirmation"* after `done`, and *"Delivered"* only once the receiver's `complete` arrives (after it has verified and saved the file). The receiver's acknowledgement of `done` carries `done: true`, so it cannot be mistaken for a chunk ack.
   * If `done` was acknowledged but `complete` never arrives (the peer closed the tab, or 5 minutes pass), the sender ends with a neutral status: *"Sent — peer closed before final confirmation"* or *"Sent — no final confirmation from the peer"*. No abort is sent.
@@ -82,12 +82,112 @@ The receiver rejects:
 
 ---
 
+## Containers
+
+`docker-compose.yml` runs four containers. Every one has `no-new-privileges`.
+
+| Service | Image | Role | Hardening and logging |
+|---|---|---|---|
+| `caddy` | `caddy:2.11.9-alpine` (tag + digest) | TLS termination and reverse proxy for `DOMAIN` (and the `www.` redirect). Publishes `80/tcp`, `443/tcp` and `443/udp` (HTTP/3). | `cap_drop: ALL` plus `NET_BIND_SERVICE`. Strips the `Server` header, a 10 s header read timeout, a 64 KB body limit on `/webhook/btcpay`, and keeps proxied WebSockets open for up to 5 min after a Caddy config reload (`stream_close_delay`). No access log. Docker `local` log driver, 3 × 10 MB. |
+| `darkp2p` | built from `Dockerfile` (`node:22.23.5-alpine3.24`, tag + digest) | The signaling server: page, WebSocket signaling and relay, `/api/claim`, `/webhook/btcpay`, `/health`. Listens on `3000` (via Caddy) and the onion-only `3001`. | Runs as `node` with `NODE_ENV=production`, a read-only root, `cap_drop: ALL`, tmpfs `/tmp`, `mem_limit: 384m`, `pids_limit: 128`, and a `/health` healthcheck. `local` logs, 3 × 10 MB. Logs contain no addresses, room IDs, invoice IDs or tokens. |
+| `tor` | built from `tor/Dockerfile` (`alpine:3.23.8`, `tor=0.4.9.17-r0`) | v3 onion service: `http://<onion>/` forwards to `darkp2p:3001`. No SOCKS port. | Runs as user `tor`. `tor/torrc` is mounted read-only. Keys persist in the `tor_data` volume. `HiddenServiceMaxStreams 256` with `HiddenServiceMaxStreamsCloseCircuit 1`. `local` logs, 3 × 10 MB. |
+| `coturn` | `coturn/coturn:4.6.3-r3-alpine` (tag + digest) | STUN on `3478` and TURN with ephemeral credentials for Pro rooms. UDP relay ports `49160-49200`. Host networking. | Runs as `nobody` with a read-only root and tmpfs state. All flags, including the secret, come from a generated `coturn/turnserver.conf` (see below). Docker logging driver `none`. |
+
+---
+
 ## Threat Model & Limitations
 
 * **IP Exposure:** Direct WebRTC P2P connections expose each peer's IP address to the other peer during ICE/NAT traversal. Use a VPN if you need IP anonymity.
 * **Synchronous Transfer:** Both peers must keep their browser tabs open until the transfer completes.
 * **TURN Relay:** Direct STUN works for ~80% of connections. For strict corporate firewalls or CGNAT, the stack includes `coturn` with ephemeral HMAC-SHA1 credentials (optionally gated behind stateless HMAC-signed Pro tokens). Relaying is UDP-only (`--no-tcp-relay`; clients can still reach coturn over TCP 3478), and private, loopback, reserved, NAT64/6to4, IPv4-mapped and the server's own public addresses are denied as peers.
-* **No TURN Logs:** coturn logs every client and peer address, so its logging is disabled (`--no-stdout-log`, `--log-file=/dev/null`, Docker logging driver `none`). See the comment in `docker-compose.yml` to enable it temporarily for debugging.
+* **No TURN Logs:** coturn logs every client and peer address, so its logging is disabled. See **coturn configuration and logging policy** below.
+
+### coturn configuration and logging policy
+
+`docker-compose.yml` contains no TURN secret and no coturn flags. Instead `scripts/gen-turnserver-conf.sh` reads `TURN_HOST`, `TURN_PUBLIC_IP` and `TURN_SECRET` from `.env` and writes `coturn/turnserver.conf`. The file is mode `0600` and owned by coturn's container user (`65534:65533`), so run the script with `sudo`. coturn starts with `-c /etc/coturn/turnserver.conf`, and the file is mounted read-only and gitignored.
+
+```bash
+sudo scripts/gen-turnserver-conf.sh          # reads .env, writes coturn/turnserver.conf
+docker compose up -d coturn                   # pick up the new file
+```
+
+Re-run it whenever `TURN_HOST`, `TURN_PUBLIC_IP` or `TURN_SECRET` changes. The script refuses a missing or malformed value, and the secret must be at least 16 printable characters with no spaces or `#`.
+
+The generated file:
+* sets UDP-only relaying (`no-tcp-relay`), per-user and total quotas, bandwidth caps, and no TLS/DTLS listener;
+* denies relaying to private, loopback, link-local, CGNAT, reserved, NAT64, 6to4, IPv4-mapped and ULA ranges, and to `TURN_PUBLIC_IP` itself;
+* disables logging with `no-stdout-log`, `simple-log` and `log-file=/dev/null`. Without `simple-log`, coturn would append a date to the file name, fail to open `/dev/null_<date>.log`, and fall back to writing a log in `/var/tmp`.
+
+Docker's logging driver for coturn is `none`, so nothing reaches the host disk. To debug temporarily, follow the comment on the `coturn` service in `docker-compose.yml`, then revert and remove the container.
+
+The relay port range (`49160-49200`) is defined in both `scripts/gen-turnserver-conf.sh` and `setup-ufw.sh`. Change them together; a test checks that they match.
+
+---
+
+## Configuration (environment variables)
+
+All configuration lives in `.env`. Compose passes the whole file to `darkp2p` (`env_file`). `docker-compose.yml` itself sets only `PORT=3000` and `ONION_PORT=3001`, and uses `DOMAIN` for Caddy. An integer outside its range logs a warning and falls back to the default. Every other invalid value listed as fatal stops the server at boot.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DOMAIN` | `darkp2p.com` | Public hostname. It is used by Caddy, the default `ALLOWED_ORIGINS`, and the canonical/OG URLs in the page. Fatal if it is not a hostname. |
+| `PORT` | `3000` | Main HTTP/WS listener (1–65535). Set by compose. |
+| `ONION_PORT` | `0` (off) | Onion-only listener; compose sets `3001`. Anything arriving here is treated as onion traffic, whatever its headers say. Must differ from `PORT`. |
+| `ONION_HOST` | empty | The service's v3 `.onion` hostname. It enables `Onion-Location` and the onion origin. Fatal if it is not a v3 onion, or if it is set without `ONION_PORT`. |
+| `ALLOWED_ORIGINS` | `https://${DOMAIN}` | Comma-separated http(s) origins allowed to open the WebSocket. `http://${ONION_HOST}` is added whenever `ONION_HOST` is set. |
+| `TRUST_PROXY` | `auto` | Trust `X-Forwarded-For`: `auto` only from a loopback/private peer (the bundled Caddy), `1`/`true` always, `0`/`false` never. Never applied on the onion listener. |
+| `TURN_HOST` | empty | coturn hostname. It enables TURN for Pro rooms (with `TURN_SECRET`) and `stun:${TURN_HOST}:3478` as the STUN server. |
+| `TURN_SECRET` | empty | coturn shared secret for ephemeral HMAC credentials. It is read by `darkp2p` and by `scripts/gen-turnserver-conf.sh`. Use ≥ 32 characters (`openssl rand -hex 32`). |
+| `TURN_PUBLIC_IP` | — (**required for coturn**) | The server's public IPv4. It is read only by `scripts/gen-turnserver-conf.sh`, which denies it as a relay peer and refuses to run without it. |
+| `TURN_TTL` | `3600` | Lifetime of TURN credentials in seconds (60–86400). |
+| `STUN_URLS` | empty | Comma-separated `stun:`/`stuns:` URLs that override the STUN server. Without it and without `TURN_HOST`, the page falls back to `stun.l.google.com` (with a warning). |
+| `PRO_TOKEN_SECRET` | empty | HMAC key for Pro tokens. Without it, Pro is disabled. Required if `BTCPAY_WEBHOOK_SECRET` is set. |
+| `PRO_TOKEN_DAYS` | `30` | Lifetime of the default `pro-30d` tier, in days (1–3650). |
+| `PRO_TIERS` | `pro-1d:1,pro-30d:${PRO_TOKEN_DAYS}` | BTCPay item code → token days, as `code:days,…`. Fatal if malformed. |
+| `CLAIM_TTL_HOURS` | `48` | How long a paid token can be claimed by invoice ID (1–168). See **Pro payments and claims**. |
+| `BTCPAY_WEBHOOK_SECRET` | empty | Enables `POST /webhook/btcpay`, which verifies the `BTCPay-Sig` HMAC signature. |
+| `BTCPAY_URL` | empty | BTCPay base URL (https). Together with `BTCPAY_API_KEY` and `BTCPAY_STORE_ID` it enables invoice lookup and restart-safe claims. |
+| `BTCPAY_API_KEY` | empty | Greenfield API key with permission to view invoices. |
+| `BTCPAY_STORE_ID` | empty | Binds webhooks and lookups to one store. |
+| `BTCPAY_POS_URL` | empty | https URL of the BTCPay PoS app, with no query, fragment or credentials. Purchase buttons link to `?itemCode=…` and are hidden when it is unset. |
+| `TIP_XMR_ADDRESS` | empty | Monero address for the tip button (mainnet, 95 or 106 characters). The button is hidden when unset. |
+| `TIP_BTC_ADDRESS` | empty | Bitcoin address for the tip button (mainnet lowercase `bc1…`, or legacy `1…`/`3…`). The button is hidden when unset. |
+| `MAX_TOTAL_CONNS` | `1000` | Global WebSocket cap (2–100000). |
+| `MAX_CONNS_PER_IP` | `6` | Concurrent WebSockets per hashed client address (1–10000). |
+| `MAX_ONION_CONNS` | `100` | Concurrent WebSockets on the onion listener, which shares one bucket (2–10000). |
+| `RELAY_CAP_FREE_MB` | `50` | WebSocket-relay byte budget per free room, both directions (0 disables the relay). |
+| `RELAY_CAP_PRO_MB` | `500` | Relay budget per Pro room. |
+| `MAX_RELAY_ROOMS` | `50` | Rooms that may use the relay at once (1–10000). Others get `relay-busy`. |
+| `RELAY_STALL_MS` | `60000` | A relay receiver that stops reading for this long is closed with `relay-stalled` (1000–600000). |
+| `HEARTBEAT_MS` | `30000` | WebSocket ping interval (1000–300000). |
+| `SWEEP_MS` | `300000` | Interval of the cleanup sweep and of the stats line (1000–3600000). |
+
+Every `SWEEP_MS` the server logs one counters-only line:
+
+```text
+[darkp2p] stats conns=N rooms=N relayRooms=N relayMB=N.N rejected429=N stalls=N
+```
+
+`conns`, `rooms` and `relayRooms` are current values. `relayMB` (relayed binary data), `rejected429` (WebSocket upgrades and `/api/claim` requests refused with 429) and `stalls` (`relay-stalled` closes) count the last interval only.
+
+---
+
+## Pro payments and claims
+
+1. The buyer pays through the BTCPay PoS (`BTCPAY_POS_URL`) and returns to the page with the invoice ID.
+2. The page stores the pending claim in `localStorage`, so it resumes after a reload or a browser restart. It polls `GET /api/claim` with back-off (3 s up to 30 s) for up to 6 hours, honours `Retry-After`, and gives up after 48 hours.
+3. BTCPay's `InvoiceSettled` webhook (`POST /webhook/btcpay`, signed with `BTCPAY_WEBHOOK_SECRET`) mints the token. Webhooks older than 30 days are ignored.
+
+**With invoice lookup** (`BTCPAY_URL`, `BTCPAY_API_KEY` and `BTCPAY_STORE_ID` set), every webhook and every cache-missing claim is checked against the BTCPay API. The invoice must be `Settled`, from the configured store, and carry a known item code. The token is then derived deterministically:
+* its expiry is the invoice creation time + tier days + 6 h;
+* a claim after a server restart, or one that arrives before the webhook, returns the same token;
+* the claim window runs from invoice creation plus the 6 h grace, plus `CLAIM_TTL_HOURS`;
+* if BTCPay is unreachable, a claim gets `503` with `Retry-After: 30` and a webhook gets `502` (so BTCPay retries);
+* "not settled yet" answers are cached for 30 s.
+
+**Without lookup**, the webhook mints a token that expires that many days after it arrives. It can be claimed for `CLAIM_TTL_HOURS` from then, and an unclaimed token is lost on restart.
+
+After the window, `/api/claim` returns `404`. Logs never contain invoice IDs, tokens or lookup URLs.
 
 ---
 
@@ -100,7 +200,7 @@ The receiver rejects:
 ### 1. Clone & Configure Environment
 
 ```bash
-git clone [https://github.com/YOUR_USERNAME/darkp2p.git](https://github.com/YOUR_USERNAME/darkp2p.git)
+git clone https://github.com/YOUR_USERNAME/darkp2p.git
 cd darkp2p
 
 cat <<EOF> .env
@@ -118,21 +218,29 @@ EOF
 chmod 600 .env
 ```
 
-Replace `203.0.113.10` with the server's public IPv4; `docker compose` refuses to start without `TURN_PUBLIC_IP`. All configuration lives in `.env`: Compose passes it to the `darkp2p` container as-is (`env_file`), and `docker-compose.yml` itself holds no secrets. See `.env.example` for every variable.
+Replace `203.0.113.10` with the server's public IPv4. `scripts/gen-turnserver-conf.sh` refuses to run without `TURN_PUBLIC_IP`. All configuration lives in `.env`: Compose passes it to the `darkp2p` container as-is (`env_file`), and `docker-compose.yml` itself holds no secrets. See **Configuration** above and `.env.example`.
+
+Then generate coturn's config from `.env`:
+
+```bash
+sudo scripts/gen-turnserver-conf.sh
+```
 
 ### 2. Configure Firewall (Ubuntu/Debian)
 
-Opens only SSH (rate-limited), Caddy (`80/tcp`, `443/tcp`, `443/udp`), and `coturn` (`3478/tcp+udp`, `49160-49200/udp`):
+Opens only SSH (rate-limited), Caddy (`80/tcp`, `443/tcp`, `443/udp`), and `coturn` (`3478/tcp+udp`, `49160-49200/udp`). It also sets `IPV6=yes` in `/etc/default/ufw` so IPv6 is filtered too. Set `SSH_PORT` if SSH is not on 22:
 
 ```bash
-chmod +x setup-ufw.sh
-sudo ./setup-ufw.sh
+sudo SSH_PORT=22 ./setup-ufw.sh
 ```
 
-### 3. Generate Lockfile & Launch
+Ports published by Docker (Caddy's `80`/`443`) bypass UFW, because Docker inserts its own iptables rules ahead of UFW's. coturn uses host networking, so UFW does govern its ports.
+
+### 3. Launch
+
+`package-lock.json` is committed, so there is nothing to generate.
 
 ```bash
-docker run --rm -v "$PWD":/app -w /app node:22-alpine npm install --package-lock-only
 docker compose up -d --build
 ```
 
@@ -145,13 +253,30 @@ docker compose logs -f caddy
 
 ### 3b. Enable the Onion Mirror (Optional)
 
-The `tor` container publishes a v3 hidden service that forwards to the server's onion listener (`darkp2p:3001`). Once it has generated its address, add it to `.env` and recreate `darkp2p` so it sends `Onion-Location` and allows the onion origin:
+The `tor` container publishes a v3 hidden service that forwards to the server's onion listener (`darkp2p:3001`). Its keys live in the `tor_data` volume, so the address survives restarts and rebuilds. Leave `ONION_HOST` empty on first launch. Once tor has generated the address:
 
 ```bash
 docker compose exec tor cat /var/lib/tor/hidden_service/hostname
 # set ONION_HOST=<that hostname> in .env, then:
 docker compose up -d darkp2p
 ```
+
+Recreating `darkp2p` makes it send `Onion-Location` and allow the onion origin. Onion clients are always identified by the `3001` listener, never by headers.
+
+### 3c. Upgrading an Existing Install
+
+These changes need action on a server deployed before them:
+
+1. **coturn config:** run `sudo scripts/gen-turnserver-conf.sh` before `docker compose up`. coturn no longer reads flags from `docker-compose.yml`, and the script needs `TURN_PUBLIC_IP` in `.env`.
+2. **tor image:** tor now runs as the unprivileged `tor` user from a pinned image (`tor/Dockerfile`). Keys created by the old root-run container are root-owned, so hand the volume over **once** before starting the new image, or tor refuses the keys and the `.onion` address is lost:
+   ```bash
+   docker compose build tor
+   docker compose run --rm --no-deps --user root --entrypoint chown tor -R tor:tor /var/lib/tor
+   docker compose up -d
+   ```
+3. **tor package pin:** `tor/Dockerfile` pins `tor=0.4.9.17-r0` from Alpine 3.23. If `docker compose build tor` reports the version as unavailable, Alpine has moved on: bump the pin to the version listed at https://pkgs.alpinelinux.org/packages?name=tor&branch=v3.23.
+4. **Wire format v3:** clients of different page versions cannot talk to each other. After deploying, everyone must reload open tabs; a stale tab shows *"Peer is running an outdated DARKP2P page — both sides reload"*.
+5. **`ONION_PORT`:** onion traffic must use the dedicated `3001` listener, which compose sets. Outside compose, `ONION_HOST` without `ONION_PORT` refuses to start.
 
 ### 4. Minting a Stateless TURN Relay Token (Optional)
 
@@ -166,11 +291,9 @@ console.log(`${exp}.${sig}`);
 '
 ```
 
-*(To automate token issuance with crypto payments, point a BTCPay Server `InvoiceSettled` webhook to `https://yourdomain.com/webhook/btcpay` and set `BTCPAY_WEBHOOK_SECRET` in `.env`.)*
+To automate token issuance with crypto payments, point a BTCPay Server `InvoiceSettled` webhook to `https://yourdomain.com/webhook/btcpay` and set `BTCPAY_WEBHOOK_SECRET` (plus, for restart-safe claims, `BTCPAY_URL`, `BTCPAY_API_KEY` and `BTCPAY_STORE_ID`). See **Pro payments and claims** above.
 
-After paying, the buyer's browser claims the token from `/api/claim` and keeps retrying (across reloads) until it arrives. The claim window is `CLAIM_TTL_HOURS` (default `48`); once it has passed, the claim returns `404`.
-
-For restart-safe claims, also set `BTCPAY_URL`, `BTCPAY_API_KEY` (a Greenfield API key with invoice view permission) and `BTCPAY_STORE_ID`. The server then verifies every settled invoice against the BTCPay API and derives the token from the invoice deterministically, so an unclaimed token survives a restart. In this mode the window runs from invoice creation plus a 6-hour settlement grace, and holds across restarts. Without lookup, the window runs from when the webhook minted the token, and an unclaimed token is lost on restart.
+With a Pro token, either peer can tick *Hide my IP from peer*. This forces TURN-only ICE (`iceTransportPolicy: "relay"`), so the other side sees coturn's address instead of yours; without TURN the page refuses rather than fall back to a direct connection. *Force WebSocket relay* skips WebRTC entirely and relays the encrypted frames through the server, within the room's relay budget.
 
 ---
 

@@ -592,3 +592,72 @@
 - [ ] README upgrade/deploy notes: before starting the new tor image on an existing install, run the one-time `tor_data` chown so the `.onion` keys survive:
   `docker compose run --rm --no-deps --user root --entrypoint chown tor -R tor:tor /var/lib/tor`
 - [ ] On the deploy host: `docker compose build tor` to confirm the `tor=0.4.9.17-r0` pin on Alpine 3.23.8, and bump the pin if the repository has moved on.
+
+### Step 10 — README and final verification (2026-11-21)
+- **Tasks:** 10.1, 10.2.
+- **Files changed:** `README.md` only, plus this log.
+- **10.1 — README:**
+  - The two broken `[https://…](https://…)` links (the room-link example and `git clone`) are plain URLs now.
+  - New **Containers** table covers all four services: image and pin, role, hardening, logging.
+  - New **coturn configuration and logging policy** section: `gen-turnserver-conf.sh`, mode 0600 and owner, when to re-run, the deny list, and `no-stdout-log` + `simple-log` + `log-file=/dev/null` with why `simple-log` is needed. It notes the logging driver `none`, the debug procedure, and that the port range is shared with `setup-ufw.sh`. The "No TURN Logs" line now points there.
+  - New **Configuration** table covers all 30 `envStr`/`envInt` keys in `server.js` plus `TURN_PUBLIC_IP`, with defaults, ranges and fatal conditions, and the stats line format.
+  - New **Pro payments and claims** section: the client's pending claim and back-off, the webhook, behaviour with and without lookup, deterministic expiry, 503/502, the negative cache and the 404 after the window.
+  - The wire format section was already v3. Two descriptions there are updated to match Step 7: the save picker → OPFS → RAM order in the storage bullet, and `busy` only while already receiving.
+  - The deploy steps add `sudo scripts/gen-turnserver-conf.sh`, `SSH_PORT`, `IPV6=yes`, and the note that Docker-published ports bypass UFW.
+  - The lockfile step is removed: `package-lock.json` is committed.
+  - Onion bootstrap: `exec tor cat …/hostname`, then set `ONION_HOST`, then `docker compose up -d darkp2p`.
+  - New **3c Upgrading an Existing Install**: the coturn conf script, the one-time `tor_data` chown, verifying or bumping the `tor=` pin, wire format v3 (everyone reloads), and `ONION_PORT`.
+  - The Hide IP (TURN-only) and Force WebSocket relay toggles are described.
+  - This completes the Step 8 and Step 9 checklists.
+- **10.2 — Final verification:**
+  - `npm run check`: PASS. `npm test`: 103/103 PASS, 0 skipped, 0 todo.
+    - The only skips in the code are conditional, each with a printed reason: `openssl not available` (claim tests) and `docker compose not available` (compose tests). Neither fired here.
+    - There is no `.skip`, `.only` or `.todo`.
+  - **Docker stack:**
+    - `docker compose --env-file test/fixtures/compose.env up -d` was run for `caddy`, `darkp2p` and `coturn`, with a temporary `.env` and `coturn/turnserver.conf` generated from the fixture.
+    - **tor was not started:** its image cannot build here (`dl-cdn.alpinelinux.org` returns 403, deferred to the deploy host per the Step 9 decision).
+    - **darkp2p was pre-built** with the sandbox-CA base override (as in Step 9) and started with `--no-build`.
+    - darkp2p became healthy, and caddy and coturn were running.
+  - **Through Caddy:**
+    - `curl -sI http://127.0.0.1/` with `Host: example.test` gives `308` to https.
+    - HTTPS cannot get a certificate here: ACME is blocked and `example.test` is not a real domain.
+    - A throwaway caddy with the same Caddyfile plus `tls internal` ran on the compose network:
+      - `/` gives `HTTP/2 200` with the CSP, `Onion-Location` and HSTS, and **no `Server` header**;
+      - `/health` gives `ok`;
+      - a 100 KB POST to `/webhook/btcpay` gives `413`;
+      - `www.` gives `301` to the apex.
+  - **Log grep (IPv4/IPv6 literals), 42 lines from darkp2p and caddy:**
+    - darkp2p: none.
+    - caddy: 11 lines, **none a client address**. They are Caddy's admin-endpoint origin list (`localhost:2019`, `[::1]:2019`, with `127.0.0.1`) and Docker's embedded DNS resolver `127.0.0.11` inside ACME "lookup failed" errors, which exist only because the sandbox blocks ACME.
+    - The failed-TLS curl attempts logged no peer address.
+  - `docker compose down -v`: done. The temporary `.env`, `coturn/turnserver.conf` and images were removed, and no containers or volumes are left.
+- **Regression map:** no audit document with IDs C1, C2, H1–H7 and M1–M11 is in the repository or git history. Only H7, I3 and I5 appear, in Step 8. IDs are not guessed. The map below is by remediation task. Each task's audit ID should be filled in from your audit list.
+
+| Area (step.task) | Audit ID | Covered by (test file → test) |
+|---|---|---|
+| Compose env merge (1.A) | ? | `compose.test.mjs` → "darkp2p env has no merged list items…", "…interpolates nothing, only fixed non-secret values" |
+| Onion isolation (1.B) | ? | `onion.test.mjs` → all 6 (shared bucket and XFF ignored, Host spoof, Onion-Location only on main, ONION_HOST without ONION_PORT, ONION_PORT = PORT, ONION_PORT without HOST) |
+| coturn logging and relay hardening (2.A–C, 9.4) | ? | `compose.test.mjs` → "coturn: config file only…", "gen-turnserver-conf: hardened coturn flags…", "…refuses a missing or bad…", "setup-ufw.sh opens the same relay range…" |
+| Durable claims (3.A/B) | ? | `claim.test.mjs` → all 14; `baseline.test.mjs` → "settled pro-1d invoice can be claimed…", "webhook with a bad signature gets 401" |
+| Relay stall, relay room cap, control budget (4) | ? | `relay.test.mjs` → all 5 |
+| Wire format, per-transfer keys, AAD (5) | ? | `framing.test.mjs` → header/overhead, round-trip, bit flips, reflection, splice, distinct keys, wrong room key, legacy types, malformed, ≤16384 |
+| Accept/decline, credit window, completion, abort (6) | ? | `protocol.test.mjs` → all 21 |
+| Session-nonce binding, v3 (6.5) | ? | `framing.test.mjs` → "session binding: …" ×2, "hello keys are separate…", "session nonces must be 32 bytes", "frame types are v3…" |
+| Reconnect, relay budget, OPFS cleanup (7) | ? | `resilience.test.mjs` → all 6; tunnel survival and restart are manual (below) |
+| Config injection (8.1) | H7, I3 | `config.test.mjs` → all 12 |
+| Stats line (8.2) | I5 | `stats.test.mjs`; `baseline.test.mjs` → "log hygiene…" |
+| Log hygiene (rule 4) | ? | `baseline.test.mjs` → "log hygiene…"; `claim.test.mjs` → "logs contain no invoice ID…" |
+| CSP and request parsing (baseline) | ? | `baseline.test.mjs` → CSP hash, `GET //[` → 400, foreign Origin → 403, SDP field stripping |
+| Infra hardening (9.1–9.3, 9.5, 9.6) | ? | `compose.test.mjs` → "every service: no-new-privileges…", "caddy keeps DOMAIN; tor…"; **manual:** `caddy validate`, `docker build tor/` on the deploy host, `sudo ./setup-ufw.sh` then `ufw status verbose` |
+
+- **Manual browser checklist:** printed in the Step 10 checkpoint.
+- **SKIPPED / deferred:**
+  - `shellcheck`: tool unavailable.
+  - tor image build and pin verification: deploy host, network policy.
+  - HTTPS with a real certificate and a WebSocket through Caddy over TLS: needs a real domain.
+  - All browser scenarios: manual checklist.
+- **Open questions:**
+  1. **Audit IDs:** please share the C1–M11 list, or confirm the task-based map, so the "?" column can be filled in.
+  2. **`Server: Caddy` on port 80:** it is still sent on the automatic HTTP→HTTPS redirect. That listener is generated by Caddy, not our site blocks, so `header -Server` does not reach it. A fix is an explicit `http://{$DOMAIN}, http://www.{$DOMAIN} { header -Server … redir … }` block. Apply?
+  3. **Caddyfile formatting:** Caddy logs "Caddyfile input is not formatted". This is cosmetic and was left as-is.
+  4. **`docs/remediation/`:** keep it as a changelog, or delete it?
