@@ -368,12 +368,46 @@
       padding-top: 10px;
       line-height: 1.4;
     }
+    .status-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 18px;
+      font-size: 0.68rem;
+      letter-spacing: 0.5px;
+    }
+    .badge {
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.35);
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .badge.ok {
+      border-color: #05ffa1;
+      color: #05ffa1;
+      background: rgba(5, 255, 161, 0.06);
+    }
+    .badge.warn {
+      border-color: var(--warn);
+      color: var(--warn);
+      background: rgba(255, 42, 109, 0.06);
+    }
+    .badge.accent {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(0, 240, 255, 0.06);
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>DARKP2P // DEAD DROP</h1>
     <div class="sub">E2E AES-256-GCM + DTLS P2P STREAM • ZERO SERVER STORAGE</div>
+    <div class="status-bar" aria-live="polite">
+      <span class="badge" id="modeBadge">TUNNEL: STANDBY</span>
+      <span class="badge" id="ipBadge">PEER IP VISIBILITY: PENDING</span>
+    </div>
 
     <div class="box">
       <div style="font-size:0.75rem; margin-bottom:6px; color:var(--muted);">SHARE LINK WITH PEER:</div>
@@ -529,6 +563,62 @@
       const out = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
       return out;
+    }
+
+    const modeBadge = document.getElementById('modeBadge');
+    const ipBadge = document.getElementById('ipBadge');
+    let badgeSeq = 0;
+
+    function setBadges(modeClass, modeText, ipClass, ipText) {
+      modeBadge.className = `badge${modeClass ? ' ' + modeClass : ''}`;
+      modeBadge.textContent = modeText;
+      ipBadge.className = `badge${ipClass ? ' ' + ipClass : ''}`;
+      ipBadge.textContent = ipText;
+    }
+
+    async function updateStatusBadges(state = 'standby') {
+      const seq = ++badgeSeq;
+
+      if (state === 'standby') {
+        setBadges('', 'TUNNEL: STANDBY', '', 'IP STATUS: WAITING FOR PEER');
+        return;
+      }
+
+      if (state === 'closed') {
+        setBadges('warn', 'TUNNEL: CLOSED', '', 'IP STATUS: DISCONNECTED');
+        return;
+      }
+
+      if (transportMode === 'ws') {
+        setBadges('accent', 'TUNNEL: E2E WS RELAY', 'ok', 'IP MASKED FROM PEER');
+        return;
+      }
+
+      // Inspect the nominated ICE candidate pair to see whether TURN relay or direct P2P won
+      let usingTurn = document.getElementById('hideIpToggle')?.checked || false;
+      if (pc && typeof pc.getStats === 'function') {
+        try {
+          const stats = await pc.getStats();
+          stats.forEach((report) => {
+            if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) {
+              const local = stats.get(report.localCandidateId);
+              const remote = stats.get(report.remoteCandidateId);
+              if (local?.candidateType === 'relay' || remote?.candidateType === 'relay') {
+                usingTurn = true;
+              }
+            }
+          });
+        } catch {}
+      }
+
+      // A newer state change landed while getStats() was pending — don't overwrite it
+      if (seq !== badgeSeq) return;
+
+      if (usingTurn) {
+        setBadges('accent', 'TUNNEL: PRO TURN RELAY', 'ok', 'IP MASKED FROM PEER');
+      } else {
+        setBadges('ok', 'TUNNEL: DIRECT P2P (STUN)', 'warn', 'IP EXPOSED TO PEER');
+      }
     }
 
     function setDropEnabled(enabled, label) {
@@ -736,6 +826,7 @@
       }
       log('WebRTC unavailable — E2E-encrypted WebSocket relay active.', 'ok');
       setDropEnabled(true, readyDropLabel());
+      updateStatusBadges('active');
     }
 
     async function flushIceQueue() {
@@ -914,6 +1005,7 @@
         iceTimer = null;
         log('E2E encrypted P2P tunnel established.', 'ok');
         setDropEnabled(true, readyDropLabel());
+        updateStatusBadges('active');
       };
 
       channel.onclose = () => {
@@ -921,6 +1013,7 @@
         isTransferring = false;
         resetRxState();
         setDropEnabled(false, 'TUNNEL CLOSED');
+        updateStatusBadges('closed');
       };
 
       channel.onerror = () => {
@@ -1054,6 +1147,7 @@
         isTransferring = false;
         resetRxState();
         setDropEnabled(false, 'RELAY CLOSED');
+        updateStatusBadges('closed');
       }
     };
 
@@ -1099,6 +1193,7 @@
         transportMode = 'webrtc';
         cleanupPeer();
         setDropEnabled(false, 'PEER DISCONNECTED — WAITING...');
+        updateStatusBadges('standby');
         return;
       }
 
