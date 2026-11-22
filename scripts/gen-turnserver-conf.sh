@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 # Writes coturn/turnserver.conf from .env, so the TURN secret never appears on
 # a command line or in docker-compose.yml. Re-run after changing TURN_HOST,
-# TURN_PUBLIC_IP or TURN_SECRET in .env, then: docker compose up -d coturn
+# TURN_PUBLIC_IP, TURN_LISTEN_IP, TURN_EXTERNAL_IP or TURN_SECRET in .env,
+# then:
+#   docker compose up -d --force-recreate coturn
+# --force-recreate is required: the file is replaced by rename, a running
+# container keeps the old one through its bind mount, and a plain `up -d`
+# sees no change in docker-compose.yml and leaves the container alone. After
+# a TURN_SECRET change also run `docker compose up -d darkp2p` (it signs the
+# credentials with the same secret) and then `docker compose restart tor`
+# (tor resolved the old darkp2p container's address when it started).
+#
+# Run this BEFORE the first `docker compose up`. If the file is missing,
+# Docker creates a directory at coturn/turnserver.conf for the bind mount,
+# and this script then refuses to write until that directory is removed.
 #
 # Usage: scripts/gen-turnserver-conf.sh [ENV_FILE] [OUT_FILE]
 #   defaults: .env  coturn/turnserver.conf  (relative to the repo root)
@@ -24,6 +36,20 @@ die() { echo "gen-turnserver-conf: $*" >&2; exit 1; }
 
 [ -f "$ENV_FILE" ] || die "$ENV_FILE not found"
 
+# `docker compose up` before this script makes Docker create the bind-mount
+# source as a directory. mv would then put the config inside it and coturn
+# would still start without one, so stop here.
+if [ -d "$OUT_FILE" ]; then
+  die "$OUT_FILE is a directory, not a file. Docker creates it when
+  'docker compose up' runs before this script. Fix it with:
+    docker compose rm -sf coturn
+    sudo rmdir '$OUT_FILE'
+  then re-run this script and: docker compose up -d coturn"
+fi
+if [ -e "$OUT_FILE" ] && [ ! -f "$OUT_FILE" ]; then
+  die "$OUT_FILE exists and is not a regular file"
+fi
+
 # Read KEY=VALUE without sourcing the file (it is data, not a script). The
 # last assignment wins, as with env_file; one pair of matching quotes is
 # stripped.
@@ -45,6 +71,18 @@ env_get() {
 TURN_HOST="$(env_get TURN_HOST)"
 TURN_PUBLIC_IP="$(env_get TURN_PUBLIC_IP)"
 TURN_SECRET="$(env_get TURN_SECRET)"
+# Optional, for a host whose public address is not on an interface (1:1 NAT:
+# a DigitalOcean Reserved IP, AWS Elastic IP, ...). See the README.
+TURN_LISTEN_IP="$(env_get TURN_LISTEN_IP)"
+TURN_EXTERNAL_IP="$(env_get TURN_EXTERNAL_IP)"
+
+is_ipv4() {
+  local octet
+  [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  for octet in "${BASH_REMATCH[@]:1}"; do
+    [ "$((10#$octet))" -le 255 ] || return 1
+  done
+}
 
 [[ "$TURN_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] \
   || die "TURN_HOST must be set to a hostname"
@@ -54,11 +92,20 @@ TURN_SECRET="$(env_get TURN_SECRET)"
 # Relaying is UDP-only, so this exposes only the host's public UDP services
 # (coturn itself and Caddy's 443/udp). Do not deny "::" either: coturn 4.6.3
 # then rejects every IPv4 peer. scripts/check-turn-relay.sh tests both paths.
-[[ "$TURN_PUBLIC_IP" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] \
-  || die "TURN_PUBLIC_IP must be set to the server's public IPv4"
-for octet in "${BASH_REMATCH[@]:1}"; do
-  [ "$((10#$octet))" -le 255 ] || die "TURN_PUBLIC_IP must be set to the server's public IPv4"
-done
+is_ipv4 "$TURN_PUBLIC_IP" || die "TURN_PUBLIC_IP must be set to the server's public IPv4"
+# TURN_LISTEN_IP: the local IPv4 coturn binds for listening and relaying
+# (default: every interface). TURN_EXTERNAL_IP: the public IPv4 coturn puts in
+# relay addresses when TURN_LISTEN_IP is a private address behind 1:1 NAT.
+if [ -n "$TURN_LISTEN_IP" ]; then
+  is_ipv4 "$TURN_LISTEN_IP" || die "TURN_LISTEN_IP must be an IPv4 address on this host (or empty)"
+fi
+if [ -n "$TURN_EXTERNAL_IP" ]; then
+  is_ipv4 "$TURN_EXTERNAL_IP" || die "TURN_EXTERNAL_IP must be a public IPv4 address (or empty)"
+  [ -n "$TURN_LISTEN_IP" ] \
+    || die "TURN_EXTERNAL_IP needs TURN_LISTEN_IP (the private address it is mapped to)"
+  [ "$TURN_EXTERNAL_IP" != "$TURN_LISTEN_IP" ] \
+    || die "TURN_EXTERNAL_IP and TURN_LISTEN_IP are the same: leave TURN_EXTERNAL_IP empty"
+fi
 # Printable, no whitespace or '#', so it stays one value on one conf line.
 [[ "$TURN_SECRET" =~ ^[!-~]{16,}$ && "$TURN_SECRET" != *"#"* ]] \
   || die "TURN_SECRET must be at least 16 printable characters without spaces or '#'"
@@ -114,6 +161,19 @@ no-stdout-log
 simple-log
 log-file=/dev/null
 EOF
+if [ -n "$TURN_LISTEN_IP" ]; then
+  {
+    echo "# From TURN_LISTEN_IP: bind this address only, for listening and relaying."
+    echo "listening-ip=$TURN_LISTEN_IP"
+    echo "relay-ip=$TURN_LISTEN_IP"
+  } >> "$tmp"
+fi
+if [ -n "$TURN_EXTERNAL_IP" ]; then
+  {
+    echo "# From TURN_EXTERNAL_IP: the public address clients see for TURN_LISTEN_IP."
+    echo "external-ip=$TURN_EXTERNAL_IP/$TURN_LISTEN_IP"
+  } >> "$tmp"
+fi
 
 chmod 0600 "$tmp"
 if [ -n "$COTURN_OWNER" ]; then

@@ -13,7 +13,8 @@
 # rejecting legitimate peers.
 #
 # Usage: scripts/check-turn-relay.sh [ENV_FILE]      (default: .env)
-#   TURN_CHECK_SERVER  address to test instead of TURN_PUBLIC_IP
+#   TURN_CHECK_SERVER  address to test instead of TURN_LISTEN_IP (when that
+#                      is set in the env file) or TURN_PUBLIC_IP
 #   TURN_CHECK_PORT    coturn's listening port (default 3478)
 #   PEER_PORT          UDP port for the temporary echo peer (default 3480)
 #
@@ -23,6 +24,12 @@
 # the client container through the environment; inside that container it is a
 # turnutils_uclient argument for the few seconds the check runs. Nothing is
 # written to disk and the secret is never printed.
+#
+# The check runs on the server itself, so the address it tests must be on one
+# of this host's interfaces: with TURN_LISTEN_IP set (a Reserved IP or other
+# 1:1 NAT, where the public address is not), that is the address used. It
+# then proves that coturn relays, not that the public address reaches it:
+# test that from outside (see the README).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -54,12 +61,13 @@ env_get() {
 }
 
 TURN_HOST="$(env_get TURN_HOST)"
-SERVER="${TURN_CHECK_SERVER:-$(env_get TURN_PUBLIC_IP)}"
+TURN_LISTEN_IP="$(env_get TURN_LISTEN_IP)"
+SERVER="${TURN_CHECK_SERVER:-${TURN_LISTEN_IP:-$(env_get TURN_PUBLIC_IP)}}"
 TURN_SECRET="$(env_get TURN_SECRET)"
 [ -n "$TURN_HOST" ] || die "TURN_HOST is not set in $ENV_FILE"
 [ -n "$TURN_SECRET" ] || die "TURN_SECRET is not set in $ENV_FILE"
 [[ "$SERVER" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
-  || die "TURN_PUBLIC_IP (or TURN_CHECK_SERVER) must be an IPv4 address"
+  || die "TURN_PUBLIC_IP (or TURN_LISTEN_IP / TURN_CHECK_SERVER) must be an IPv4 address"
 [[ "$PEER_PORT" =~ ^[0-9]{1,5}$ && "$TURN_CHECK_PORT" =~ ^[0-9]{1,5}$ ]] \
   || die "PEER_PORT and TURN_CHECK_PORT must be port numbers"
 

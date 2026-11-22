@@ -18,9 +18,22 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
 
-      - name: Validate server.js syntax
-        run: node --check server.js
+      - name: Install dependencies
+        run: npm ci
+
+      # node --check server.js, then scripts/check-inline-js.mjs: a syntax
+      # check of every executable inline <script> in public/index.html.
+      - name: Check server.js and inline scripts
+        run: npm run check
+
+      # Everything in test/. The compose tests use the runner's docker compose.
+      - name: Run tests
+        run: npm test
+
+      - name: Validate docker-compose.yml
+        run: npm run check:compose
 
       - name: Build Docker image
         run: docker build -t darkp2p:ci .

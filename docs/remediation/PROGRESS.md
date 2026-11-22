@@ -729,3 +729,146 @@
   3. **A buyer who returns in a different browser, or after clearing storage, cannot claim** — the order ID is only in the browser that started the checkout. There is no operator tool to mint a token by hand.
   4. **The global lookup budget can be spent by an attacker** (about 60 wrong claims a minute from enough addresses), which delays restart-safe claims with `503`. Tokens recorded from an IPN are unaffected.
   5. A token re-derived by lookup can differ from the IPN-minted one if NOWPayments later changes `updated_at`. Both are valid; the difference is bounded by the 7-day cap.
+
+### Post-audit Phase 3 — relay fallback, relay budget/slots, storage and IP badge (2026-11-22)
+- **Source:** the 2026-11-22 audit: the WebSocket-fallback, reconnect-loop and relay-slot Medium findings, and the Low storage / IP badge / Force-relay items.
+- **Files changed:** `server.js`, `public/index.html`, `test/relay.test.mjs`, `test/resilience.test.mjs`, `README.md`, `public/how-it-works.html`. The wire format is unchanged. Server→client messages gain one `error` reason, `relay-idle`.
+- **WebSocket fallback (client):** the unconditional second "IP masked from peer" log and the `setDropEnabled(true, …)` before the handshake are gone. The drop zone opens only through `enableDropIfReady()` after the hello-ack, so a sticky "Key mismatch" label is no longer overwritten.
+- **Reconnect loop:**
+  - Client: `wsAttempt` resets only after the signaling connection has stayed open for `RECONNECT_STABLE_MS` (10 s), not in `onopen`.
+  - Server: a frame over the room cap is dropped, with one `relay-limit-exceeded` notice to both peers per pairing, and the socket stays open. Dropped frames are still paced at the relay rate, and a sender that sends more than 8 MB past the cap is closed with 1008 as before.
+  - Server: `ws-fallback` in a room with less than 4096 bytes of budget starts no relay and takes no slot; it is still forwarded, and both peers get the notice.
+  - Client: with less than 4096 bytes left it does not start the key handshake on the relay and shows "RELAY BUDGET USED UP — OPEN A FRESH LINK".
+- **Relay slots:**
+  - Server: `RELAY_IDLE_MS` (default 6 min, 1000–3600000). The heartbeat frees the slot of a relay room with no relayed frame for that long and sends both peers `relay-idle`. A later `ws-fallback` asks for the relay again.
+  - Client: `relay-idle` shows "RELAY PAUSED (IDLE) — CLICK HERE TO RESUME"; a click (or the peer's request) restarts the handshake. `relay-busy` shows "RELAY BUSY — RETRYING SHORTLY...", explains once, and retries every 30 s.
+- **Storage:** every `localStorage` access goes through `storageGet` / `storageSet` / `storageRemove`. With storage blocked the page loads, and a typed token is kept in memory and applied by rejoining the room.
+- **Force WebSocket relay:** unticking it while on the relay with a peer leaves and rejoins the room (`rejoinRoom`), so both sides renegotiate and can connect directly. No new signaling message.
+- **IP badge:** `candidateExposesIp` moved into the pure block. It reads the candidate line when the `type` / `address` / `relatedAddress` fields are missing, and a host candidate with no readable address now counts as exposing. `localIpSignaled` is no longer reset on each `ready`: it stays set for the page load.
+- **Tests:** `relay.test.mjs` 5 → 9 (over-cap frames dropped with one notice and the socket open; spent room starts no relay and holds no slot; a sender far past the cap is closed; idle expiry, re-request and `relay-busy`). `resilience.test.mjs` 6 → 8 (`candidateExposesIp` matrix; thresholds).
+- **Mutation check (each applied and reverted, `server.js` restored byte-identical):** notice on every frame, no over-cap close, spent room still starts the relay, no idle expiry, idle ignoring activity. Each failed exactly its test.
+- **Gate:** `npm run check` PASS; `npm test` 147/147 PASS, 0 skipped (run three times; one new relay test first relied on a fixed sleep and failed once under full-suite load, and now waits on the delivered bytes).
+- **Extra verification (not committed):** a Playwright/Chromium run against real servers, 22/22 with no page errors: one relay log line and a masked badge on a forced relay; unticking returns both peers to direct P2P without a "connection lost" error; the badge stays "exposed" after going back to the relay; "Key mismatch" survives on the relay path; the page works and explains itself with `localStorage` blocked; a spent budget shows its label with one signaling socket per page (no loop); an idle relay pauses, resumes on one click and then carries a file; a full relay shows "RELAY BUSY" and connects by itself once a slot is free.
+- **SKIPPED / not verified:** the 10 s backoff rule has no automated test (it is a timer in the page's signaling code). Not tried in Tor Browser or Firefox.
+- **Open questions:**
+  1. **Idle expiry stops forgotten tabs, not a deliberate squatter:** one small frame every few minutes keeps a slot. Stopping that needs a different rule (per-client relay room limits, or a minimum throughput).
+  2. **`localIpSignaled` is now sticky for the page load,** so after a direct connection the badge reads "IP EXPOSED TO PEER" for any later peer in that tab, including one that never saw the address. It errs on the side of the warning.
+  3. **Unticking Force WebSocket relay ends any transfer in progress** (as ticking it does), and exposes the IP; the log line says so, but there is no confirmation prompt.
+  4. `RELAY_IDLE_MS` below 5 minutes can expire a relay while an offer is waiting to be accepted.
+
+### Post-audit Phase 4 — infra hardening and deploy docs (2026-11-22)
+- **Source:** the 2026-11-22 audit, findings Medium #4, #5, #9, #10 and the Low hardening items.
+- **Files changed:** `scripts/gen-turnserver-conf.sh`, `scripts/check-turn-relay.sh`, `docker-compose.yml`, `setup-ufw.sh` (comment only), `.env.example`, `README.md`, `test/compose.test.mjs`; new `.dockerignore`. `server.js` and `public/` are unchanged.
+- **Medium #5:** the generator stops with a reason and the fix when the target path is a directory (left by `docker compose up` before the config existed), and when it is anything else that is not a regular file. Nothing is written.
+- **Medium #4 / #10 (docs):** the README, the generator header and `.env.example` now say `docker compose up -d --force-recreate coturn` (a plain `up -d` keeps the old file), give the full `TURN_SECRET` rotation order, and say `docker compose restart tor` whenever `darkp2p` is recreated.
+- **Medium #9 / Low:**
+  - `.dockerignore` is an allowlist of what `Dockerfile` copies.
+  - `tor`: `cap_drop: ALL`, `mem_limit: 256m`, `pids_limit: 128`.
+  - `coturn`: `cap_drop: ALL` + `cap_add: NET_BIND_SERVICE`, `mem_limit: 256m`, `pids_limit: 128`.
+  - Caddy's `DOMAIN` is `${DOMAIN:?…}`, so compose refuses a missing or empty value.
+  - Optional `TURN_LISTEN_IP` (writes `listening-ip` and `relay-ip`) and `TURN_EXTERNAL_IP` (writes `external-ip=<external>/<listen>`, needs `TURN_LISTEN_IP`), both validated as IPv4. Without them the generated file is unchanged.
+  - `check-turn-relay.sh` tests `TURN_LISTEN_IP` when it is set.
+  - README: Reserved IP / 1:1 NAT section, DigitalOcean Cloud Firewall rules, IPv6 notes (compose network, `AAAA` for `DOMAIN` and `TURN_HOST`), and a list of manual checks on the server.
+- **Deviation from the task as written:** coturn cannot run with `cap_drop: ALL` alone. The pinned image sets the `NET_BIND_SERVICE` file capability on `/usr/bin/turnserver`, and without it the exec fails (`operation not permitted`, exit 126, restart loop). `NET_BIND_SERVICE` is added back; a test pins it.
+- **Not in the task, added:** `pids_limit: 128` on `tor` and `coturn` (same value as `darkp2p`).
+- **Tests:** `compose.test.mjs` 9 → 15: tor/coturn capabilities and limits; compose refuses a missing or empty `DOMAIN`; `.dockerignore` matches the `Dockerfile`'s `COPY` sources; listen/external lines and six refused values; the directory target; the two documented commands.
+- **Gate:** `npm run check` PASS; `npm test` 153/153 PASS, 0 skipped; `npm run check:compose` PASS.
+- **Verified with the pinned coturn image (local dockerd, host network, not committed):**
+  - started from the edited `docker-compose.yml`: runs as 65534, effective capabilities empty, about 6 MiB of the 256 MiB limit, 9 pids; `check-turn-relay.sh` passes both paths;
+  - with `TURN_LISTEN_IP=10.50.0.5` (on `lo`) and `TURN_EXTERNAL_IP=203.0.113.10` (on no interface): relay addresses are advertised as `203.0.113.10`, both check paths pass, and other `10.x` / `172.17.x` peers still get `403`;
+  - after a secret change, `docker compose up -d coturn` reports `Running`, the container still holds the old file and the check fails; `--force-recreate` fixes it;
+  - a build with the new `.dockerignore` receives only `package.json`, `package-lock.json`, `server.js` and `public/` (with a `.env` and `coturn/turnserver.conf` present).
+- **SKIPPED / not verified:**
+  - `shellcheck` (tool unavailable).
+  - The `darkp2p` and `tor` images could not be built here (no registry access from build containers). So `tor` was **not** run with `cap_drop: ALL` and the 256 MB limit, and the full `darkp2p` image was not built with the new `.dockerignore`.
+  - Nothing was run on a Droplet: Reserved IP routing, the Cloud Firewall rules and every IPv6 statement in the README come from how Docker and DigitalOcean are documented to behave, not from a test.
+- **Open questions:**
+  1. **Reserved IP source address.** Packets coturn sends from the anchor IP may need a route through the anchor gateway to leave as the Reserved IP. If the outside TURN test fails with `TURN_LISTEN_IP` set, that is the first thing to check.
+  2. **tor still needs a manual restart** after `darkp2p` is recreated. `depends_on: restart: true` (Compose 2.17+) would do it automatically; not added, since the task asked for documentation.
+  3. **IPv6 is documented, not enabled.** The compose network stays IPv4-only.
+  4. With `external-ip` set, coturn accepts its own `TURN_LISTEN_IP` as a peer although the address is in a denied range (measured). Same exposure as the public address: UDP services on the host.
+
+### Post-audit Phase 5 — CI and glue tests (2026-11-22)
+- **Source:** the 2026-11-22 audit: CI ran neither the tests nor the inline-script check, and the page's connection/UI glue had no automated test.
+- **Files changed:** `.github/workflows/ci.yml`; new `test/glue.test.mjs` and `test/helpers/page.mjs`. `server.js` and `public/` are unchanged.
+- **CI:** after checkout and Node 22 setup (npm cache), the job now runs `npm ci`, `npm run check` (`node --check server.js` and `scripts/check-inline-js.mjs`), `npm test` and `npm run check:compose`, then the existing image build and `/health` smoke test. The separate `node --check server.js` step is gone, since `npm run check` includes it.
+- **Harness (`test/helpers/page.mjs`):** runs the page's real inline script with a minimal fake DOM, Node's WebCrypto, the `ws` client against a real `server.js`, and an optional fake `RTCPeerConnection` pair whose signaling still goes through the server. It records log lines, drop-zone changes and labels in order, and tracks the page's timers so a test can fire a long one (30 s relay retry, 12 s ICE timeout) at once. No new dependency.
+- **Tests (`test/glue.test.mjs`, 13):**
+  - direct tunnel opens the drop zone only after the key handshake;
+  - `connected` after `disconnected` re-opens the drop zone, and the tunnel still carries a file;
+  - the same during a send keeps the drop zone closed until the send ends;
+  - `connected` without a verified key does not open it;
+  - forced relay: one status line, masked badge, drop zone opens only after the hello-ack, files cross both ways;
+  - key mismatch on the relay stays on screen with the drop zone closed;
+  - ICE failure after a signaled host candidate: "already shared" line and exposed badge on that side, masked on the other;
+  - ICE timeout moves both peers to the relay;
+  - a file over the relay budget is refused locally and nothing is sent; one that fits is charged;
+  - budget used up: shown once, socket stays open, no reconnect, and a new peer in the spent room gets no hello;
+  - idle relay: both pages pause, one click resumes with a fresh handshake, a file then crosses;
+  - idle relay during a send: both sides are told and the offer is removed;
+  - busy relay: said once, never "outdated", retry connects without a click.
+- **Mutation check (each applied to `public/index.html` and reverted; file restored byte-identical):** the original `isTransferring` call; opening the drop zone unconditionally on `connected`; opening it in the fallback before the handshake; a second unconditional "masked" log; ignoring `relay-idle`; starting a handshake on a spent budget; `relay-busy` leaving the hello timer; the drop-zone click not resuming; ignoring `relay-limit-exceeded`; no relay fit check. Each failed at least one glue test.
+- **Gate:** `npm run check` PASS; `npm test` 166/166 PASS, 0 skipped; `npm run check:compose` PASS.
+- **SKIPPED / not verified:** the workflow itself has not run on GitHub (nothing was pushed). `shellcheck` unavailable.
+- **Limits of the harness:** it is not a browser. Layout, real ICE, the save picker, OPFS and `localStorage` blocking are not exercised, and the fake `RTCPeerConnection` reports whatever state a test tells it to.
+- **Open questions:**
+  1. **Budget left after "used up".** The server drops whole frames, so a room that got `relay-limit-exceeded` can still have up to one frame of budget. The page sets its own count to 0, but a later `ready` reports the server's figure, and above 4 KB the page starts a relay handshake again in a room it had called used up. Found while writing the test; behaviour unchanged.
+  2. The 10 s reconnect-backoff rule still has no test.
+
+### Records added afterwards — PR #1, PR #2 and the SEO pass (written 2026-11-22)
+These three changes were merged on 2026-11-21 without an entry here. The entries below are reconstructed from the git history, not written when the work was done, so no gate results from that time are recorded.
+
+- **PR #1 — README markdown fix** (`fce7f02`, merged as `a44deae`). `README.md` only: two broken markdown links inside code blocks.
+- **PR #2 — tunnel and IP status badges** (`c3fa547`, `d0f5bff`, merged as `a561420`). `public/index.html` only.
+  - A status bar with two badges: the tunnel mode and whether the peer saw this side's IP.
+  - The IP badge follows what was actually signaled: an ICE candidate that reveals a real address marks the IP as exposed even if TURN or the relay carries the traffic later.
+  - TURN use is judged from the local candidate of the selected pair; an unreadable route shows as unverified.
+  - Later phases built on it: the Phase 1 `isTransferring` fix and the Phase 3 badge changes are in this code.
+- **SEO and launch-readiness pass** (`0f9951d`, PR #6, merged as `171fb6f`).
+  - **Files:** `public/index.html`, `public/404.html`, `server.js`, `Caddyfile`, `README.md`; new `public/how-it-works.html`, `security.html`, `tor.html`, `compare.html`, `abuse.html`, `og-image.png`, `favicon.svg`, `apple-touch-icon.png`, the IndexNow key file, `assets/og-image.svg`, `scripts/indexnow.sh`, `scripts/render-images.mjs`, `test/static.test.mjs`.
+  - `index.html`: new title and description, OG/Twitter tags, footer nav; the FAQ was corrected to match the code and the FAQPage JSON-LD synced to it.
+  - `server.js`: serves the static pages and assets, `img-src 'self'` in the page CSP, `robots.txt`, `sitemap.xml` with `lastmod`, the IndexNow key file, `Onion-Location` on every page.
+  - `Caddyfile`: a hand-written `http://{$DOMAIN}, http://www.{$DOMAIN}` block (301 to the https origin, `header -Server`) and an explicit `https://www.` block.
+  - **Conflict with a recorded decision — needs confirmation.** The Step 10 decision (user, 2026-11-21) was to leave Caddy's automatic HTTP→HTTPS redirect untouched, because a hand-written `http://` block was judged riskier for ACME HTTP-01 renewals than the `Server` header was worth. This pass added exactly that block, and nothing here records the decision being changed. See Phase 6, open question 1.
+
+### Audit remediation phases — index (2026-11-22)
+The read-only audit of 2026-11-22 was worked off in six phases. Each has its own entry in this file.
+
+| Phase | Scope | Commit | Tests after |
+|---|---|---|---|
+| 1 | coturn deny list, relay check script, `isTransferring` | `47ca6c9` | 134 |
+| 2 | `ws` update, NOWPayments budgets, order-bound claims, settlement anchor | `1c17bd8` | 141 |
+| 3 | relay fallback, relay budget and slots, storage, IP badge | `fa5e9be` | 147 |
+| 4 | container hardening, coturn config guard, Reserved IPs, deploy docs | `c375c9d` | 153 |
+| 5 | CI runs checks and tests; page glue tests | `35bba2d` | 166 |
+| 6 | copy alignment, `LICENSE`, these records | not committed | 166 |
+
+Phases 1 and 2 are on `main`. Phases 3–5 are in PR #8 (`claude/awesome-albattani-w4v3bg` → `main`), open at the time of writing.
+
+### Post-audit Phase 6 — copy, licence and records (2026-11-22)
+- **Source:** the 2026-11-22 audit, Low "copy and records" items.
+- **Files changed:** `README.md`, `public/index.html`, `docs/remediation/PROGRESS.md`; new `LICENSE`. `server.js`, `Caddyfile` and the other pages are unchanged.
+- **Copy aligned with `public/security.html`:**
+  - "Zero-knowledge" is gone from the README intro and the FAQ heading. The README now says what the server cannot read and what it does see.
+  - "No file size limits" became: no server cap on direct transfers, the relay cap per room (50 MB, 500 MB with Pro), 512 MB without disk streaming. The relay-budget log line no longer says "unlimited".
+  - "Zero accounts or logs" in the Pro modal became: no account, and payments go through NOWPayments, which keeps its own records. The JSON-LD feature "Zero server file storage or logging" and the tip label "SUPPORT ZERO-LOG INFRASTRUCTURE" were reworded the same way.
+  - IP hiding: the banner, the FAQ answer (visible text and JSON-LD, kept identical) and the README threat model now name all three ways: Force WebSocket relay, Hide my IP (Pro), a VPN or Tor Browser.
+  - The README threat model gained three items from the security page: what the server sees, accounts and payments, and trust in the served page.
+- **`LICENSE`:** MIT, `Copyright (c) 2026 Michael Evans`. The name and year come from the repository's git history (first commit 2026-11-19).
+- **Caddyfile check:** no change made. See open question 1.
+- **Gate:** `npm run check` PASS; `npm test` 166/166 PASS, 0 skipped.
+- **SKIPPED / not verified:** the reworded page was not looked at in a browser. The other static pages were searched for the same phrases and had none; they were not otherwise re-read.
+- **Open questions:**
+  1. **The `http://` block in `Caddyfile` contradicts the Step 10 decision** (see the SEO pass entry above). Its comment says Caddy still answers ACME HTTP-01 on port 80, which matches how Caddy is documented to work, but no certificate issuance or renewal through this block has been observed: every check so far ran without real ACME. Confirm one of: keep the block (and record the decision as changed), or return to the automatic redirect (308, two hops for `http://www`, `Server: Caddy` on port 80). If the block stays, watch the first renewal, or force one on a staging name.
+  2. **`LICENSE` copyright holder.** Confirm the name, or give the one to use.
+  3. **The affiliate link's text** changed from "zero-log VPN" to "VPN". "Zero-log" is the VPN provider's claim, not something this project can state. Say if the old wording should come back.
+  4. The page title still says "No Upload". On the relay path, encrypted frames do pass through the server's memory. Left as it is.
+
+### Decisions after Phase 6 (user, 2026-11-22)
+- **`Caddyfile`: back to Caddy's automatic HTTP→HTTPS redirect.** The hand-written `http://{$DOMAIN}, http://www.{$DOMAIN}` block from the SEO pass is removed, and the two site blocks are `www.{$DOMAIN}` and `{$DOMAIN}` again, as before that pass. The Step 10 decision stands.
+  - What the block did that the automatic redirect does not: it answered plain HTTP with one `301` straight to the apex and without a `Server` header. Neither is needed. The header on port 80 was already weighed and declined in Step 10, and the automatic redirect is also permanent.
+  - What changes on port 80: `http://<domain>` answers `308` to https, `http://www.<domain>` takes two hops (`308` to `https://www`, then `301` to the apex), and the `308` carries `Server: Caddy`. HTTPS responses are unchanged.
+  - **Verified:** `caddy validate` in the pinned `caddy:2.11.9-alpine` image with `DOMAIN=test.local`: "Valid configuration". `caddy adapt` shows a single server on `:443` with the two hosts, so port 80 is entirely Caddy's own.
+  - **Not verified:** the redirects were not requested through a running Caddy, and no ACME issuance was observed (as before).
+- **`LICENSE`:** "Michael Evans" is confirmed as the copyright holder.
+- **Gate:** `npm run check` PASS; `npm test` 166/166 PASS, 0 skipped; `npm run check:compose` PASS.

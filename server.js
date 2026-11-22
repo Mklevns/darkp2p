@@ -160,6 +160,17 @@ const MAX_NP_LOOKUPS_PER_WINDOW = envInt('NOWPAYMENTS_MAX_LOOKUPS_PER_MIN', 60, 
 const MAX_NP_CHECKOUTS_PER_WINDOW = envInt('NOWPAYMENTS_MAX_CHECKOUTS_PER_MIN', 30, 1, 6000);
 const MAX_RELAY_ROOMS = envInt('MAX_RELAY_ROOMS', 50, 1, 10000); // rooms with relayActive
 const MIN_THROTTLE_MS = 25;
+// A relay room with no relayed frame for this long gives its slot back, so
+// idle tabs cannot hold all MAX_RELAY_ROOMS slots. Longer than the client's
+// 5-minute waits (for the peer to accept an offer, or to confirm a file).
+const RELAY_IDLE_MS = envInt('RELAY_IDLE_MS', 6 * 60 * 1000, 1000, 3600_000);
+// Below this much budget a room cannot even complete the clients' key
+// handshake, so the relay is not started for it at all.
+const RELAY_MIN_REMAINING = 4096;
+// Frames over the room's cap are dropped, not relayed. A sender may have a
+// window of chunks in flight when the cap is reached; one that keeps sending
+// past this many dropped bytes is closed.
+const RELAY_OVERCAP_ALLOWANCE = 8 * MB;
 
 const ROOM_ID_RE = /^[a-f0-9]{16,64}$/i;
 // NOWPayments payment and invoice IDs are decimal integers.
@@ -1424,6 +1435,13 @@ function countControlMessage(ws) {
   return true;
 }
 
+// Tells both peers, once per pairing, that the room's relay budget is spent.
+function notifyRelayLimit(room) {
+  if (room.limitNotified) return;
+  room.limitNotified = true;
+  for (const peer of room.peers) sendJson(peer, { type: 'error', reason: 'relay-limit-exceeded' });
+}
+
 function handleRelayFrame(ws, data) {
   const room = ws.room;
   if (!room || room.peers.size !== 2 || !room.relayActive) {
@@ -1435,16 +1453,24 @@ function handleRelayFrame(ws, data) {
   const peer = otherPeer(room, ws);
   if (!peer || peer.readyState !== WebSocket.OPEN) return;
 
+  const rate = room.isPro ? RELAY_RATE_PRO : RELAY_RATE_FREE;
   const cap = room.isPro ? RELAY_CAP_PRO : RELAY_CAP_FREE;
   if (room.relayBytes + data.length > cap) {
-    const notice = { type: 'error', reason: 'relay-limit-exceeded' };
-    sendJson(peer, notice);
-    sendJson(ws, notice);
-    // The sender cannot be told to stop mid-file, so stop reading from it.
-    ws.close(1008, 'relay-limit-exceeded');
+    // Over the room's cap: drop the frame and tell both peers once per
+    // pairing. The socket stays open (closing it only makes the client
+    // reconnect and try again), but dropped frames are still paced at the
+    // relay rate, and a sender that ignores the notice is closed.
+    notifyRelayLimit(room);
+    ws.overCapBytes += data.length;
+    if (ws.overCapBytes > RELAY_OVERCAP_ALLOWANCE) {
+      ws.close(1008, 'relay-limit-exceeded');
+      return;
+    }
+    chargeRelayBudget(ws, data.length, rate);
     return;
   }
   room.relayBytes += data.length;
+  room.relayLastAt = Date.now();
   stats.relayBytes += data.length;
 
   peer.send(data, { binary: true }, (err) => {
@@ -1462,7 +1488,7 @@ function handleRelayFrame(ws, data) {
     setBackpressured(ws, true);
     updatePause(ws);
   }
-  chargeRelayBudget(ws, data.length, room.isPro ? RELAY_RATE_PRO : RELAY_RATE_FREE);
+  chargeRelayBudget(ws, data.length, rate);
 }
 
 function isObject(value) {
@@ -1522,7 +1548,7 @@ function handleJoin(ws, msg) {
     return;
   }
   if (!room) {
-    room = { peers: new Set(), isPro: false, relayActive: false, relayBytes: 0 };
+    room = { peers: new Set(), isPro: false, relayActive: false, relayBytes: 0, relayLastAt: 0, limitNotified: false };
     rooms.set(roomId, room);
   }
 
@@ -1535,9 +1561,13 @@ function handleJoin(ws, msg) {
   if (room.peers.size !== 2) return;
 
   // New pairing: both peers start a fresh ICE candidate budget.
-  for (const peer of room.peers) peer.candidateCount = 0;
+  for (const peer of room.peers) {
+    peer.candidateCount = 0;
+    peer.overCapBytes = 0;
+  }
   room.isPro = [...room.peers].some((p) => p.isPro);
   room.relayActive = false;
+  room.limitNotified = false;
   const turnEnabled = room.isPro && TURN_ENABLED;
   const iceServers = getIceServers(turnEnabled);
   const wsRelayCap = room.isPro ? RELAY_CAP_PRO : RELAY_CAP_FREE;
@@ -1586,11 +1616,20 @@ function handleControlMessage(ws, data) {
   }
 
   if (clean.type === 'ws-fallback' && !room.relayActive) {
+    const cap = room.isPro ? RELAY_CAP_PRO : RELAY_CAP_FREE;
+    if (cap - room.relayBytes < RELAY_MIN_REMAINING) {
+      // Budget spent: no relay and no slot. The peer still learns that this
+      // side wanted the relay, and both are told why there is none.
+      sendJson(otherPeer(room, ws), clean);
+      notifyRelayLimit(room);
+      return;
+    }
     if (countRelayRooms() >= MAX_RELAY_ROOMS) {
       sendJson(ws, { type: 'error', reason: 'relay-busy' });
       return;
     }
     room.relayActive = true;
+    room.relayLastAt = Date.now();
   }
   sendJson(otherPeer(room, ws), clean);
 }
@@ -1613,6 +1652,7 @@ function leaveRoom(ws) {
     // The peer may have been paused waiting on this socket's queue.
     setBackpressured(peer, false);
     peer.candidateCount = 0;
+    peer.overCapBytes = 0;
     updatePause(peer);
     sendJson(peer, { type: 'peer-left' });
   }
@@ -1642,6 +1682,7 @@ wss.on('connection', (ws) => {
   ws.backpressured = false;
   ws.backpressuredSince = 0;
   ws.candidateCount = 0;
+  ws.overCapBytes = 0;
   ws.throttleTimer = null;
   ws.bucket = 0;
   ws.bucketAt = 0;
@@ -1685,8 +1726,24 @@ function checkRelayStall(ws, now) {
   peer.close(1008, 'relay-stalled');
 }
 
+// Frees the relay slot of a room that has relayed nothing for RELAY_IDLE_MS.
+// Both peers are told, and either can ask for the relay again (ws-fallback).
+function expireIdleRelays(now) {
+  for (const room of rooms.values()) {
+    if (!room.relayActive || now - room.relayLastAt <= RELAY_IDLE_MS) continue;
+    room.relayActive = false;
+    for (const peer of room.peers) {
+      // A sender paused on the relay has nothing left to wait for.
+      setBackpressured(peer, false);
+      updatePause(peer);
+      sendJson(peer, { type: 'error', reason: 'relay-idle' });
+    }
+  }
+}
+
 const heartbeat = setInterval(() => {
   const now = Date.now();
+  expireIdleRelays(now);
   for (const ws of wss.clients) {
     // A paused socket is one we chose not to read; its pongs cannot arrive.
     // It resumes as soon as its peer drains or leaves, then is checked again.

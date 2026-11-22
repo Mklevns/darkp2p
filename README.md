@@ -1,6 +1,8 @@
 # DARKP2P
 
-Zero-knowledge, end-to-end encrypted peer-to-peer file transfer directly in the browser. Files stream browser-to-browser over WebRTC `RTCDataChannel` with zero server storage, zero database, and no file size limits.
+End-to-end encrypted peer-to-peer file transfer directly in the browser. Files stream browser-to-browser over WebRTC `RTCDataChannel`. The server stores no files and has no database, and it cannot read file contents, names or types. It does see network metadata (addresses, timing and, in relay mode, sizes): see **Threat Model & Limitations** and the [security page](https://darkp2p.com/security).
+
+Direct transfers have no size cap set by the server. The WebSocket relay is capped per room (50 MB, 500 MB with Pro), and a browser that cannot stream to disk is limited to 512 MB.
 
 Live instance: [darkp2p.com](https://darkp2p.com)
 
@@ -90,8 +92,12 @@ The receiver rejects:
 |---|---|---|---|
 | `caddy` | `caddy:2.11.9-alpine` (tag + digest) | TLS termination and reverse proxy for `DOMAIN` (and the `www.` redirect). Publishes `80/tcp`, `443/tcp` and `443/udp` (HTTP/3). | `cap_drop: ALL` plus `NET_BIND_SERVICE`. Strips the `Server` header, a 10 s header read timeout, a 64 KB body limit on `/webhook/nowpayments`, and keeps proxied WebSockets open for up to 5 min after a Caddy config reload (`stream_close_delay`). No access log. Docker `local` log driver, 3 × 10 MB. |
 | `darkp2p` | built from `Dockerfile` (`node:22.23.5-alpine3.24`, tag + digest) | The signaling server: page, WebSocket signaling and relay, `/api/checkout`, `/api/claim`, `/webhook/nowpayments`, `/health`. Listens on `3000` (via Caddy) and the onion-only `3001`. | Runs as `node` with `NODE_ENV=production`, a read-only root, `cap_drop: ALL`, tmpfs `/tmp`, `mem_limit: 384m`, `pids_limit: 128`, and a `/health` healthcheck. `local` logs, 3 × 10 MB. Logs contain no addresses, room IDs, payment/invoice/order IDs or tokens. |
-| `tor` | built from `tor/Dockerfile` (`alpine:3.23.8`, `tor=0.4.9.17-r0`) | v3 onion service: `http://<onion>/` forwards to `darkp2p:3001`. No SOCKS port. | Runs as user `tor`. `tor/torrc` is mounted read-only. Keys persist in the `tor_data` volume. `HiddenServiceMaxStreams 256` with `HiddenServiceMaxStreamsCloseCircuit 1`. `local` logs, 3 × 10 MB. |
-| `coturn` | `coturn/coturn:4.6.3-r3-alpine` (tag + digest) | STUN on `3478` and TURN with ephemeral credentials for Pro rooms. UDP relay ports `49160-49200`. Host networking. | Runs as `nobody` with a read-only root and tmpfs state. All flags, including the secret, come from a generated `coturn/turnserver.conf` (see below). Docker logging driver `none`. |
+| `tor` | built from `tor/Dockerfile` (`alpine:3.23.8`, `tor=0.4.9.17-r0`) | v3 onion service: `http://<onion>/` forwards to `darkp2p:3001`. No SOCKS port. | Runs as user `tor`. `tor/torrc` is mounted read-only. `cap_drop: ALL`, `mem_limit: 256m`, `pids_limit: 128`. Keys persist in the `tor_data` volume. `HiddenServiceMaxStreams 256` with `HiddenServiceMaxStreamsCloseCircuit 1`. `local` logs, 3 × 10 MB. |
+| `coturn` | `coturn/coturn:4.6.3-r3-alpine` (tag + digest) | STUN on `3478` and TURN with ephemeral credentials for Pro rooms. UDP relay ports `49160-49200`. Host networking. | Runs as `nobody` with a read-only root and tmpfs state, `cap_drop: ALL` plus `NET_BIND_SERVICE`, `mem_limit: 256m`, `pids_limit: 128`. All flags, including the secret, come from a generated `coturn/turnserver.conf` (see below). Docker logging driver `none`. |
+
+coturn binds no port below 1024, but it keeps `NET_BIND_SERVICE` because the image sets that file capability on `/usr/bin/turnserver`: with it dropped, the kernel refuses to start the binary (`operation not permitted`, exit 126).
+
+`.dockerignore` is an allowlist. The `darkp2p` image is built from `package.json`, `package-lock.json`, `server.js` and `public/` only, so `.env`, `coturn/turnserver.conf` and `.git` never enter the build context. A new file that the `Dockerfile` copies must be added there too.
 
 ---
 
@@ -117,7 +123,13 @@ The receiver rejects:
 
 ## Threat Model & Limitations
 
-* **IP Exposure:** Direct WebRTC P2P connections expose each peer's IP address to the other peer during ICE/NAT traversal. Use a VPN if you need IP anonymity.
+* **IP Exposure:** Direct WebRTC P2P connections expose each peer's IP address to the other peer during ICE/NAT traversal. There are three ways to avoid it, and each protects only the peer who uses it:
+  * *Force WebSocket relay*, ticked before the peer joins: the browser never starts WebRTC. The relay's size cap applies.
+  * *Hide my IP from peer* (needs a Pro token): the browser offers only TURN routes.
+  * A VPN or Tor Browser: the peer and the server see the VPN's or Tor's address.
+* **What the server sees:** peers' IP addresses (used only for rate limiting, as a salted hash, and never logged), room IDs, join and leave times, the WebRTC setup messages and, in relay mode, the size and timing of encrypted frames. It never has the link secret. A visitor cannot verify what a running server logs.
+* **Accounts and payments:** there are no accounts. A Pro token is bought through a third-party payment processor (NOWPayments), which keeps its own records.
+* **Trust in the served page:** the encryption runs in JavaScript the site delivers on each visit, so whoever controls the server could deliver different code. Review the source and self-host if that matters.
 * **Synchronous Transfer:** Both peers must keep their browser tabs open until the transfer completes.
 * **TURN Relay:** Direct STUN works for ~80% of connections. For strict corporate firewalls or CGNAT, the stack includes `coturn` with ephemeral HMAC-SHA1 credentials (optionally gated behind stateless HMAC-signed Pro tokens). Relaying is UDP-only (`--no-tcp-relay`; clients can still reach coturn over TCP 3478), and private, loopback, reserved, NAT64/6to4 and IPv4-mapped addresses are denied as peers.
 * **No TURN Logs:** coturn logs every client and peer address, so its logging is disabled. See **coturn configuration and logging policy** below.
@@ -128,10 +140,43 @@ The receiver rejects:
 
 ```bash
 sudo scripts/gen-turnserver-conf.sh          # reads .env, writes coturn/turnserver.conf
-docker compose up -d coturn                   # pick up the new file
+docker compose up -d --force-recreate coturn  # pick up the new file
 ```
 
-Re-run it whenever `TURN_HOST`, `TURN_PUBLIC_IP` or `TURN_SECRET` changes. The script refuses a missing or malformed value, and the secret must be at least 16 printable characters with no spaces or `#`.
+Re-run it whenever `TURN_HOST`, `TURN_PUBLIC_IP`, `TURN_LISTEN_IP`, `TURN_EXTERNAL_IP` or `TURN_SECRET` changes. The script refuses a missing or malformed value, and the secret must be at least 16 printable characters with no spaces or `#`.
+
+`--force-recreate` is required. The script replaces the file by renaming a new one into place, and a running container keeps the old file through its bind mount. A plain `docker compose up -d coturn` sees no change in `docker-compose.yml` and leaves the container as it is.
+
+**Run the script before the first `docker compose up`.** If `coturn/turnserver.conf` does not exist, Docker creates a *directory* with that name for the bind mount, and coturn starts without a config. The script refuses to write into such a directory and prints the fix:
+
+```bash
+docker compose rm -sf coturn
+```
+
+```bash
+sudo rmdir coturn/turnserver.conf
+```
+
+```bash
+sudo scripts/gen-turnserver-conf.sh
+```
+
+```bash
+docker compose up -d coturn
+```
+
+#### Rotating `TURN_SECRET`
+
+`darkp2p` signs TURN credentials with the secret and coturn verifies them, so both must restart with the new value. Recreating `darkp2p` also gives it a new container address, which tor does not notice by itself (see **Enable the Onion Mirror**).
+
+1. Set the new `TURN_SECRET` in `.env`.
+2. `sudo scripts/gen-turnserver-conf.sh`
+3. `docker compose up -d darkp2p` (compose recreates it because `.env` changed)
+4. `docker compose up -d --force-recreate coturn`
+5. `docker compose restart tor`
+6. `sudo scripts/check-turn-relay.sh`
+
+Credentials issued under the old secret stop working at step 4. Open pages get new ones on their next room join; a transfer that is relaying through TURN at that moment is cut.
 
 The generated file:
 * sets UDP-only relaying (`no-tcp-relay`), per-user and total quotas, bandwidth caps, and no TLS/DTLS listener;
@@ -140,25 +185,58 @@ The generated file:
 
 Docker's logging driver for coturn is `none`, so nothing reaches the host disk. To debug temporarily, follow the comment on the `coturn` service in `docker-compose.yml`, then revert and remove the container.
 
+#### Reserved IPs and other 1:1 NAT
+
+By default coturn listens on every interface and puts the address it received the request on into the relay address. That is correct when the public IPv4 is configured on the server itself, as with a Droplet's own address. Nothing needs setting.
+
+It is wrong when the public address exists only in the provider's network and reaches the server through 1:1 NAT (a DigitalOcean Reserved IP, an AWS Elastic IP). coturn then hands out the private address as the relay address, and peers cannot reach it. Two optional `.env` values fix that:
+
+| Variable | Value | Lines written to `turnserver.conf` |
+|---|---|---|
+| `TURN_LISTEN_IP` | The local IPv4 the public address is mapped to. On DigitalOcean this is the Droplet's **anchor IP**. | `listening-ip=` and `relay-ip=` |
+| `TURN_EXTERNAL_IP` | The public IPv4 (the Reserved IP). Needs `TURN_LISTEN_IP`. | `external-ip=<external>/<listen>` |
+
+On a Droplet, the anchor IP comes from the metadata service:
+
+```bash
+curl -s http://169.254.169.254/metadata/v1/interfaces/public/0/anchor_ipv4/address
+```
+
+Then, for a Reserved IP `203.0.113.10` with anchor IP `10.20.0.5`:
+
+```text
+TURN_PUBLIC_IP=203.0.113.10
+TURN_LISTEN_IP=10.20.0.5
+TURN_EXTERNAL_IP=203.0.113.10
+```
+
+Notes:
+* The simpler setup is to leave both unset and point `TURN_HOST` at the Droplet's own public IPv4, keeping the Reserved IP for `DOMAIN` only. Use the two variables only if `TURN_HOST` must resolve to the Reserved IP.
+* With `TURN_LISTEN_IP` set, coturn listens on that one IPv4 address and no longer on the Droplet's own public address or on IPv6. `TURN_HOST` must then have no `AAAA` record.
+* `scripts/check-turn-relay.sh` tests `TURN_LISTEN_IP` when it is set, because the check runs on the server and the public address is not on an interface there. It shows that coturn relays. It does not show that the Reserved IP reaches coturn, or that relayed packets leave with the Reserved IP as their source: check both from outside (see **Manual checks on the server**).
+* `TURN_LISTEN_IP` is a private address, and private ranges are denied as peers. In the pinned image, the listening address itself is still accepted as a peer once `external-ip` maps it (other addresses in its range get `403`). The exposure is the same as for the public address: UDP services on the host.
+
 The relay port range (`49160-49200`) is defined in both `scripts/gen-turnserver-conf.sh` and `setup-ufw.sh`. Change them together; a test checks that they match.
 
 ---
 
 ## Configuration (environment variables)
 
-All configuration lives in `.env`. Compose passes the whole file to `darkp2p` (`env_file`). `docker-compose.yml` itself sets only `PORT=3000` and `ONION_PORT=3001`, and uses `DOMAIN` for Caddy. An integer outside its range logs a warning and falls back to the default. Every other invalid value listed as fatal stops the server at boot.
+All configuration lives in `.env`. Compose passes the whole file to `darkp2p` (`env_file`). `docker-compose.yml` itself sets only `PORT=3000` and `ONION_PORT=3001`, and uses `DOMAIN` for Caddy (required: compose stops with `set DOMAIN in .env` when it is missing). An integer outside its range logs a warning and falls back to the default. Every other invalid value listed as fatal stops the server at boot.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DOMAIN` | `darkp2p.com` | Public hostname. It is used by Caddy, the default `ALLOWED_ORIGINS`, and the canonical/OG URLs in the page. Fatal if it is not a hostname. |
+| `DOMAIN` | `darkp2p.com` | Public hostname. It is used by Caddy, the default `ALLOWED_ORIGINS`, and the canonical/OG URLs in the page. Fatal if it is not a hostname. The default applies to `server.js` run by hand; `docker compose` refuses to run with `DOMAIN` unset or empty. |
 | `PORT` | `3000` | Main HTTP/WS listener (1–65535). Set by compose. |
 | `ONION_PORT` | `0` (off) | Onion-only listener; compose sets `3001`. Anything arriving here is treated as onion traffic, whatever its headers say. Must differ from `PORT`. |
 | `ONION_HOST` | empty | The service's v3 `.onion` hostname. It enables `Onion-Location` and the onion origin. Fatal if it is not a v3 onion, or if it is set without `ONION_PORT`. |
 | `ALLOWED_ORIGINS` | `https://${DOMAIN}` | Comma-separated http(s) origins allowed to open the WebSocket. `http://${ONION_HOST}` is added whenever `ONION_HOST` is set. |
 | `TRUST_PROXY` | `auto` | Trust `X-Forwarded-For`: `auto` only from a loopback/private peer (the bundled Caddy), `1`/`true` always, `0`/`false` never. Never applied on the onion listener. |
 | `TURN_HOST` | empty | coturn hostname. It enables TURN for Pro rooms (with `TURN_SECRET`) and `stun:${TURN_HOST}:3478` as the STUN server. |
-| `TURN_SECRET` | empty | coturn shared secret for ephemeral HMAC credentials. It is read by `darkp2p` and by `scripts/gen-turnserver-conf.sh`. Use ≥ 32 characters (`openssl rand -hex 32`). |
+| `TURN_SECRET` | empty | coturn shared secret for ephemeral HMAC credentials. It is read by `darkp2p` and by `scripts/gen-turnserver-conf.sh`. Use ≥ 32 characters (`openssl rand -hex 32`). To change it, follow **Rotating `TURN_SECRET`**. |
 | `TURN_PUBLIC_IP` | — (**required for coturn**) | The server's public IPv4. It is read only by `scripts/gen-turnserver-conf.sh`, which refuses to run without it, and by `scripts/check-turn-relay.sh`, which tests the relay at that address. |
+| `TURN_LISTEN_IP` | empty | Optional local IPv4 for coturn to bind (listening and relaying) instead of every interface. Read only by `scripts/gen-turnserver-conf.sh` and `scripts/check-turn-relay.sh`. See **Reserved IPs and other 1:1 NAT**. |
+| `TURN_EXTERNAL_IP` | empty | Optional public IPv4 that coturn advertises for `TURN_LISTEN_IP` behind 1:1 NAT. Needs `TURN_LISTEN_IP`. Read only by `scripts/gen-turnserver-conf.sh`. |
 | `TURN_TTL` | `3600` | Lifetime of TURN credentials in seconds (60–86400). |
 | `STUN_URLS` | empty | Comma-separated `stun:`/`stuns:` URLs that override the STUN server. Without it and without `TURN_HOST`, the page falls back to `stun.l.google.com` (with a warning). |
 | `PRO_TOKEN_SECRET` | empty | HMAC key for Pro tokens. Without it, Pro is disabled. Required if `NOWPAYMENTS_API_KEY` is set. |
@@ -178,7 +256,8 @@ All configuration lives in `.env`. Compose passes the whole file to `darkp2p` (`
 | `MAX_ONION_CONNS` | `100` | Concurrent WebSockets on the onion listener, which shares one bucket (2–10000). |
 | `RELAY_CAP_FREE_MB` | `50` | WebSocket-relay byte budget per free room, both directions (0 disables the relay). |
 | `RELAY_CAP_PRO_MB` | `500` | Relay budget per Pro room. |
-| `MAX_RELAY_ROOMS` | `50` | Rooms that may use the relay at once (1–10000). Others get `relay-busy`. |
+| `MAX_RELAY_ROOMS` | `50` | Rooms that may use the relay at once (1–10000). Others get `relay-busy`, and the page retries every 30 s. |
+| `RELAY_IDLE_MS` | `360000` | A relay room that relays no frame for this long gives its slot back (1000–3600000). Both peers get `relay-idle`; either can ask for the relay again, and the page does so on a click. Keep it above 5 minutes, the longest the page waits for a peer to accept or confirm a file. |
 | `RELAY_STALL_MS` | `60000` | A relay receiver that stops reading for this long is closed with `relay-stalled` (1000–600000). |
 | `HEARTBEAT_MS` | `30000` | WebSocket ping interval (1000–300000). |
 | `SWEEP_MS` | `300000` | Interval of the cleanup sweep and of the stats line (1000–3600000). |
@@ -260,11 +339,13 @@ chmod 600 .env
 
 Replace `203.0.113.10` with the server's public IPv4. `scripts/gen-turnserver-conf.sh` refuses to run without `TURN_PUBLIC_IP`. All configuration lives in `.env`: Compose passes it to the `darkp2p` container as-is (`env_file`), and `docker-compose.yml` itself holds no secrets. See **Configuration** above and `.env.example`.
 
-Then generate coturn's config from `.env`:
+Then generate coturn's config from `.env`. Do this before step 3: if `docker compose up` runs first, Docker creates `coturn/turnserver.conf` as a directory (see **coturn configuration and logging policy** for the fix).
 
 ```bash
 sudo scripts/gen-turnserver-conf.sh
 ```
+
+If `TURN_HOST` resolves to a DigitalOcean Reserved IP or another 1:1-NAT address, also set `TURN_LISTEN_IP` and `TURN_EXTERNAL_IP` first (see **Reserved IPs and other 1:1 NAT**).
 
 ### 2. Configure Firewall (Ubuntu/Debian)
 
@@ -275,6 +356,28 @@ sudo SSH_PORT=22 ./setup-ufw.sh
 ```
 
 Ports published by Docker (Caddy's `80`/`443`) bypass UFW, because Docker inserts its own iptables rules ahead of UFW's. coturn uses host networking, so UFW does govern its ports.
+
+#### Cloud firewall (DigitalOcean)
+
+Because of that bypass, UFW alone does not decide what reaches the Docker-published ports. A firewall in front of the server does. On DigitalOcean, attach a Cloud Firewall to the Droplet with these rules, and keep UFW as the second layer. Use `0.0.0.0/0` and `::/0` as sources unless noted.
+
+| Direction | Protocol | Ports | For |
+|---|---|---|---|
+| Inbound | TCP | `22` (or `SSH_PORT`) | SSH. Restrict the source to your own addresses if you can. |
+| Inbound | TCP | `80`, `443` | Caddy (ACME HTTP-01, HTTPS) |
+| Inbound | UDP | `443` | Caddy HTTP/3 |
+| Inbound | TCP and UDP | `3478` | coturn STUN/TURN |
+| Inbound | UDP | `49160-49200` | coturn relay range |
+| Outbound | TCP, UDP, ICMP | all | tor circuits, coturn relaying to peers on any UDP port, ACME, NOWPayments, DNS |
+
+A Cloud Firewall denies inbound traffic that no rule allows, so a missing relay range or `3478/udp` rule breaks TURN while every container still looks healthy. Outbound UDP must stay open to all ports: peers choose their own. Nothing else should be published: `darkp2p`'s `3000`/`3001` and tor have no published ports.
+
+#### IPv6
+
+* **Compose network.** The `internal` bridge network is IPv4-only. Caddy's published ports are still bound on the host's IPv6 addresses. Depending on the Docker version, an IPv6 client is then either not forwarded at all, or forwarded by Docker's userland proxy and seen by Caddy as coming from the bridge gateway address. In the second case every IPv6 visitor shares one rate-limit bucket (`MAX_CONNS_PER_IP`, 6 by default) and they lock each other out.
+* **`AAAA` for `DOMAIN`.** Do not publish one unless the compose network has IPv6 (`enable_ipv6: true` on `internal`, with a Docker daemon that manages `ip6tables`) and you have confirmed that two IPv6 clients are counted separately. Without an `AAAA` record everything runs over IPv4.
+* **`AAAA` for `TURN_HOST`.** coturn uses host networking and, without `TURN_LISTEN_IP`, listens on the host's IPv6 addresses too. `TURN_PUBLIC_IP` and the relay check cover IPv4 only, so IPv6 TURN is untested: leave the record out. With `TURN_LISTEN_IP` set there is no IPv6 listener at all.
+* **Firewalls.** `setup-ufw.sh` sets `IPV6=yes`, so its rules cover both families. A Cloud Firewall needs `::/0` in the sources for IPv6 to pass. A Droplet with IPv6 enabled is reachable over it whether or not DNS says so, so filter it in either case.
 
 ### 3. Launch
 
@@ -307,11 +410,27 @@ The `tor` container publishes a v3 hidden service that forwards to the server's 
 docker compose exec tor cat /var/lib/tor/hidden_service/hostname
 # set ONION_HOST=<that hostname> in .env, then:
 docker compose up -d darkp2p
+docker compose restart tor
 ```
 
-Recreating `darkp2p` makes it send `Onion-Location` and allow the onion origin. Onion clients are always identified by the `3001` listener, never by headers.
+Recreating `darkp2p` makes it send `Onion-Location` and allow the onion origin.
 
-### 3c. Upgrading an Existing Install
+**Restart tor every time `darkp2p` is recreated** — after an `.env` change, a `--build`, or a `--force-recreate`. tor resolves `darkp2p` in `tor/torrc` (`HiddenServicePort 80 darkp2p:3001`) once, when it starts. A recreated `darkp2p` can come back with a different container address, and tor would keep forwarding to the old one: the onion site then fails while the clearnet site works. `docker compose restart tor` keeps the keys and the address. `docker compose up -d` on its own does not restart tor, because nothing in tor's own configuration changed. Onion clients are always identified by the `3001` listener, never by headers.
+
+### 3c. Manual checks on the server
+
+These depend on the host and the provider, and no test in this repository covers them. Run them after the first deploy and after a change to the firewall, the addresses or the images.
+
+1. `docker compose ps`: four containers `Up`, and `darkp2p` `healthy`. A `coturn` that keeps restarting with exit 126 means its capability set no longer matches the image (see **Containers**).
+2. `ls -l coturn/turnserver.conf`: a regular file, mode `-rw-------`, owner `65534:65533`. Not a directory.
+3. `sudo scripts/check-turn-relay.sh`: both lines `PASS`.
+4. From a machine outside the provider's network, TURN through the public name: `turnutils_uclient` against `TURN_HOST`, or a Pro room between two networks with *Hide my IP from peer* ticked on both sides. With a Reserved IP this is the only check that the address reaches coturn and that relayed packets return from it.
+5. From outside, with the cloud firewall attached: `80/tcp`, `443/tcp`, `443/udp`, `3478/tcp+udp` and `49160-49200/udp` answer, and `3000`, `3001` and anything else do not.
+6. Open the `.onion` address in Tor Browser after any step that recreated `darkp2p`.
+7. `docker stats --no-stream`: `tor` and `coturn` stay well under their 256 MB limits under normal load. A container killed at its limit shows `OOMKilled` in `docker inspect`.
+8. If an `AAAA` record exists: open the site from two different IPv6 networks and confirm that each can hold its own connections.
+
+### 3d. Upgrading an Existing Install
 
 These changes need action on a server deployed before them:
 
@@ -325,6 +444,8 @@ These changes need action on a server deployed before them:
 3. **tor package pin:** `tor/Dockerfile` pins `tor=0.4.9.17-r0` from Alpine 3.23. If `docker compose build tor` reports the version as unavailable, Alpine has moved on: bump the pin to the version listed at https://pkgs.alpinelinux.org/packages?name=tor&branch=v3.23.
 4. **Wire format v3:** clients of different page versions cannot talk to each other. After deploying, everyone must reload open tabs; a stale tab shows *"Peer is running an outdated DARKP2P page — both sides reload"*.
 5. **`ONION_PORT`:** onion traffic must use the dedicated `3001` listener, which compose sets. Outside compose, `ONION_HOST` without `ONION_PORT` refuses to start.
+6. **Capabilities and memory limits:** `tor` and `coturn` now run with `cap_drop: ALL` (coturn keeps `NET_BIND_SERVICE`), `mem_limit: 256m` and `pids_limit: 128`. `docker compose up -d` recreates both. Afterwards run `sudo scripts/check-turn-relay.sh` and open the onion address.
+7. **`DOMAIN` is required by compose:** every `docker compose` command stops with `set DOMAIN in .env` if it is missing or empty.
 
 ### 4. Minting a Stateless TURN Relay Token (Optional)
 
@@ -341,10 +462,12 @@ console.log(`${exp}.${sig}`);
 
 To sell tokens automatically with crypto payments, set `NOWPAYMENTS_API_KEY` and `NOWPAYMENTS_IPN_SECRET`. See **Pro payments and claims** above.
 
-With a Pro token, either peer can tick *Hide my IP from peer*. This forces TURN-only ICE (`iceTransportPolicy: "relay"`), so the other side sees coturn's address instead of yours; without TURN the page refuses rather than fall back to a direct connection. *Force WebSocket relay* skips WebRTC entirely and relays the encrypted frames through the server, within the room's relay budget.
+With a Pro token, either peer can tick *Hide my IP from peer*. This forces TURN-only ICE (`iceTransportPolicy: "relay"`), so the other side sees coturn's address instead of yours; without TURN the page refuses rather than fall back to a direct connection. *Force WebSocket relay* skips WebRTC entirely and relays the encrypted frames through the server, within the room's relay budget. Unticking it while on the relay leaves and rejoins the room, so both peers negotiate again and can connect directly (which shows each peer the other's IP).
+
+**Relay limits in practice.** A frame over the room's cap is dropped, not relayed, and both peers get one `relay-limit-exceeded` notice; the socket stays open, and only a sender that goes on for another 8 MB is closed. A room with less than 4 KB of budget left does not start the relay at all and holds no relay slot; the page says the budget is used up instead of attempting a key handshake. The page's reconnect back-off resets only after a signaling connection has stayed up for 10 s.
 
 ---
 
 ## License
 
-MIT
+MIT. See [`LICENSE`](LICENSE).

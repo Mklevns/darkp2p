@@ -23,8 +23,10 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+    # Caddyfile builds its site addresses from DOMAIN. An empty value would
+    # give it "http://" and "https://www." as addresses, so refuse to start.
     environment:
-      - DOMAIN=${DOMAIN}
+      - DOMAIN=${DOMAIN:?set DOMAIN in .env to the public hostname}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -65,8 +67,13 @@ services:
     build: ./tor
     container_name: darkp2p-tor
     restart: unless-stopped
+    # tor runs as the unprivileged `tor` user and binds no port.
+    cap_drop:
+      - ALL
     security_opt:
       - "no-new-privileges:true"
+    mem_limit: 256m
+    pids_limit: 128
     logging:
       driver: local
       options:
@@ -96,8 +103,18 @@ services:
     container_name: darkp2p-coturn
     restart: unless-stopped
     network_mode: host
+    # coturn runs as nobody and binds only ports above 1024, but the image
+    # sets the NET_BIND_SERVICE file capability on /usr/bin/turnserver: with
+    # that capability dropped the kernel refuses to exec it ("operation not
+    # permitted", exit 126). So it is the one capability kept.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     security_opt:
       - "no-new-privileges:true"
+    mem_limit: 256m
+    pids_limit: 128
     # coturn logs the address of every client and peer, so its output is
     # discarded and never reaches the host disk. To debug temporarily, set
     # `driver: json-file` here and swap no-stdout-log/simple-log/

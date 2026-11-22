@@ -5,6 +5,10 @@
 # ahead of UFW's, so caddy's published 80/443 are reachable whatever UFW says.
 # Publish only what must be public in docker-compose.yml. coturn uses host
 # networking, so its ports below are governed by UFW.
+#
+# To filter the Docker-published ports too, use a firewall in front of the
+# host (e.g. a DigitalOcean Cloud Firewall) with the same rules; the README
+# lists them.
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
