@@ -264,3 +264,15 @@ test('/ explains an empty share field when JavaScript is off, on both listeners'
     await withOnion.stop();
   }
 });
+
+// Accessibility basics an automated audit checks on the app page: one main
+// landmark with the h1 inside it and the site nav outside, and link targets
+// in that nav at least 24px tall.
+test('/ has one main landmark around the app, and the site nav outside it', async () => {
+  const html = await (await get('/')).text();
+  assert.equal(html.match(/<main\b/g)?.length, 1);
+  const main = /<main>([\s\S]*)<\/main>/.exec(html)[1];
+  assert.ok(main.includes('<h1>') && main.includes('id="shareUrl"') && main.includes('class="faq"'));
+  assert.ok(!main.includes('class="site-nav"'));
+  assert.match(html, /\.site-nav a \{[^}]*min-height: 24px/);
+});
