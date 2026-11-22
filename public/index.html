@@ -424,6 +424,12 @@
     .tier-cta:hover:not(:disabled) { background: var(--accent); color: #000; }
     .tier-cta:disabled { opacity: 0.5; cursor: wait; }
     .tier-cta[hidden], .tip-jar[hidden], .tip-btn[hidden], .modal-note[hidden] { display: none; }
+    .noscript-note {
+      margin-top: 8px;
+      font-size: 0.75rem;
+      line-height: 1.4;
+      color: var(--accent);
+    }
     .modal-note {
       font-size: 0.68rem;
       color: var(--muted);
@@ -446,9 +452,12 @@
     <div class="box">
       <div style="font-size:0.75rem; margin-bottom:6px; color:var(--muted);">SHARE LINK WITH PEER:</div>
       <div class="row">
-        <input type="text" id="shareUrl" readonly />
+        <input type="text" id="shareUrl" readonly placeholder="Requires JavaScript — no link yet" />
         <button id="copyBtn">Copy</button>
       </div>
+      <noscript>
+        <div class="noscript-note">JavaScript is turned off, so this page cannot make a link or encrypt anything. In Tor Browser the "Safest" security level turns it off: click the shield icon, choose "Standard", then reload.</div>
+      </noscript>
       <label class="toggle-row">
         <input type="checkbox" id="forceWsRelay" />
         Force WebSocket relay (mask IP from peer • 50 MB free / 500 MB Pro)
@@ -632,6 +641,17 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
+    // An error nothing caught would otherwise leave the page dead with no
+    // word of why. Reported once: later errors are usually the same one again.
+    let pageErrorShown = false;
+    function reportPageError(detail) {
+      if (pageErrorShown) return;
+      pageErrorShown = true;
+      log(`Something went wrong in the page${detail ? ` (${detail})` : ''}. Reload it; if this keeps happening, try another browser.`, 'err');
+    }
+    window.addEventListener('error', (e) => reportPageError(e && e.message));
+    window.addEventListener('unhandledrejection', (e) => reportPageError(e && e.reason && e.reason.message));
+
     function toBase64Url(bytes) {
       let bin = '';
       for (const b of bytes) bin += String.fromCharCode(b);
@@ -778,6 +798,18 @@
     const shareUrl = `${location.origin}${location.pathname}#${shareFragment}`;
     if (isNewRoom) location.hash = shareFragment;
     shareUrlEl.value = shareUrl;
+
+    // The link above needs neither of these, but nothing else works without
+    // them. Web Crypto is missing on a plain http:// address (a .onion one is
+    // fine in Tor Browser); say so instead of failing on first use.
+    const missingApis = [];
+    if (typeof crypto.subtle === 'undefined') missingApis.push('Web Crypto');
+    if (typeof WebSocket === 'undefined') missingApis.push('WebSocket');
+    const pageUnsupported = missingApis.length > 0;
+    if (pageUnsupported) {
+      log(`This browser does not offer ${missingApis.join(' or ')} here, so DarkP2P cannot connect or encrypt. ` +
+        'Open the page over https:// or its .onion address, in an up-to-date browser.', 'err');
+    }
 
     const proModal = document.getElementById('proModal');
     document.getElementById('openProModalBtn').onclick = () => proModal.classList.add('open');
@@ -1522,7 +1554,7 @@
     }
     // ==END darkp2p-framing==
 
-    const roomKeyReady = importRoomKey(keyBytes);
+    const roomKeyReady = pageUnsupported ? new Promise(() => {}) : importRoomKey(keyBytes);
     let roomKey = null;
     roomKeyReady.then((k) => { roomKey = k; });
 
@@ -2864,7 +2896,8 @@
       } catch {}
     }
 
-    connectSignaling();
+    if (pageUnsupported) setDropEnabled(false, 'THIS BROWSER CANNOT RUN DARKP2P');
+    else connectSignaling();
     cleanupStaleOpfs();
 
     cancelBtn.onclick = () => {

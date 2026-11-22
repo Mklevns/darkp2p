@@ -33,7 +33,7 @@ const SOURCE = inlineScript();
 
 // Names the script reads as globals and the harness replaces.
 const GLOBALS = ['document', 'window', 'location', 'history', 'localStorage', 'navigator', 'WebSocket',
-  'RTCPeerConnection', 'URL', 'fetch', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'];
+  'RTCPeerConnection', 'URL', 'fetch', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'crypto'];
 // eslint-disable-next-line no-new-func
 const runScript = new Function(...GLOBALS, SOURCE);
 
@@ -244,9 +244,11 @@ export function createFakeRtcNet() {
 // sees no RTCPeerConnection at all (as in a browser with WebRTC disabled).
 // `search` is the query string the page is opened with. `lazyLocation` makes
 // location.hash and location.href keep their old value after the page assigns
-// location.hash (until page.settleLocation()), as a browser may.
+// location.hash (until page.settleLocation()), as a browser may. `noSubtle`
+// and `noWebSocket` take crypto.subtle and WebSocket away, as a browser does
+// on an insecure origin or with the API switched off.
 export function loadPage({ port, hash = '', search = '', lazyLocation = false, forceWsRelay = false,
-  hideIp = false, rtc = null, storage = {} }) {
+  hideIp = false, rtc = null, storage = {}, noSubtle = false, noWebSocket = false }) {
   const page = {
     logs: [],        // { text, cls } in order
     events: [],      // log lines, drop enable/disable and label changes, in order
@@ -389,11 +391,18 @@ export function loadPage({ port, hash = '', search = '', lazyLocation = false, f
   }
 
   const RTC = rtc ? rtc.makeClass(page) : undefined;
+  // What the page registered on window ('error', 'unhandledrejection').
+  page.windowListeners = new Map();
+  const window = { addEventListener: (type, fn) => page.windowListeners.set(type, fn) };
+  const pageCrypto = noSubtle
+    ? { getRandomValues: (a) => globalThis.crypto.getRandomValues(a) }
+    : globalThis.crypto;
   runScript(
-    document, {}, location, history, localStorage, {}, PageWebSocket, RTC, PageURL,
+    document, window, location, history, localStorage, {}, noWebSocket ? undefined : PageWebSocket, RTC, PageURL,
     async () => { throw new Error('no fetch in the page harness'); },
     (fn, ms = 0, ...args) => addTimer('timeout', fn, ms, args), dropTimer,
     (fn, ms = 0, ...args) => addTimer('interval', fn, ms, args), dropTimer,
+    pageCrypto,
   );
 
   page.logTexts = () => page.logs.map((l) => l.text);

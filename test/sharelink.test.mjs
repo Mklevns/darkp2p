@@ -98,3 +98,31 @@ test('without a payment return the URL is not rewritten', async () => {
     assert.deepEqual(page.historyCalls, []);
   });
 });
+
+// The link needs only random bytes. Without Web Crypto or WebSocket the page
+// cannot do anything else, and must say so rather than die without a word.
+for (const [name, opts, api] of [
+  ['crypto.subtle', { noSubtle: true }, /Web Crypto/],
+  ['WebSocket', { noWebSocket: true }, /WebSocket/],
+]) {
+  test(`without ${name} the link is still shown and the page says why it cannot run`, async () => {
+    await withPage(opts, async (page, origin) => {
+      assert.match(page.el('shareUrl').value.slice(`${origin}/#`.length), FRAGMENT_RE);
+      assert.equal(page.countLog(api), 1);
+      assert.equal(page.label, 'THIS BROWSER CANNOT RUN DARKP2P');
+      assert.equal(page.dropEnabled, false);
+      assert.equal(page.sockets.length, 0);
+      // Time for a stray rejection to surface: node:test would fail on one.
+      await new Promise((r) => setTimeout(r, 50));
+    });
+  });
+}
+
+test('an uncaught error or rejection is reported in the log, once', async () => {
+  await withPage({}, async (page) => {
+    page.windowListeners.get('unhandledrejection')({ reason: new Error('boom') });
+    page.windowListeners.get('error')({ message: 'again' });
+    assert.equal(page.countLog(/Something went wrong in the page/), 1);
+    assert.ok(page.hasLog(/\(boom\)/));
+  });
+});
