@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Using DarkP2P in Tor Browser: Encrypted File Transfer over Tor</title>
+  <meta name="description" content="How to send files with DarkP2P in Tor Browser, why WebRTC is unavailable there, how the relay keeps end-to-end encryption, and what speeds to expect." />
+  <link rel="canonical" href="https://darkp2p.com/tor" />
+  <meta name="theme-color" content="#0a0c0e" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="DarkP2P" />
+  <meta property="og:url" content="https://darkp2p.com/tor" />
+  <meta property="og:title" content="Using DarkP2P in Tor Browser: Encrypted File Transfer over Tor" />
+  <meta property="og:description" content="How to send files with DarkP2P in Tor Browser, why WebRTC is unavailable there, how the relay keeps end-to-end encryption, and what speeds to expect." />
+  <meta property="og:image" content="https://darkp2p.com/og-image.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="DarkP2P: encrypted browser-to-browser file transfer. E2E AES-256-GCM, no server storage, works in Tor Browser." />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://darkp2p.com/og-image.png" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebPage",
+        "@id": "https://darkp2p.com/tor",
+        "url": "https://darkp2p.com/tor",
+        "name": "Using DarkP2P in Tor Browser: Encrypted File Transfer over Tor",
+        "description": "How to send files with DarkP2P in Tor Browser, why WebRTC is unavailable there, how the relay keeps end-to-end encryption, and what speeds to expect.",
+        "inLanguage": "en",
+        "isPartOf": {
+          "@type": "WebSite",
+          "name": "DarkP2P",
+          "url": "https://darkp2p.com/"
+        }
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "DarkP2P",
+            "item": "https://darkp2p.com/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "Tor",
+            "item": "https://darkp2p.com/tor"
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #0a0c0e;
+      --panel: #111519;
+      --border: #232b32;
+      --accent: #00f0ff;
+      --ok: #05ffa1;
+      --warn: #ff2a6d;
+      --text: #d1d9e0;
+      --muted: #8a97a5;
+    }
+    * {
+      box-sizing: border-box;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 16px;
+      font-size: 0.9rem;
+      line-height: 1.7;
+    }
+    .container {
+      width: 100%;
+      max-width: 820px;
+      margin: 24px auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 28px;
+      box-shadow: 0 0 30px rgba(0, 240, 255, 0.05);
+    }
+    .top {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding-bottom: 14px;
+      margin-bottom: 22px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8rem;
+    }
+    .brand { color: var(--accent); letter-spacing: 2px; text-decoration: none; }
+    .cta {
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      padding: 6px 12px;
+      text-decoration: none;
+      text-transform: uppercase;
+      font-size: 0.75rem;
+    }
+    .cta:hover { background: var(--accent); color: #000; }
+    h1 { margin: 0 0 6px; font-size: 1.45rem; line-height: 1.3; color: var(--accent); letter-spacing: 1px; }
+    .lede { color: var(--muted); margin: 0 0 22px; }
+    h2 {
+      margin: 34px 0 10px;
+      padding-top: 16px;
+      border-top: 1px dashed var(--border);
+      font-size: 1.02rem;
+      color: var(--accent);
+      letter-spacing: 0.5px;
+    }
+    h3 { margin: 22px 0 6px; font-size: 0.9rem; color: var(--text); }
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 0 0 12px; padding-left: 22px; }
+    li { margin-bottom: 6px; }
+    main a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    main a:hover { background: var(--accent); color: #000; text-decoration: none; }
+    code {
+      background: #07090b;
+      border: 1px solid var(--border);
+      padding: 1px 5px;
+      font-size: 0.85em;
+      color: var(--accent);
+      overflow-wrap: anywhere;
+    }
+    pre {
+      background: #07090b;
+      border: 1px solid var(--border);
+      padding: 12px;
+      margin: 0 0 12px;
+      overflow-x: auto;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      color: var(--accent);
+    }
+    .note {
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      background: rgba(0, 240, 255, 0.03);
+      padding: 10px 14px;
+      margin: 0 0 14px;
+    }
+    .note.warn { border-left-color: var(--warn); background: rgba(255, 42, 109, 0.04); }
+    .table-wrap { overflow-x: auto; margin: 0 0 14px; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.8rem; line-height: 1.5; }
+    th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+    thead th { color: var(--accent); background: rgba(0, 0, 0, 0.3); white-space: nowrap; }
+    tbody th { color: var(--text); font-weight: normal; background: rgba(0, 0, 0, 0.2); }
+    .yes { color: var(--ok); }
+    .no { color: var(--warn); }
+    .unk { color: var(--muted); font-style: italic; }
+    .small { font-size: 0.78rem; color: var(--muted); }
+    .site-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      margin-top: 34px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      font-size: 0.78rem;
+    }
+    .site-nav a { color: var(--muted); text-decoration: none; }
+    .site-nav a:hover, .site-nav a[aria-current="page"] { color: var(--accent); }
+    @media (max-width: 560px) {
+      .container { padding: 18px; margin: 0 auto; }
+      h1 { font-size: 1.2rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="top">
+      <a class="brand" href="/">DARKP2P // DEAD DROP</a>
+      <a class="cta" href="/">Open the app</a>
+    </header>
+
+    <main>
+      <h1>Using DarkP2P in Tor Browser</h1>
+      <p class="lede">Tor Browser has no WebRTC, so DarkP2P sends the same encrypted frames through its WebSocket relay instead. It works, with a size cap and lower speed.</p>
+      <h2 id="steps">How to use it</h2>
+      <ol>
+        <li>Open DarkP2P in Tor Browser. JavaScript has to be enabled, because all encryption runs in the page. Tor Browser's "Safest" security level turns JavaScript off, and the page cannot work there.</li>
+        <li>Copy the share link and send it to your peer over a channel you trust.</li>
+        <li>Your peer opens the link. They can use Tor Browser or an ordinary browser.</li>
+        <li>The page detects that WebRTC is missing and switches both sides to the relay. The badges read "TUNNEL: E2E WS RELAY" and "IP MASKED FROM PEER".</li>
+        <li>Once the page reports that the peer key is verified, choose a file. Your peer accepts it, and both tabs stay open until it is delivered.</li>
+      </ol>
+      <!--onion:on-->
+      <div class="note">
+        <p><strong>Onion service.</strong> This site is also reachable inside the Tor network, without leaving through an exit node:</p>
+        <p><code>http://{{ONION_HOST}}/</code></p>
+        <p>Tor Browser also offers it through the ".onion available" button in the address bar. A link made on the onion address points to the onion address, so your peer needs Tor Browser to open it as it is. The part after <code>#</code> works on either address.</p>
+      </div>
+      <!--/onion:on-->
+      <!--onion:off-->
+      <div class="note">
+        <p>This deployment does not publish an onion address. Tor Browser reaches it through a Tor exit node, like any other website.</p>
+      </div>
+      <!--/onion:off-->
+
+      <h2 id="webrtc">Why WebRTC is not available in Tor Browser</h2>
+      <p>Tor Browser is built without WebRTC. WebRTC is designed to discover a device's real network addresses and to connect peers directly, mostly over UDP. Tor carries TCP only, and a direct connection would bypass Tor and reveal the address Tor exists to hide.</p>
+      <p>DarkP2P does not try to work around this. When the page finds that the browser has no <code>RTCPeerConnection</code>, it tells the other peer to switch, and both use the relay. This also happens when only one of the two peers is on Tor.</p>
+
+      <h2 id="e2e">How the relay keeps end-to-end encryption</h2>
+      <p>The relay changes the route, not the encryption. Files are encrypted in your browser with AES-256-GCM before they are sent, using keys derived from the secret in the link's fragment, and that secret is never sent to the server. In relay mode the server receives those encrypted frames over the WebSocket and passes them to your peer, who decrypts them.</p>
+      <p>The server can see how much data is relayed and when. It cannot see the contents, the file name or the file type. Peers never learn each other's address in relay mode, because each of them talks only to the server. The server sees a Tor exit address for you, or no address at all on the onion service.</p>
+      <p>One limit is worth knowing: anyone who records the relayed frames and later gets the share link can decrypt them. See the <a href="/security#relay">threat model</a>.</p>
+
+      <h2 id="performance">What to expect</h2>
+      <ul>
+        <li><strong>Size.</strong> A room can relay 50 MB in total, counting both directions. With a Pro token on either side the cap is 500 MB. The budget lasts until both peers have left the room, so open a fresh link for the next transfer. The page refuses a file that does not fit before sending anything.</li>
+        <li><strong>Speed.</strong> The relay limits each sender to about 1 MB per second (4 MB per second in a Pro room). Tor circuits are often slower than that, and then Tor is the limit.</li>
+        <li><strong>Availability.</strong> The number of rooms relaying at once is limited, and all onion-service visitors share one connection allowance. At busy times the page may report that the relay is busy, or fail to connect. Try again a little later.</li>
+        <li><strong>Memory.</strong> The offer shows whether the file will be streamed to disk or buffered in memory. If Tor Browser does not give the page disk storage, the file is held in RAM until it is complete, which the relay's size cap keeps within reach.</li>
+        <li><strong>Pro tokens.</strong> A token is kept in the browser's local storage. Tor Browser clears that when it closes or when you request a new identity, so keep a copy of the token.</li>
+      </ul>
+
+      <h2 id="more">Read next</h2>
+      <ul>
+        <li><a href="/how-it-works#relay">How the relay fallback works</a>.</li>
+        <li><a href="/security">Security and threat model</a>.</li>
+      </ul>
+    </main>
+
+    <nav class="site-nav" aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/how-it-works">How it works</a>
+      <a href="/security">Security</a>
+      <a href="/tor" aria-current="page">Tor</a>
+      <a href="/compare">Compare</a>
+      <a href="/abuse">Abuse</a>
+      <a href="https://github.com/Mklevns/darkp2p" rel="noopener noreferrer">Source</a>
+    </nav>
+  </div>
+</body>
+</html>

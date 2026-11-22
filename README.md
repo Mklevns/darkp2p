@@ -95,6 +95,26 @@ The receiver rejects:
 
 ---
 
+## Static Pages, Assets and Crawl Files
+
+`server.js` serves a fixed set of files from `public/`, read into memory at boot. Nothing else in `public/` is reachable.
+
+| URL | Source |
+|---|---|
+| `/` | `public/index.html` (the app) |
+| `/how-it-works`, `/security`, `/tor`, `/compare`, `/abuse` | `public/<name>.html`. A trailing slash redirects (301) to the clean URL. |
+| `/og-image.png`, `/favicon.svg`, `/apple-touch-icon.png` | Same names in `public/`. |
+| `/<key>.txt` | The IndexNow key file, `public/<32 hex>.txt`. |
+| `/robots.txt`, `/sitemap.xml` | Generated from `DOMAIN` and the `SITE_PAGES` list in `server.js`. |
+| anything else | `public/404.html` with status 404. |
+
+* **Adding or editing a page:** add it to `SITE_PAGES` in `server.js` and bump its `lastmod` when the content changes. Pages are plain HTML with inline CSS and no script; `https://darkp2p.com/` in them is replaced with `https://<DOMAIN>/` at boot.
+* **Onion address:** `public/tor.html` shows the block between `<!--onion:on-->` markers when `ONION_HOST` is set (`{{ONION_HOST}}` is the hostname) and the `<!--onion:off-->` block otherwise.
+* **Images:** `assets/og-image.svg` is the source of `public/og-image.png`. After editing it, run `node scripts/render-images.mjs` (needs Playwright with Chromium; not a project dependency).
+* **IndexNow:** after a deploy that changed page content, run `scripts/indexnow.sh` by hand (`--dry-run` prints the request). Nothing runs it automatically.
+
+---
+
 ## Threat Model & Limitations
 
 * **IP Exposure:** Direct WebRTC P2P connections expose each peer's IP address to the other peer during ICE/NAT traversal. Use a VPN if you need IP anonymity.

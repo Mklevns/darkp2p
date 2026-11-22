@@ -3,15 +3,25 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DARKP2P // Ephemeral Dead Drop</title>
-  <meta name="description" content="Direct, zero-knowledge P2P file transfer in your browser. End-to-end AES-256-GCM encrypted WebRTC streaming with zero server storage, Tor Browser support, and no file size limits." />
+  <title>DarkP2P: Encrypted P2P File Transfer in Your Browser (No Upload, No Account)</title>
+  <meta name="description" content="Direct, end-to-end encrypted P2P file transfer in your browser. AES-256-GCM over WebRTC, zero server storage, Tor Browser support, no account." />
   <link rel="canonical" href="https://darkp2p.com/" />
+  <meta name="theme-color" content="#0a0c0e" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
   <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="DarkP2P" />
   <meta property="og:url" content="https://darkp2p.com/" />
-  <meta property="og:title" content="DARKP2P // Zero-Knowledge Browser File Transfer" />
-  <meta property="og:description" content="Send large files directly browser-to-browser with AES-256-GCM encryption and zero server storage." />
-  <meta name="twitter:card" content="summary" />
+  <meta property="og:title" content="DarkP2P: Encrypted P2P File Transfer in Your Browser" />
+  <meta property="og:description" content="Send files directly browser-to-browser with end-to-end AES-256-GCM encryption and zero server storage. No upload, no account." />
+  <meta property="og:image" content="https://darkp2p.com/og-image.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="DarkP2P: encrypted browser-to-browser file transfer. E2E AES-256-GCM, no server storage, works in Tor Browser." />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://darkp2p.com/og-image.png" />
 
   <script type="application/ld+json">
   {
@@ -19,11 +29,12 @@
     "@graph": [
       {
         "@type": "SoftwareApplication",
-        "name": "DARKP2P",
+        "name": "DarkP2P",
         "url": "https://darkp2p.com/",
+        "image": "https://darkp2p.com/og-image.png",
         "applicationCategory": "UtilitiesApplication",
         "operatingSystem": "Web, Windows, macOS, Linux, Android, iOS",
-        "description": "Zero-knowledge, end-to-end AES-256-GCM encrypted peer-to-peer file transfer directly in the browser using WebRTC DataChannels with automatic E2E WebSocket relay fallback for Tor Browser.",
+        "description": "End-to-end AES-256-GCM encrypted peer-to-peer file transfer directly in the browser, using WebRTC DataChannels with an automatic end-to-end encrypted WebSocket relay fallback for Tor Browser.",
         "offers": {
           "@type": "Offer",
           "price": "0",
@@ -34,7 +45,7 @@
           "Direct WebRTC peer-to-peer streaming",
           "Automatic E2E-encrypted WebSocket relay fallback for Tor Browser",
           "Zero server file storage or logging",
-          "Origin Private File System (OPFS) disk streaming for large files",
+          "Disk streaming for large files (save-file picker or Origin Private File System)",
           "Optional TURN relay for strict corporate firewalls and CGNAT"
         ]
       },
@@ -43,18 +54,18 @@
         "mainEntity": [
           {
             "@type": "Question",
-            "name": "How does DARKP2P transfer files without server storage?",
+            "name": "How does DarkP2P work without server storage?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "DARKP2P uses WebRTC DataChannels to stream files directly from the sender's browser to the receiver's browser. The signaling server only pairs the two peers in RAM and never touches or stores file payloads."
+              "text": "Files stream directly browser-to-browser over WebRTC DataChannels. The signaling server only pairs two peers in RAM. When a direct connection is not possible, it forwards the already-encrypted chunks through memory. It never writes file data to disk or logs it."
             }
           },
           {
             "@type": "Question",
-            "name": "Can the server decrypt my files?",
+            "name": "Can the server read or decrypt my files?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "No. A 256-bit AES-GCM encryption key is generated locally in the URL fragment after the # symbol. Browsers never send URL fragments to the server, so only peers holding the full share link can decrypt the stream."
+              "text": "No. Every chunk is encrypted in your browser with AES-256-GCM. The keys are derived from a 256-bit secret that exists only in the URL fragment (after #), which browsers never send to the server."
             }
           },
           {
@@ -62,7 +73,7 @@
             "name": "Is there a file size limit?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "There is no server-enforced file size limit for direct P2P transfers. On modern browsers supporting the Origin Private File System (OPFS), incoming chunks stream directly to disk so multi-gigabyte transfers do not exhaust browser RAM."
+              "text": "Not for direct P2P transfers: the server sets no cap, and incoming chunks stream to disk (a file you choose, or the browser's Origin Private File System) instead of RAM. The WebSocket relay, which Tor Browser always uses, is capped at 50 MB per room (500 MB with Pro). Browsers that cannot stream to disk are limited to 512 MB."
             }
           },
           {
@@ -70,7 +81,7 @@
             "name": "Does WebRTC hide my IP address?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "No. Direct peer-to-peer WebRTC connections exchange IP addresses between the two peers during NAT traversal. Use Force WebSocket Relay, a Pro TURN token, a zero-log VPN, or Tor Browser to mask your IP address from your peer."
+              "text": "No. Direct P2P connections expose your IP address to the other peer during NAT traversal. To hide it, turn on Force WebSocket relay, turn on Hide my IP with a Pro token, or use a zero-log VPN or Tor Browser."
             }
           }
         ]
@@ -318,6 +329,21 @@
       color: var(--muted);
       line-height: 1.5;
     }
+    .site-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+      font-size: 0.72rem;
+    }
+    .site-nav a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+    .site-nav a:hover,
+    .site-nav a[aria-current="page"] { color: var(--accent); }
     .modal-backdrop {
       display: none;
       position: fixed;
@@ -478,25 +504,35 @@
       <div class="faq-title">SYSTEM FAQ // ZERO-KNOWLEDGE SPEC</div>
 
       <details>
-        <summary>How does DARKP2P work without server storage?</summary>
-        <p>Files stream directly browser-to-browser over WebRTC DataChannels. The signaling node only pairs two peers in RAM and never stores or logs file payloads.</p>
+        <summary>How does DarkP2P work without server storage?</summary>
+        <p>Files stream directly browser-to-browser over WebRTC DataChannels. The signaling server only pairs two peers in RAM. When a direct connection is not possible, it forwards the already-encrypted chunks through memory. It never writes file data to disk or logs it.</p>
       </details>
 
       <details>
         <summary>Can the server read or decrypt my files?</summary>
-        <p>No. Every chunk is encrypted client-side with AES-256-GCM using a 256-bit key stored only in the URL fragment (after #), which browsers never transmit to the server.</p>
+        <p>No. Every chunk is encrypted in your browser with AES-256-GCM. The keys are derived from a 256-bit secret that exists only in the URL fragment (after #), which browsers never send to the server.</p>
       </details>
 
       <details>
         <summary>Is there a file size limit?</summary>
-        <p>No server cap for direct P2P transfers. Incoming chunks stream directly to disk via the browser's Origin Private File System (OPFS) so multi-gigabyte files won't crash your tab.</p>
+        <p>Not for direct P2P transfers: the server sets no cap, and incoming chunks stream to disk (a file you choose, or the browser's Origin Private File System) instead of RAM. The WebSocket relay, which Tor Browser always uses, is capped at 50 MB per room (500 MB with Pro). Browsers that cannot stream to disk are limited to 512 MB.</p>
       </details>
 
       <details>
         <summary>Does WebRTC hide my IP address?</summary>
-        <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. Use Force WebSocket Relay, a Pro TURN token, a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a>, or Tor Browser to mask your IP.</p>
+        <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. To hide it, turn on Force WebSocket relay, turn on Hide my IP with a Pro token, or use a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a> or Tor Browser.</p>
       </details>
     </section>
+
+    <nav class="site-nav" aria-label="Site">
+      <a href="/" aria-current="page">Home</a>
+      <a href="/how-it-works">How it works</a>
+      <a href="/security">Security</a>
+      <a href="/tor">Tor</a>
+      <a href="/compare">Compare</a>
+      <a href="/abuse">Abuse</a>
+      <a href="https://github.com/Mklevns/darkp2p" rel="noopener noreferrer">Source</a>
+    </nav>
 
     <div class="modal-backdrop" id="proModal" role="dialog" aria-modal="true" aria-labelledby="proModalTitle">
       <div class="modal">

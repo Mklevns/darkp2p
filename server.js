@@ -297,6 +297,7 @@ function buildPageCsp(html) {
     "default-src 'none'",
     `script-src ${hashes.length ? hashes.join(' ') : "'none'"}`,
     "style-src 'unsafe-inline'",
+    "img-src 'self'",
     `connect-src ${[...connect].join(' ')}`,
     "base-uri 'none'",
     "form-action 'none'",
@@ -346,14 +347,102 @@ function loadPage(file, required, transform) {
   return { body: Buffer.from(html, 'utf8'), csp: buildPageCsp(html) };
 }
 
+// Boot-time substitutions for the static content pages: the canonical/OG
+// origin, and the onion address. A page marks what it shows with an onion
+// address as <!--onion:on-->…<!--/onion:on--> (where {{ONION_HOST}} is the
+// hostname) and what it shows without one as <!--onion:off-->…<!--/onion:off-->.
+function renderStaticPage(html) {
+  const drop = ONION_HOST ? 'off' : 'on';
+  const dropped = new RegExp(`<!--onion:${drop}-->[\\s\\S]*?<!--/onion:${drop}-->`, 'g');
+  return html
+    .replace(dropped, '')
+    .replace(/<!--\/?onion:(?:on|off)-->\n?/g, '')
+    .split('{{ONION_HOST}}').join(ONION_HOST)
+    .split('https://darkp2p.com/').join(`https://${DOMAIN}/`);
+}
+
 const indexPage = loadPage('index.html', true, renderIndex);
 const notFoundPage = loadPage('404.html', false);
 
-const robotsTxt = `User-agent: *\nAllow: /\nSitemap: https://${DOMAIN}/sitemap.xml\n`;
+// Every indexable page: clean URL -> file in public/. `lastmod` is what
+// sitemap.xml reports, so bump it when the page's content changes.
+const SITE_PAGES = [
+  { path: '/', file: 'index.html', lastmod: '2026-11-22' },
+  { path: '/how-it-works', file: 'how-it-works.html', lastmod: '2026-11-22' },
+  { path: '/security', file: 'security.html', lastmod: '2026-11-22' },
+  { path: '/tor', file: 'tor.html', lastmod: '2026-11-22' },
+  { path: '/compare', file: 'compare.html', lastmod: '2026-11-22' },
+  { path: '/abuse', file: 'abuse.html', lastmod: '2026-11-22' },
+];
+
+// path -> page, for everything except "/" (which index.html serves). A page
+// whose file is missing is left out, and its URL answers 404.
+const staticPages = new Map();
+for (const { path: pagePath, file } of SITE_PAGES) {
+  if (pagePath === '/') continue;
+  const page = loadPage(file, false, renderStaticPage);
+  if (page) staticPages.set(pagePath, page);
+  else logWarn(`public/${file} is missing: ${pagePath} is disabled`);
+}
+
+const TYPE_TEXT = 'text/plain; charset=utf-8';
+const TYPE_HTML = 'text/html; charset=utf-8';
+const TYPE_JSON = 'application/json; charset=utf-8';
+const TYPE_XML = 'application/xml; charset=utf-8';
+const TYPE_PNG = 'image/png';
+const TYPE_SVG = 'image/svg+xml';
+
+// Fixed files served from memory: the social card, the icons, and any
+// IndexNow key file (public/<32 hex>.txt, whose content is the key). Link
+// previews and search engines fetch these from other origins.
+const ASSET_FILES = [
+  ['og-image.png', TYPE_PNG],
+  ['favicon.svg', TYPE_SVG],
+  ['apple-touch-icon.png', TYPE_PNG],
+];
+const INDEXNOW_KEY_FILE_RE = /^[a-f0-9]{32}\.txt$/;
+const ASSET_HEADERS = {
+  'Cache-Control': 'public, max-age=86400',
+  'Cross-Origin-Resource-Policy': 'cross-origin',
+};
+
+function loadAssets() {
+  const dir = path.join(__dirname, 'public');
+  const files = [...ASSET_FILES];
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (INDEXNOW_KEY_FILE_RE.test(name)) files.push([name, TYPE_TEXT]);
+    }
+  } catch {}
+  const assets = new Map(); // "/name" -> { body, type }
+  for (const [name, type] of files) {
+    try {
+      assets.set(`/${name}`, { body: fs.readFileSync(path.join(dir, name)), type });
+    } catch {
+      logWarn(`public/${name} is missing: /${name} is disabled`);
+    }
+  }
+  return assets;
+}
+
+const assets = loadAssets();
+
+// "/" also carries the WebSocket endpoint, which cannot be disallowed without
+// hiding the page itself.
+const robotsTxt =
+  'User-agent: *\n' +
+  'Allow: /\n' +
+  'Disallow: /api/\n' +
+  'Disallow: /webhook/\n' +
+  'Disallow: /health\n' +
+  `Sitemap: https://${DOMAIN}/sitemap.xml\n`;
 const sitemapXml =
   '<?xml version="1.0" encoding="UTF-8"?>\n' +
   '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
-  `  <url><loc>https://${DOMAIN}/</loc><priority>1.0</priority></url>\n` +
+  SITE_PAGES
+    .filter((p) => p.path === '/' || staticPages.has(p.path))
+    .map((p) => `  <url><loc>https://${DOMAIN}${p.path}</loc><lastmod>${p.lastmod}</lastmod></url>\n`)
+    .join('') +
   '</urlset>\n';
 
 const BASE_HEADERS = {
@@ -366,11 +455,6 @@ const BASE_HEADERS = {
   'Cross-Origin-Resource-Policy': 'same-origin',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
 };
-
-const TYPE_TEXT = 'text/plain; charset=utf-8';
-const TYPE_HTML = 'text/html; charset=utf-8';
-const TYPE_JSON = 'application/json; charset=utf-8';
-const TYPE_XML = 'application/xml; charset=utf-8';
 
 function respond(req, res, status, contentType, body, extraHeaders) {
   const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8');
@@ -1007,12 +1091,21 @@ async function handleRequest(req, res) {
   const { pathname } = url;
   const isRead = req.method === 'GET' || req.method === 'HEAD';
 
-  if (isRead && pathname === '/') {
+  const page = pathname === '/' ? indexPage : staticPages.get(pathname);
+  if (isRead && page) {
     const extra = ONION_HOST && !isOnionSocket(req)
-      ? { 'Onion-Location': `http://${ONION_HOST}/` }
+      ? { 'Onion-Location': `http://${ONION_HOST}${pathname}` }
       : undefined;
-    return respondPage(req, res, 200, indexPage, extra);
+    return respondPage(req, res, 200, page, extra);
   }
+  // One URL per page: "/security/" moves to "/security".
+  if (isRead && pathname.length > 1 && pathname.endsWith('/') && staticPages.has(pathname.slice(0, -1))) {
+    return respond(req, res, 301, TYPE_TEXT, 'Moved Permanently', {
+      Location: `${pathname.slice(0, -1)}${url.search}`,
+    });
+  }
+  const asset = isRead ? assets.get(pathname) : undefined;
+  if (asset) return respond(req, res, 200, asset.type, asset.body, ASSET_HEADERS);
   if (isRead && pathname === '/health') {
     return respond(req, res, 200, TYPE_TEXT, 'ok', { 'Cache-Control': 'no-store' });
   }
