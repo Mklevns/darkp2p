@@ -178,7 +178,8 @@ All configuration lives in `.env`. Compose passes the whole file to `darkp2p` (`
 | `MAX_ONION_CONNS` | `100` | Concurrent WebSockets on the onion listener, which shares one bucket (2–10000). |
 | `RELAY_CAP_FREE_MB` | `50` | WebSocket-relay byte budget per free room, both directions (0 disables the relay). |
 | `RELAY_CAP_PRO_MB` | `500` | Relay budget per Pro room. |
-| `MAX_RELAY_ROOMS` | `50` | Rooms that may use the relay at once (1–10000). Others get `relay-busy`. |
+| `MAX_RELAY_ROOMS` | `50` | Rooms that may use the relay at once (1–10000). Others get `relay-busy`, and the page retries every 30 s. |
+| `RELAY_IDLE_MS` | `360000` | A relay room that relays no frame for this long gives its slot back (1000–3600000). Both peers get `relay-idle`; either can ask for the relay again, and the page does so on a click. Keep it above 5 minutes, the longest the page waits for a peer to accept or confirm a file. |
 | `RELAY_STALL_MS` | `60000` | A relay receiver that stops reading for this long is closed with `relay-stalled` (1000–600000). |
 | `HEARTBEAT_MS` | `30000` | WebSocket ping interval (1000–300000). |
 | `SWEEP_MS` | `300000` | Interval of the cleanup sweep and of the stats line (1000–3600000). |
@@ -341,7 +342,9 @@ console.log(`${exp}.${sig}`);
 
 To sell tokens automatically with crypto payments, set `NOWPAYMENTS_API_KEY` and `NOWPAYMENTS_IPN_SECRET`. See **Pro payments and claims** above.
 
-With a Pro token, either peer can tick *Hide my IP from peer*. This forces TURN-only ICE (`iceTransportPolicy: "relay"`), so the other side sees coturn's address instead of yours; without TURN the page refuses rather than fall back to a direct connection. *Force WebSocket relay* skips WebRTC entirely and relays the encrypted frames through the server, within the room's relay budget.
+With a Pro token, either peer can tick *Hide my IP from peer*. This forces TURN-only ICE (`iceTransportPolicy: "relay"`), so the other side sees coturn's address instead of yours; without TURN the page refuses rather than fall back to a direct connection. *Force WebSocket relay* skips WebRTC entirely and relays the encrypted frames through the server, within the room's relay budget. Unticking it while on the relay leaves and rejoins the room, so both peers negotiate again and can connect directly (which shows each peer the other's IP).
+
+**Relay limits in practice.** A frame over the room's cap is dropped, not relayed, and both peers get one `relay-limit-exceeded` notice; the socket stays open, and only a sender that goes on for another 8 MB is closed. A room with less than 4 KB of budget left does not start the relay at all and holds no relay slot; the page says the budget is used up instead of attempting a key handshake. The page's reconnect back-off resets only after a signaling connection has stayed up for 10 s.
 
 ---
 

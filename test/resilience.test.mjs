@@ -11,8 +11,9 @@ const html = readFileSync(join(ROOT, 'public', 'index.html'), 'utf8').replace(/\
 const m = /\/\/ ==BEGIN darkp2p-framing==\n([\s\S]*?)\/\/ ==END darkp2p-framing==/.exec(html);
 assert.ok(m, 'index.html has the darkp2p-framing block');
 const P = new Function(`${m[1]}
-return { reconnectDelay, RelayBudget, isStaleTempName, FRAME_OVERHEAD, ACK_EVERY, OPFS_STALE_MS };`)();
-const { reconnectDelay, RelayBudget, isStaleTempName } = P;
+return { reconnectDelay, RelayBudget, isStaleTempName, candidateExposesIp, FRAME_OVERHEAD, ACK_EVERY, OPFS_STALE_MS,
+  RECONNECT_STABLE_MS, RELAY_MIN_REMAINING };`)();
+const { reconnectDelay, RelayBudget, isStaleTempName, candidateExposesIp } = P;
 const CHUNK = 16000;
 
 test('reconnect delay doubles from 1 s to a 30 s cap', () => {
@@ -85,4 +86,44 @@ test('OPFS cleanup only matches our own old temp files', () => {
     `darkp2p-${old}-abc.crswap`, `darkp2p-abc-${old}`, `darkp2p--abc`]) {
     assert.equal(isStaleTempName(name, now), false, name);
   }
+});
+
+test('candidateExposesIp: only mDNS hosts and blanked relay candidates are safe', () => {
+  const line = (addr, typ, rest = '') => `candidate:1 1 udp 2113937151 ${addr} 54321 typ ${typ}${rest}`;
+  const safe = [
+    { type: 'host', address: '3b1f6a52-7a0c-4d2e-9d3a-1f2e3d4c5b6a.local', candidate: line('3b1f6a52-7a0c-4d2e-9d3a-1f2e3d4c5b6a.local', 'host') },
+    // No address/type fields (older browsers): read from the candidate line.
+    { candidate: line('3b1f6a52-7a0c-4d2e-9d3a-1f2e3d4c5b6a.LOCAL', 'host') },
+    { type: 'relay', address: '203.0.113.10', relatedAddress: '0.0.0.0', candidate: line('203.0.113.10', 'relay', ' raddr 0.0.0.0 rport 0') },
+    { candidate: line('203.0.113.10', 'relay', ' raddr 0.0.0.0 rport 0') },
+    { candidate: line('2001:db8::10', 'relay', ' raddr :: rport 0') },
+    { type: 'relay', address: '203.0.113.10', relatedAddress: null, candidate: line('203.0.113.10', 'relay') },
+  ];
+  for (const c of safe) assert.equal(candidateExposesIp(c), false, JSON.stringify(c));
+
+  const exposing = [
+    { type: 'host', address: '192.168.1.20', candidate: line('192.168.1.20', 'host') },
+    { candidate: line('192.168.1.20', 'host') },
+    { candidate: line('2001:db8::1', 'host') },
+    // A host candidate whose address cannot be read at all must not count as masked.
+    { type: 'host', address: '', candidate: '' },
+    { type: 'host', address: null, candidate: 'candidate:1 1 udp' },
+    { type: 'host' },
+    { type: 'srflx', address: '198.51.100.7', candidate: line('198.51.100.7', 'srflx', ' raddr 0.0.0.0 rport 0') },
+    { candidate: line('198.51.100.7', 'srflx', ' raddr 192.168.1.20 rport 5000') },
+    { type: 'prflx', address: '198.51.100.7', candidate: '' },
+    { type: 'relay', address: '203.0.113.10', relatedAddress: '198.51.100.7', candidate: line('203.0.113.10', 'relay', ' raddr 198.51.100.7 rport 6000') },
+    { candidate: line('203.0.113.10', 'relay', ' raddr 198.51.100.7 rport 6000') },
+    // Unreadable or unknown: assume the worst.
+    { candidate: '' }, {}, null, undefined, { candidate: 42 },
+    { candidate: line('198.51.100.7', 'somethingnew') },
+  ];
+  for (const c of exposing) assert.equal(candidateExposesIp(c), true, JSON.stringify(c));
+});
+
+test('reconnect and relay thresholds are sane', () => {
+  // The backoff must not reset before a server that closes right after the join has done so.
+  assert.ok(P.RECONNECT_STABLE_MS >= 5000);
+  // A key handshake (two hellos and two hello-acks) fits in the minimum relay budget.
+  assert.ok(P.RELAY_MIN_REMAINING >= 4 * (P.FRAME_OVERHEAD + 128));
 });

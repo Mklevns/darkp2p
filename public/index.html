@@ -644,23 +644,26 @@
       return out;
     }
 
-    let badgeSeq = 0;
-    // True once we've signaled an ICE candidate that reveals one of our real IPs
-    // to the current peer. Stays true for that peer even if TURN or the WS relay wins.
-    let localIpSignaled = false;
-
-    function candidateExposesIp(candidate) {
-      const type = candidate.type;
-      const addr = candidate.address || '';
-      if (type === 'srflx' || type === 'prflx') return true;
-      if (type === 'host') return !!addr && !addr.endsWith('.local');
-      if (type === 'relay') {
-        const raddr = candidate.relatedAddress || '';
-        return !!raddr && raddr !== '0.0.0.0' && raddr !== '::';
-      }
-      // Unknown/unparsed candidate type: assume it may expose an address
-      return true;
+    // localStorage can be blocked outright (privacy settings, some embedded or
+    // private modes), in which case merely touching it throws. The page then
+    // works without a saved token or pending claim.
+    function storageGet(key) {
+      try { return localStorage.getItem(key); } catch { return null; }
     }
+    function storageSet(key, value) {
+      try { localStorage.setItem(key, value); return true; } catch { return false; }
+    }
+    function storageRemove(key) {
+      try { localStorage.removeItem(key); } catch {}
+    }
+
+    let badgeSeq = 0;
+    // True once we've signaled an ICE candidate that reveals one of our real IPs,
+    // or connected directly. It stays true for the rest of this page load, even if
+    // TURN or the WS relay wins later and even across re-pairings: a `ready` does
+    // not say whether the peer is the one that already saw the address, so the
+    // badge never goes back to "masked" on a guess. Reload for a clean slate.
+    let localIpSignaled = false;
 
     function setBadges(modeClass, modeText, ipClass, ipText) {
       modeBadge.className = `badge${modeClass ? ' ' + modeClass : ''}`;
@@ -777,14 +780,19 @@
       if (e.key === 'Escape') proModal.classList.remove('open');
     });
 
-    proTokenEl.value = localStorage.getItem('darkp2p_token') || '';
+    // Kept in memory too, so a token typed in still applies on the next
+    // (re)join when the browser refuses to store it.
+    let proToken = storageGet('darkp2p_token') || '';
+    proTokenEl.value = proToken;
     document.getElementById('saveTokenBtn').onclick = () => {
-      const val = proTokenEl.value.trim();
-      if (val) {
-        localStorage.setItem('darkp2p_token', val);
-        log('Pro token saved. Reload to apply.', 'ok');
+      proToken = proTokenEl.value.trim();
+      if (proToken) {
+        log(storageSet('darkp2p_token', proToken)
+          ? 'Pro token saved. Reload to apply.'
+          : 'This browser blocks site storage, so the token is kept for this tab only (a reload loses it).', 'ok');
+        if (!storageGet('darkp2p_token')) rejoinRoom('Rejoining the room to apply the Pro token...');
       } else {
-        localStorage.removeItem('darkp2p_token');
+        storageRemove('darkp2p_token');
         log('Pro token cleared.');
       }
     };
@@ -824,7 +832,7 @@
     // ID survives a server restart before the token is fetched.
     function readPendingClaim() {
       try {
-        const c = JSON.parse(localStorage.getItem(PENDING_CLAIM_KEY) || 'null');
+        const c = JSON.parse(storageGet(PENDING_CLAIM_KEY) || 'null');
         if (c && Number.isFinite(c.startedAt) && typeof c.orderId === 'string' && ORDER_ID_RE.test(c.orderId)) {
           const claim = { orderId: c.orderId, startedAt: c.startedAt };
           if (typeof c.paymentId === 'string' && NP_ID_RE.test(c.paymentId)) claim.paymentId = c.paymentId;
@@ -845,11 +853,11 @@
     }
 
     function writePendingClaim(claim) {
-      try { localStorage.setItem(PENDING_CLAIM_KEY, JSON.stringify(claim)); } catch {}
+      storageSet(PENDING_CLAIM_KEY, JSON.stringify(claim));
     }
 
     function clearPendingClaim() {
-      try { localStorage.removeItem(PENDING_CLAIM_KEY); } catch {}
+      storageRemove(PENDING_CLAIM_KEY);
     }
 
     // One claim request. Resolves to { token } on success, otherwise to
@@ -898,7 +906,8 @@
         if (first) onFirstAttempt();
 
         if (result.token) {
-          try { localStorage.setItem('darkp2p_token', result.token); } catch {}
+          storageSet('darkp2p_token', result.token);
+          proToken = result.token;
           proTokenEl.value = result.token;
           clearPendingClaim();
           log(joinSent ? 'Pro token saved — reload to apply.' : 'Pro TURN token claimed and saved.', 'ok');
@@ -1459,6 +1468,41 @@
       }
     }
 
+    // Whether signaling this ICE candidate reveals one of our real addresses to the
+    // peer. Reads the RTCIceCandidate fields where the browser has them and the
+    // candidate line otherwise ("candidate:<f> <c> <proto> <prio> <addr> <port> typ
+    // <type> [raddr <addr> rport <port>] ..."). Anything it cannot read counts as
+    // exposing: the IP badge must never say "masked" on a guess.
+    function candidateExposesIp(candidate) {
+      const line = candidate && typeof candidate.candidate === 'string' ? candidate.candidate : '';
+      const tokens = line.trim().split(/\s+/);
+      const after = (word) => {
+        const i = tokens.indexOf(word);
+        return i !== -1 && i + 1 < tokens.length ? tokens[i + 1] : '';
+      };
+      const type = (candidate && candidate.type) || after('typ');
+      const addr = (candidate && candidate.address) || (tokens.length >= 6 ? tokens[4] : '');
+      if (type === 'host') return !addr || !addr.toLowerCase().endsWith('.local');
+      if (type === 'relay') {
+        // A relay candidate's own address is the TURN server's. Its related
+        // address is ours unless the browser blanks it (it does under
+        // iceTransportPolicy "relay").
+        const raddr = (candidate && candidate.relatedAddress) || after('raddr');
+        return !!raddr && raddr !== '0.0.0.0' && raddr !== '::';
+      }
+      // srflx, prflx, or a type we cannot read.
+      return true;
+    }
+
+    // Reconnect backoff is reset only after a signaling connection has stayed up
+    // this long. A server that accepts and then closes at once (rate limit, relay
+    // refusal) would otherwise be retried about once a second for ever.
+    const RECONNECT_STABLE_MS = 10_000;
+    // Below this much relay budget a room cannot complete the key handshake
+    // (the server uses the same figure), so the relay is not attempted.
+    const RELAY_MIN_REMAINING = 4096;
+    const RELAY_BUSY_RETRY_MS = 30_000;
+
     // OPFS temp files are named darkp2p-<createdAtMs>-<random>. A file older than
     // OPFS_STALE_MS is a leftover of a closed or crashed tab (another tab's live
     // transfer is younger).
@@ -1501,6 +1545,11 @@
     // 'idle' | 'pending' | 'ok' | 'mismatch' | 'outdated'
     let handshake = 'idle';
     let helloTimer = null;
+    // WebSocket relay waiting states, all cleared by resetHandshake():
+    let relayRetryTimer = null;   // the server's relay was full; a retry is scheduled
+    let relayBusyShown = false;   // ...and the user has been told once
+    let relayIdle = false;        // the server released an idle relay; resumed on demand
+    let relayExhausted = false;   // the room's relay budget is spent
 
     // Transfers that already ended (either direction): their late frames are dropped
     // quietly. Capped; the oldest ID is forgotten first.
@@ -1626,6 +1675,14 @@
       helloTimer = null;
       handshake = 'idle';
       myNonce = peerNonce = session = null;
+      clearTimeout(relayRetryTimer);
+      relayRetryTimer = null;
+      relayBusyShown = relayIdle = relayExhausted = false;
+    }
+
+    // A failed key check stays on screen until the next pairing.
+    function handshakeFailed() {
+      return handshake === 'mismatch' || handshake === 'outdated';
     }
 
     function failHandshake(kind) {
@@ -1735,32 +1792,91 @@
       enableDropIfReady();
     }
 
+    // The room's relay budget is spent: nothing more can cross the relay, so no
+    // handshake is attempted (its frames would only be dropped by the server).
+    function showRelayExhausted() {
+      if (relayBudget) relayBudget.remaining = 0;
+      abortAllTransfersLocally();
+      if (relayExhausted || handshakeFailed()) return;
+      resetHandshake();
+      relayExhausted = true;
+      const capMb = relayBudget ? Math.floor(relayBudget.cap / 1048576) : null;
+      log(`This room's WebSocket relay budget${capMb !== null ? ` (${capMb} MB)` : ''} is used up. ` +
+        'Open a fresh link for the next transfer' +
+        (typeof RTCPeerConnection !== 'undefined' ? ', or untick "Force WebSocket relay" for direct P2P.' : '.') +
+        (relayEnabled ? '' : ' A Pro token raises the cap.'), 'err');
+      setDropEnabled(false, 'RELAY BUDGET USED UP — OPEN A FRESH LINK');
+      updateStatusBadges('closed');
+    }
+
+    // (Re)starts the key handshake over the relay: after the server freed an idle
+    // relay, or when a full relay is retried. notifyPeer asks the server for the
+    // relay again, which also tells the peer.
+    function resumeRelay(notifyPeer) {
+      if (transportMode !== 'ws' || !ws || ws.readyState !== WebSocket.OPEN) return;
+      clearTimeout(relayRetryTimer);
+      relayRetryTimer = null;
+      relayIdle = false;
+      if (notifyPeer) ws.send(JSON.stringify({ type: 'ws-fallback' }));
+      if (relayBudget && relayBudget.remaining < RELAY_MIN_REMAINING) {
+        showRelayExhausted();
+        return;
+      }
+      startHandshake(ws);
+      updateStatusBadges('active');
+    }
+
     function activateWsFallback(notifyPeer = false) {
-      if (transportMode === 'ws') return;
+      if (transportMode === 'ws') {
+        // The peer asked for the relay while we were waiting for it.
+        if (!notifyPeer && (relayIdle || relayRetryTimer !== null)) resumeRelay(false);
+        return;
+      }
       cleanupPeer();
       transportMode = 'ws';
-      if (notifyPeer && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'ws-fallback' }));
-      }
       if (ws.readyState !== WebSocket.OPEN) {
         log('WebRTC unavailable and signaling relay is closed.', 'err');
         setDropEnabled(false, 'RELAY CLOSED');
         updateStatusBadges('closed');
         return;
       }
+      if (notifyPeer) ws.send(JSON.stringify({ type: 'ws-fallback' }));
+      if (relayBudget && relayBudget.remaining < RELAY_MIN_REMAINING) {
+        showRelayExhausted();
+        return;
+      }
       log(localIpSignaled
         ? 'E2E-encrypted WebSocket relay active (IP was already shared during the WebRTC attempt).'
         : 'E2E-encrypted WebSocket relay active (IP masked from peer).', 'ok');
-      setDropEnabled(true, readyDropLabel());
-      log('E2E-encrypted WebSocket relay active (IP masked from peer).', 'ok');
+      // The drop zone opens only once the key handshake completes (startHandshake).
       startHandshake(ws);
       updateStatusBadges('active');
     }
 
+    // Leaves and rejoins the room on a new signaling connection. The server then
+    // pairs both peers afresh, so each side renegotiates from its current settings.
+    let rejoining = false;
+    function rejoinRoom(message) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      log(message);
+      rejoining = true;
+      ws.close();
+      return true;
+    }
+
     document.getElementById('forceWsRelay').onchange = (e) => {
-      if (e.target.checked && pc) {
-        log('Switching active tunnel to E2E WebSocket relay...');
-        activateWsFallback(true);
+      if (e.target.checked) {
+        if (pc) {
+          log('Switching active tunnel to E2E WebSocket relay...');
+          activateWsFallback(true);
+        }
+        return;
+      }
+      // Unticked while on the relay: there is no way back to WebRTC on the same
+      // pairing, so re-pair. Without a peer the next `ready` reads the box anyway.
+      if (transportMode === 'ws' && myRole !== null && typeof RTCPeerConnection !== 'undefined') {
+        rejoinRoom('Leaving the WebSocket relay to try direct P2P — your IP will be visible to the peer. ' +
+          'Reconnecting...');
       }
     };
 
@@ -2289,7 +2405,6 @@
 
     async function initPeer(initiator) {
       transportMode = 'webrtc';
-      localIpSignaled = false;
       const forceWs = document.getElementById('forceWsRelay').checked;
 
       if (forceWs || typeof RTCPeerConnection === 'undefined') {
@@ -2482,6 +2597,7 @@
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let ws = null;
     let wsAttempt = 0;
+    let wsStableTimer = null;
     let wsReconnectTimer = null;
     let signalingLost = false; // set when an established signaling connection drops
     let fullRetryUntil = 0;
@@ -2517,13 +2633,19 @@
     }
 
     function onSignalingClosed() {
+      clearTimeout(wsStableTimer);
+      wsStableTimer = null;
       if (!signalingLost) {
         signalingLost = true;
         fullRetryUntil = Date.now() + FULL_RETRY_MS;
-        log(isDirectTunnelUp()
-          ? 'Signaling connection lost — direct tunnel still up, reconnecting...'
-          : 'Signaling connection lost — reconnecting...', 'err');
+        // rejoinRoom() closed it on purpose and has already said why.
+        if (!rejoining) {
+          log(isDirectTunnelUp()
+            ? 'Signaling connection lost — direct tunnel still up, reconnecting...'
+            : 'Signaling connection lost — reconnecting...', 'err');
+        }
       }
+      rejoining = false;
       if (transportMode === 'ws') {
         // The relay was the transport: its transfers and session are gone.
         abortAllTransfersLocally();
@@ -2544,7 +2666,12 @@
         // Wait for at most the first claim attempt, never the whole poll.
         await Promise.race([claimReady, new Promise((r) => setTimeout(r, CLAIM_JOIN_WAIT_MS))]);
         if (ws !== sock || sock.readyState !== WebSocket.OPEN) return;
-        wsAttempt = 0;
+        // The backoff resets only once this connection has proved stable.
+        clearTimeout(wsStableTimer);
+        wsStableTimer = setTimeout(() => {
+          wsStableTimer = null;
+          if (ws === sock && sock.readyState === WebSocket.OPEN) wsAttempt = 0;
+        }, RECONNECT_STABLE_MS);
         log(signalingLost
           ? 'Signaling reconnected — rejoining the room...'
           : `Connected to signaling broker. Room: ${roomId.slice(0, 8)}...`);
@@ -2552,7 +2679,7 @@
         sock.send(JSON.stringify({
           type: 'join',
           room: roomId,
-          token: localStorage.getItem('darkp2p_token') || '',
+          token: storageGet('darkp2p_token') || proToken,
         }));
       };
 
@@ -2609,18 +2736,39 @@
 
       if (msg.type === 'error') {
         if (msg.reason === 'relay-limit-exceeded') {
-          const capMb = relayBudget ? Math.floor(relayBudget.cap / 1048576) : null;
-          log(`WS relay cap${capMb !== null ? ` (${capMb} MB for this room)` : ''} reached. ` +
-            'Use direct P2P or a Pro token.', 'err');
-          if (relayBudget) relayBudget.remaining = 0;
-          abortAllTransfersLocally();
-          enableDropIfReady();
-        } else {
-          // A relay that will not carry our hello is not an outdated peer.
-          if (msg.reason === 'relay-busy') {
-            clearTimeout(helloTimer);
-            helloTimer = null;
+          if (transportMode === 'ws') showRelayExhausted();
+          else if (relayBudget) relayBudget.remaining = 0;
+        } else if (msg.reason === 'relay-busy') {
+          // The server's relay is full and it did not carry our hello: that is not
+          // an outdated peer. Say so and retry, instead of "VERIFYING PEER KEY...".
+          clearTimeout(helloTimer);
+          helloTimer = null;
+          if (transportMode === 'ws' && !handshakeFailed()) {
+            handshake = 'idle';
+            if (!relayBusyShown) {
+              relayBusyShown = true;
+              log('The server\'s WebSocket relay is at capacity. Retrying every ' +
+                `${RELAY_BUSY_RETRY_MS / 1000} seconds` +
+                (typeof RTCPeerConnection !== 'undefined'
+                  ? ' — or untick "Force WebSocket relay" to try a direct connection.' : '.'), 'err');
+            }
+            setDropEnabled(false, 'RELAY BUSY — RETRYING SHORTLY...');
+            clearTimeout(relayRetryTimer);
+            relayRetryTimer = setTimeout(() => {
+              relayRetryTimer = null;
+              if (ws === sock) resumeRelay(true);
+            }, RELAY_BUSY_RETRY_MS);
           }
+        } else if (msg.reason === 'relay-idle') {
+          // The server freed this room's relay slot after a while without transfers.
+          if (transportMode === 'ws' && !handshakeFailed() && !relayExhausted) {
+            abortAllTransfersLocally();
+            resetHandshake();
+            relayIdle = true;
+            setDropEnabled(false, 'RELAY PAUSED (IDLE) — CLICK HERE TO RESUME');
+            log('The WebSocket relay was paused after a while without transfers. Click the drop area to resume.');
+          }
+        } else {
           log(`Signaling error: ${msg.reason}`, 'err');
         }
         return;
@@ -2716,7 +2864,10 @@
       if (rx) abortRx('user', `Receive cancelled: ${rx.machine.meta.name}`);
     };
 
-    dropzone.onclick = () => { if (!fileInput.disabled) fileInput.click(); };
+    dropzone.onclick = () => {
+      if (relayIdle) resumeRelay(true);
+      else if (!fileInput.disabled) fileInput.click();
+    };
     fileInput.onchange = (e) => {
       if (e.target.files[0]) sendFile(e.target.files[0]);
       fileInput.value = '';

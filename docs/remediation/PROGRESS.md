@@ -729,3 +729,29 @@
   3. **A buyer who returns in a different browser, or after clearing storage, cannot claim** — the order ID is only in the browser that started the checkout. There is no operator tool to mint a token by hand.
   4. **The global lookup budget can be spent by an attacker** (about 60 wrong claims a minute from enough addresses), which delays restart-safe claims with `503`. Tokens recorded from an IPN are unaffected.
   5. A token re-derived by lookup can differ from the IPN-minted one if NOWPayments later changes `updated_at`. Both are valid; the difference is bounded by the 7-day cap.
+
+### Post-audit Phase 3 — relay fallback, relay budget/slots, storage and IP badge (2026-11-22)
+- **Source:** the 2026-11-22 audit: the WebSocket-fallback, reconnect-loop and relay-slot Medium findings, and the Low storage / IP badge / Force-relay items.
+- **Files changed:** `server.js`, `public/index.html`, `test/relay.test.mjs`, `test/resilience.test.mjs`, `README.md`, `public/how-it-works.html`. The wire format is unchanged. Server→client messages gain one `error` reason, `relay-idle`.
+- **WebSocket fallback (client):** the unconditional second "IP masked from peer" log and the `setDropEnabled(true, …)` before the handshake are gone. The drop zone opens only through `enableDropIfReady()` after the hello-ack, so a sticky "Key mismatch" label is no longer overwritten.
+- **Reconnect loop:**
+  - Client: `wsAttempt` resets only after the signaling connection has stayed open for `RECONNECT_STABLE_MS` (10 s), not in `onopen`.
+  - Server: a frame over the room cap is dropped, with one `relay-limit-exceeded` notice to both peers per pairing, and the socket stays open. Dropped frames are still paced at the relay rate, and a sender that sends more than 8 MB past the cap is closed with 1008 as before.
+  - Server: `ws-fallback` in a room with less than 4096 bytes of budget starts no relay and takes no slot; it is still forwarded, and both peers get the notice.
+  - Client: with less than 4096 bytes left it does not start the key handshake on the relay and shows "RELAY BUDGET USED UP — OPEN A FRESH LINK".
+- **Relay slots:**
+  - Server: `RELAY_IDLE_MS` (default 6 min, 1000–3600000). The heartbeat frees the slot of a relay room with no relayed frame for that long and sends both peers `relay-idle`. A later `ws-fallback` asks for the relay again.
+  - Client: `relay-idle` shows "RELAY PAUSED (IDLE) — CLICK HERE TO RESUME"; a click (or the peer's request) restarts the handshake. `relay-busy` shows "RELAY BUSY — RETRYING SHORTLY...", explains once, and retries every 30 s.
+- **Storage:** every `localStorage` access goes through `storageGet` / `storageSet` / `storageRemove`. With storage blocked the page loads, and a typed token is kept in memory and applied by rejoining the room.
+- **Force WebSocket relay:** unticking it while on the relay with a peer leaves and rejoins the room (`rejoinRoom`), so both sides renegotiate and can connect directly. No new signaling message.
+- **IP badge:** `candidateExposesIp` moved into the pure block. It reads the candidate line when the `type` / `address` / `relatedAddress` fields are missing, and a host candidate with no readable address now counts as exposing. `localIpSignaled` is no longer reset on each `ready`: it stays set for the page load.
+- **Tests:** `relay.test.mjs` 5 → 9 (over-cap frames dropped with one notice and the socket open; spent room starts no relay and holds no slot; a sender far past the cap is closed; idle expiry, re-request and `relay-busy`). `resilience.test.mjs` 6 → 8 (`candidateExposesIp` matrix; thresholds).
+- **Mutation check (each applied and reverted, `server.js` restored byte-identical):** notice on every frame, no over-cap close, spent room still starts the relay, no idle expiry, idle ignoring activity. Each failed exactly its test.
+- **Gate:** `npm run check` PASS; `npm test` 147/147 PASS, 0 skipped (run three times; one new relay test first relied on a fixed sleep and failed once under full-suite load, and now waits on the delivered bytes).
+- **Extra verification (not committed):** a Playwright/Chromium run against real servers, 22/22 with no page errors: one relay log line and a masked badge on a forced relay; unticking returns both peers to direct P2P without a "connection lost" error; the badge stays "exposed" after going back to the relay; "Key mismatch" survives on the relay path; the page works and explains itself with `localStorage` blocked; a spent budget shows its label with one signaling socket per page (no loop); an idle relay pauses, resumes on one click and then carries a file; a full relay shows "RELAY BUSY" and connects by itself once a slot is free.
+- **SKIPPED / not verified:** the 10 s backoff rule has no automated test (it is a timer in the page's signaling code). Not tried in Tor Browser or Firefox.
+- **Open questions:**
+  1. **Idle expiry stops forgotten tabs, not a deliberate squatter:** one small frame every few minutes keeps a slot. Stopping that needs a different rule (per-client relay room limits, or a minimum throughput).
+  2. **`localIpSignaled` is now sticky for the page load,** so after a direct connection the badge reads "IP EXPOSED TO PEER" for any later peer in that tab, including one that never saw the address. It errs on the side of the warning.
+  3. **Unticking Force WebSocket relay ends any transfer in progress** (as ticking it does), and exposes the IP; the log line says so, but there is no confirmation prompt.
+  4. `RELAY_IDLE_MS` below 5 minutes can expire a relay while an offer is waiting to be accepted.

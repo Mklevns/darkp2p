@@ -241,7 +241,7 @@
         <li>The secret, because it is never sent.</li>
         <li>The contents of the file, or its name and type.</li>
       </ul>
-      <p>The relay has limits that the direct path does not. A room can relay 50 MB in total, counting both directions, until both peers have left it (500 MB if either peer has a Pro token). Each sender is held to about 1 MB per second (4 MB per second in a Pro room). Only a limited number of rooms can use the relay at once, and others are told it is busy. Frames are held in the server's memory only while they wait to be delivered, and are never written to disk.</p>
+      <p>The relay has limits that the direct path does not. A room can relay 50 MB in total, counting both directions, until both peers have left it (500 MB if either peer has a Pro token). Each sender is held to about 1 MB per second (4 MB per second in a Pro room). Only a limited number of rooms can use the relay at once; others are told it is busy and the page retries by itself. A room that relays nothing for about six minutes gives its place back, and the page then shows a paused relay that one click resumes. Frames are held in the server's memory only while they wait to be delivered, and are never written to disk.</p>
 
       <h2 id="disk">5. Receiving large files without filling memory</h2>
       <p>Where the received data goes depends on what the receiving browser supports. The page tries these in order:</p>
