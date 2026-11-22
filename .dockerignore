@@ -1,0 +1,8 @@
+# Allowlist: the image is built from exactly what Dockerfile copies. Everything
+# else stays out of the build context, above all .env, coturn/turnserver.conf
+# (TURN_SECRET) and .git.
+*
+!package.json
+!package-lock.json
+!server.js
+!public/

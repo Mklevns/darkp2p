@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, copyFileSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,22 +24,30 @@ function parseEnvFile(text) {
 
 // The compose file reads a mandatory .env next to itself, so render it from a
 // temp project dir whose .env we control. --env-file supplies interpolation.
-function renderCompose(dotEnv) {
+function runComposeConfig(dotEnv, interpolationEnv = fixtureText) {
   const dir = mkdtempSync(join(tmpdir(), 'darkp2p-compose-'));
   try {
     copyFileSync(join(ROOT, 'docker-compose.yml'), join(dir, 'docker-compose.yml'));
     writeFileSync(join(dir, '.env'), dotEnv);
-    const r = spawnSync(
+    writeFileSync(join(dir, 'interpolation.env'), interpolationEnv);
+    // DOMAIN must come from the env file alone, not from the caller's shell.
+    const env = { ...process.env };
+    delete env.DOMAIN;
+    return spawnSync(
       'docker',
       ['compose', '--project-directory', dir, '-f', join(dir, 'docker-compose.yml'),
-        '--env-file', FIXTURE, 'config', '--format', 'json'],
-      { encoding: 'utf8' }
+        '--env-file', join(dir, 'interpolation.env'), 'config', '--format', 'json'],
+      { encoding: 'utf8', env }
     );
-    assert.equal(r.status, 0, `docker compose config failed:\n${r.stderr}`);
-    return JSON.parse(r.stdout);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function renderCompose(dotEnv) {
+  const r = runComposeConfig(dotEnv);
+  assert.equal(r.status, 0, `docker compose config failed:\n${r.stderr}`);
+  return JSON.parse(r.stdout);
 }
 
 const fixtureText = readFileSync(FIXTURE, 'utf8');
@@ -108,6 +116,29 @@ test('every service: no-new-privileges; bounded local logs except coturn', { ski
   assert.match(readFileSync(join(ROOT, 'Dockerfile'), 'utf8'), /^FROM node:22\.\d+\.\d+-alpine3\.\d+@sha256:[a-f0-9]{64}$/m);
 });
 
+test('tor and coturn: capabilities dropped, memory and pids limited', { skip }, () => {
+  const { services } = renderCompose(fixtureText);
+  for (const name of ['tor', 'coturn']) {
+    const svc = services[name];
+    assert.deepEqual(svc.cap_drop, ['ALL'], `${name}: cap_drop`);
+    assert.equal(String(svc.mem_limit), String(256 * 1024 * 1024), `${name}: mem_limit`);
+    assert.equal(svc.pids_limit, 128, `${name}: pids_limit`);
+  }
+  assert.ok(services.tor.cap_add == null, 'tor needs no capability');
+  // The coturn image sets the NET_BIND_SERVICE file capability on turnserver;
+  // without it in the bounding set the kernel refuses to exec the binary.
+  assert.deepEqual(services.coturn.cap_add, ['NET_BIND_SERVICE']);
+});
+
+test('compose refuses a missing or empty DOMAIN', { skip }, () => {
+  const drop = fixtureText.split('\n').filter((l) => !l.startsWith('DOMAIN=')).join('\n');
+  for (const [label, envText] of [['missing', drop], ['empty', `${drop}\nDOMAIN=\n`]]) {
+    const r = runComposeConfig(fixtureText, envText);
+    assert.notEqual(r.status, 0, `compose accepted a ${label} DOMAIN`);
+    assert.match(r.stderr, /set DOMAIN in \.env/, label);
+  }
+});
+
 test('coturn: config file only, no secret or interpolation in compose', { skip }, () => {
   const coturn = renderCompose(fixtureText).services.coturn;
   assert.deepEqual(coturn.command, ['-c', '/etc/coturn/turnserver.conf']);
@@ -124,6 +155,28 @@ test('coturn: config file only, no secret or interpolation in compose', { skip }
   assert.doesNotMatch(raw, /TURN_SECRET|static-auth-secret/);
   assert.ok(!JSON.stringify(coturn).includes(fixture.TURN_SECRET));
 });
+
+// No docker needed: every path the Dockerfile copies must survive the
+// allowlist, and nothing else may.
+test('.dockerignore is an allowlist of exactly what Dockerfile copies', () => {
+  const rules = readFileSync(join(ROOT, '.dockerignore'), 'utf8')
+    .split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  assert.equal(rules[0], '*', 'the first rule must ignore everything');
+  const allowed = rules.slice(1).map((r) => {
+    assert.ok(r.startsWith('!'), `only "!" exceptions may follow "*": ${r}`);
+    return r.slice(1).replace(/\/$/, '');
+  }).sort();
+  const copied = [];
+  for (const line of readFileSync(join(ROOT, 'Dockerfile'), 'utf8').split('\n')) {
+    const m = /^COPY\s+(.+)$/.exec(line.trim());
+    if (m) copied.push(...m[1].split(/\s+/).slice(0, -1).filter((a) => !a.startsWith('--')));
+  }
+  assert.deepEqual(allowed, copied.map((c) => c.replace(/^\.\//, '')).sort());
+  for (const secret of ['.env', 'coturn', '.git', 'node_modules', 'test', 'scripts']) {
+    assert.ok(!allowed.includes(secret), `${secret} must stay out of the build context`);
+  }
+});
+
 // gen-turnserver-conf.sh needs bash and runs without docker.
 const GEN = join(ROOT, 'scripts', 'gen-turnserver-conf.sh');
 
@@ -159,9 +212,80 @@ test('gen-turnserver-conf: hardened coturn flags, secret only in a 0600 file', (
     assert.ok(!denied.includes(fixture.TURN_PUBLIC_IP), 'the server\'s own address must not be denied');
     assert.deepEqual(lines.filter((l) => l !== 'no-stdout-log' && /stdout/i.test(l)), []);
     assert.deepEqual(lines.filter((l) => /^(cert|pkey|tls-listening-port)=/.test(l)), []);
+    // Without TURN_LISTEN_IP / TURN_EXTERNAL_IP coturn keeps its defaults.
+    assert.deepEqual(lines.filter((l) => /^(listening-ip|relay-ip|external-ip)=/.test(l)), []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('gen-turnserver-conf: TURN_LISTEN_IP / TURN_EXTERNAL_IP for a 1:1-NAT address', () => {
+  const addrLines = (out) => readFileSync(out, 'utf8').split('\n')
+    .filter((l) => /^(listening-ip|relay-ip|external-ip)=/.test(l));
+  let run = runGen(`${fixtureText}\nTURN_LISTEN_IP=10.20.0.5\nTURN_EXTERNAL_IP=203.0.113.10\n`);
+  try {
+    assert.equal(run.r.status, 0, run.r.stderr);
+    assert.deepEqual(addrLines(run.out),
+      ['listening-ip=10.20.0.5', 'relay-ip=10.20.0.5', 'external-ip=203.0.113.10/10.20.0.5']);
+    assert.equal(statSync(run.out).mode & 0o777, 0o600);
+  } finally {
+    rmSync(run.dir, { recursive: true, force: true });
+  }
+  run = runGen(`${fixtureText}\nTURN_LISTEN_IP=203.0.113.10\n`);
+  try {
+    assert.equal(run.r.status, 0, run.r.stderr);
+    assert.deepEqual(addrLines(run.out), ['listening-ip=203.0.113.10', 'relay-ip=203.0.113.10']);
+  } finally {
+    rmSync(run.dir, { recursive: true, force: true });
+  }
+  for (const [label, extra, re] of [
+    ['bad listen IP', 'TURN_LISTEN_IP=10.20.0.256', /TURN_LISTEN_IP/],
+    ['listen IP with a second conf line', 'TURN_LISTEN_IP=10.20.0.5 no-auth', /TURN_LISTEN_IP/],
+    ['IPv6 listen IP', 'TURN_LISTEN_IP=2001:db8::1', /TURN_LISTEN_IP/],
+    ['bad external IP', 'TURN_LISTEN_IP=10.20.0.5\nTURN_EXTERNAL_IP=example.test', /TURN_EXTERNAL_IP/],
+    ['external without listen', 'TURN_EXTERNAL_IP=203.0.113.10', /TURN_EXTERNAL_IP needs TURN_LISTEN_IP/],
+    ['external equal to listen', 'TURN_LISTEN_IP=203.0.113.10\nTURN_EXTERNAL_IP=203.0.113.10', /are the same/],
+  ]) {
+    const bad = runGen(`${fixtureText}\n${extra}\n`);
+    try {
+      assert.notEqual(bad.r.status, 0, label);
+      assert.match(bad.r.stderr, re, label);
+      assert.throws(() => statSync(bad.out), label);
+    } finally {
+      rmSync(bad.dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('gen-turnserver-conf: refuses a directory at the target path and leaves it empty', () => {
+  // What `docker compose up` leaves behind when it runs before the generator.
+  const dir = mkdtempSync(join(tmpdir(), 'darkp2p-turnconf-'));
+  try {
+    writeFileSync(join(dir, 'env'), fixtureText);
+    const out = join(dir, 'coturn', 'turnserver.conf');
+    mkdirSync(out, { recursive: true });
+    const r = spawnSync('bash', [GEN, join(dir, 'env'), out],
+      { encoding: 'utf8', env: { ...process.env, COTURN_OWNER: '' } });
+    assert.notEqual(r.status, 0, 'the generator wrote into a directory');
+    assert.match(r.stderr, /is a directory/);
+    assert.match(r.stderr, /rmdir/);
+    assert.ok(!r.stderr.includes(fixture.TURN_SECRET));
+    assert.ok(statSync(out).isDirectory());
+    assert.deepEqual(readdirSync(out), []);
+    assert.deepEqual(readdirSync(join(dir, 'coturn')), ['turnserver.conf'], 'a temp file was left behind');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('docs name --force-recreate for coturn and a tor restart after darkp2p is recreated', () => {
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8');
+  const gen = readFileSync(GEN, 'utf8');
+  assert.match(readme, /docker compose up -d --force-recreate coturn/);
+  assert.match(gen, /docker compose up -d --force-recreate coturn/);
+  assert.doesNotMatch(readme, /docker compose up -d coturn\s+# pick up/);
+  assert.match(readme, /docker compose restart tor/);
+  assert.match(gen, /docker compose restart tor/);
 });
 
 test('check-turn-relay.sh parses and uses the coturn image pinned in docker-compose.yml', () => {

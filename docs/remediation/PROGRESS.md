@@ -755,3 +755,35 @@
   2. **`localIpSignaled` is now sticky for the page load,** so after a direct connection the badge reads "IP EXPOSED TO PEER" for any later peer in that tab, including one that never saw the address. It errs on the side of the warning.
   3. **Unticking Force WebSocket relay ends any transfer in progress** (as ticking it does), and exposes the IP; the log line says so, but there is no confirmation prompt.
   4. `RELAY_IDLE_MS` below 5 minutes can expire a relay while an offer is waiting to be accepted.
+
+### Post-audit Phase 4 — infra hardening and deploy docs (2026-11-22)
+- **Source:** the 2026-11-22 audit, findings Medium #4, #5, #9, #10 and the Low hardening items.
+- **Files changed:** `scripts/gen-turnserver-conf.sh`, `scripts/check-turn-relay.sh`, `docker-compose.yml`, `setup-ufw.sh` (comment only), `.env.example`, `README.md`, `test/compose.test.mjs`; new `.dockerignore`. `server.js` and `public/` are unchanged.
+- **Medium #5:** the generator stops with a reason and the fix when the target path is a directory (left by `docker compose up` before the config existed), and when it is anything else that is not a regular file. Nothing is written.
+- **Medium #4 / #10 (docs):** the README, the generator header and `.env.example` now say `docker compose up -d --force-recreate coturn` (a plain `up -d` keeps the old file), give the full `TURN_SECRET` rotation order, and say `docker compose restart tor` whenever `darkp2p` is recreated.
+- **Medium #9 / Low:**
+  - `.dockerignore` is an allowlist of what `Dockerfile` copies.
+  - `tor`: `cap_drop: ALL`, `mem_limit: 256m`, `pids_limit: 128`.
+  - `coturn`: `cap_drop: ALL` + `cap_add: NET_BIND_SERVICE`, `mem_limit: 256m`, `pids_limit: 128`.
+  - Caddy's `DOMAIN` is `${DOMAIN:?…}`, so compose refuses a missing or empty value.
+  - Optional `TURN_LISTEN_IP` (writes `listening-ip` and `relay-ip`) and `TURN_EXTERNAL_IP` (writes `external-ip=<external>/<listen>`, needs `TURN_LISTEN_IP`), both validated as IPv4. Without them the generated file is unchanged.
+  - `check-turn-relay.sh` tests `TURN_LISTEN_IP` when it is set.
+  - README: Reserved IP / 1:1 NAT section, DigitalOcean Cloud Firewall rules, IPv6 notes (compose network, `AAAA` for `DOMAIN` and `TURN_HOST`), and a list of manual checks on the server.
+- **Deviation from the task as written:** coturn cannot run with `cap_drop: ALL` alone. The pinned image sets the `NET_BIND_SERVICE` file capability on `/usr/bin/turnserver`, and without it the exec fails (`operation not permitted`, exit 126, restart loop). `NET_BIND_SERVICE` is added back; a test pins it.
+- **Not in the task, added:** `pids_limit: 128` on `tor` and `coturn` (same value as `darkp2p`).
+- **Tests:** `compose.test.mjs` 9 → 15: tor/coturn capabilities and limits; compose refuses a missing or empty `DOMAIN`; `.dockerignore` matches the `Dockerfile`'s `COPY` sources; listen/external lines and six refused values; the directory target; the two documented commands.
+- **Gate:** `npm run check` PASS; `npm test` 153/153 PASS, 0 skipped; `npm run check:compose` PASS.
+- **Verified with the pinned coturn image (local dockerd, host network, not committed):**
+  - started from the edited `docker-compose.yml`: runs as 65534, effective capabilities empty, about 6 MiB of the 256 MiB limit, 9 pids; `check-turn-relay.sh` passes both paths;
+  - with `TURN_LISTEN_IP=10.50.0.5` (on `lo`) and `TURN_EXTERNAL_IP=203.0.113.10` (on no interface): relay addresses are advertised as `203.0.113.10`, both check paths pass, and other `10.x` / `172.17.x` peers still get `403`;
+  - after a secret change, `docker compose up -d coturn` reports `Running`, the container still holds the old file and the check fails; `--force-recreate` fixes it;
+  - a build with the new `.dockerignore` receives only `package.json`, `package-lock.json`, `server.js` and `public/` (with a `.env` and `coturn/turnserver.conf` present).
+- **SKIPPED / not verified:**
+  - `shellcheck` (tool unavailable).
+  - The `darkp2p` and `tor` images could not be built here (no registry access from build containers). So `tor` was **not** run with `cap_drop: ALL` and the 256 MB limit, and the full `darkp2p` image was not built with the new `.dockerignore`.
+  - Nothing was run on a Droplet: Reserved IP routing, the Cloud Firewall rules and every IPv6 statement in the README come from how Docker and DigitalOcean are documented to behave, not from a test.
+- **Open questions:**
+  1. **Reserved IP source address.** Packets coturn sends from the anchor IP may need a route through the anchor gateway to leave as the Reserved IP. If the outside TURN test fails with `TURN_LISTEN_IP` set, that is the first thing to check.
+  2. **tor still needs a manual restart** after `darkp2p` is recreated. `depends_on: restart: true` (Compose 2.17+) would do it automatically; not added, since the task asked for documentation.
+  3. **IPv6 is documented, not enabled.** The compose network stays IPv4-only.
+  4. With `external-ip` set, coturn accepts its own `TURN_LISTEN_IP` as a peer although the address is in a denied range (measured). Same exposure as the public address: UDP services on the host.
