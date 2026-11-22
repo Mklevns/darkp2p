@@ -119,7 +119,7 @@ The receiver rejects:
 
 * **IP Exposure:** Direct WebRTC P2P connections expose each peer's IP address to the other peer during ICE/NAT traversal. Use a VPN if you need IP anonymity.
 * **Synchronous Transfer:** Both peers must keep their browser tabs open until the transfer completes.
-* **TURN Relay:** Direct STUN works for ~80% of connections. For strict corporate firewalls or CGNAT, the stack includes `coturn` with ephemeral HMAC-SHA1 credentials (optionally gated behind stateless HMAC-signed Pro tokens). Relaying is UDP-only (`--no-tcp-relay`; clients can still reach coturn over TCP 3478), and private, loopback, reserved, NAT64/6to4, IPv4-mapped and the server's own public addresses are denied as peers.
+* **TURN Relay:** Direct STUN works for ~80% of connections. For strict corporate firewalls or CGNAT, the stack includes `coturn` with ephemeral HMAC-SHA1 credentials (optionally gated behind stateless HMAC-signed Pro tokens). Relaying is UDP-only (`--no-tcp-relay`; clients can still reach coturn over TCP 3478), and private, loopback, reserved, NAT64/6to4 and IPv4-mapped addresses are denied as peers.
 * **No TURN Logs:** coturn logs every client and peer address, so its logging is disabled. See **coturn configuration and logging policy** below.
 
 ### coturn configuration and logging policy
@@ -135,7 +135,7 @@ Re-run it whenever `TURN_HOST`, `TURN_PUBLIC_IP` or `TURN_SECRET` changes. The s
 
 The generated file:
 * sets UDP-only relaying (`no-tcp-relay`), per-user and total quotas, bandwidth caps, and no TLS/DTLS listener;
-* denies relaying to private, loopback, link-local, CGNAT, reserved, NAT64, 6to4, IPv4-mapped and ULA ranges, and to `TURN_PUBLIC_IP` itself;
+* denies relaying to private, loopback, link-local, CGNAT, reserved, NAT64, 6to4, IPv4-mapped and ULA ranges. The server's own public address is deliberately **not** denied: when both peers relay ("Hide my IP" on each side), each one's peer is the server's own relay address. Because relaying is UDP-only, this exposes only the host's public UDP services (coturn itself and Caddy's `443/udp`);
 * disables logging with `no-stdout-log`, `simple-log` and `log-file=/dev/null`. Without `simple-log`, coturn would append a date to the file name, fail to open `/dev/null_<date>.log`, and fall back to writing a log in `/var/tmp`.
 
 Docker's logging driver for coturn is `none`, so nothing reaches the host disk. To debug temporarily, follow the comment on the `coturn` service in `docker-compose.yml`, then revert and remove the container.
@@ -158,15 +158,17 @@ All configuration lives in `.env`. Compose passes the whole file to `darkp2p` (`
 | `TRUST_PROXY` | `auto` | Trust `X-Forwarded-For`: `auto` only from a loopback/private peer (the bundled Caddy), `1`/`true` always, `0`/`false` never. Never applied on the onion listener. |
 | `TURN_HOST` | empty | coturn hostname. It enables TURN for Pro rooms (with `TURN_SECRET`) and `stun:${TURN_HOST}:3478` as the STUN server. |
 | `TURN_SECRET` | empty | coturn shared secret for ephemeral HMAC credentials. It is read by `darkp2p` and by `scripts/gen-turnserver-conf.sh`. Use ≥ 32 characters (`openssl rand -hex 32`). |
-| `TURN_PUBLIC_IP` | — (**required for coturn**) | The server's public IPv4. It is read only by `scripts/gen-turnserver-conf.sh`, which denies it as a relay peer and refuses to run without it. |
+| `TURN_PUBLIC_IP` | — (**required for coturn**) | The server's public IPv4. It is read only by `scripts/gen-turnserver-conf.sh`, which refuses to run without it, and by `scripts/check-turn-relay.sh`, which tests the relay at that address. |
 | `TURN_TTL` | `3600` | Lifetime of TURN credentials in seconds (60–86400). |
 | `STUN_URLS` | empty | Comma-separated `stun:`/`stuns:` URLs that override the STUN server. Without it and without `TURN_HOST`, the page falls back to `stun.l.google.com` (with a warning). |
 | `PRO_TOKEN_SECRET` | empty | HMAC key for Pro tokens. Without it, Pro is disabled. Required if `NOWPAYMENTS_API_KEY` is set. |
 | `PRO_TOKEN_DAYS` | `30` | Lifetime of the `pro-30d` tier, in days (1–3650). `pro-1d` is always 1 day. |
-| `CLAIM_TTL_HOURS` | `48` | How long a paid token can be claimed (1–168), counted from the payment's `created_at` + 6 h. See **Pro payments and claims**. |
+| `CLAIM_TTL_HOURS` | `48` | How long a paid token can be claimed (1–168), counted from when the payment settled. See **Pro payments and claims**. |
 | `NOWPAYMENTS_API_KEY` | empty | Enables checkout (`POST /api/checkout`), the IPN webhook (`POST /webhook/nowpayments`) and payment lookups. Without it the checkout buttons are hidden. |
 | `NOWPAYMENTS_IPN_SECRET` | empty | IPN secret from the NOWPayments dashboard. Verifies `x-nowpayments-sig` (HMAC-SHA512 over the key-sorted JSON). Required with `NOWPAYMENTS_API_KEY`, and fatal without it. |
 | `NOWPAYMENTS_API_URL` | `https://api.nowpayments.io` | API base URL (https, no query or credentials), e.g. `https://api-sandbox.nowpayments.io` for testing. |
+| `NOWPAYMENTS_MAX_LOOKUPS_PER_MIN` | `60` | Global budget (1–6000) for `GET /v1/payment` calls made for `/api/claim`, across all clients. When it is spent, claims that need a lookup get `503` with `Retry-After`. Lookups for a signed IPN are exempt. |
+| `NOWPAYMENTS_MAX_CHECKOUTS_PER_MIN` | `30` | Global budget (1–6000) for invoices created through `/api/checkout`, across all clients. When it is spent, checkout gets `503` with `Retry-After`. |
 | `PRO_1D_PRICE_USD` | `2` | Price of the 24-hour pass in USD (positive, ≤ 2 decimals). Shown on the page and charged. |
 | `PRO_30D_PRICE_USD` | `5` | Price of the 30-day pass in USD. |
 | `TIP_XMR_ADDRESS` | empty | Monero address for the tip button: mainnet standard (`4…`) or subaddress (`8…`), 95 characters, or integrated (106). The button is hidden when unset. |
@@ -197,26 +199,31 @@ Payments run on [NOWPayments](https://nowpayments.io). darkp2p creates the invoi
 
 1. **Checkout.** The buyer picks a tier. The page sends `POST /api/checkout {"tier":"pro-1d"|"pro-30d"}`, which:
    * is rate-limited per client (10 per minute; all onion clients share 60) and capped at 4 KB, and needs `Content-Type: application/json`, so other sites cannot trigger it;
+   * also draws on a global budget (`NOWPAYMENTS_MAX_CHECKOUTS_PER_MIN`), so many addresses together cannot spend the NOWPayments API quota;
    * calls NOWPayments `POST /v1/invoice` with:
      * `price_amount` (`PRO_1D_PRICE_USD` / `PRO_30D_PRICE_USD`), `price_currency: "usd"`;
-     * `order_id` set to `<tier>:<random>`;
+     * `order_id` set to `<tier>:<32 random hex>`. This order ID is also the buyer's claim secret;
      * `ipn_callback_url: https://<DOMAIN>/webhook/nowpayments`;
      * `success_url` and `cancel_url` set to `https://<DOMAIN>/`;
-   * returns `{invoiceUrl}`, and the tab navigates to it.
-2. **Return.** After paying, NOWPayments sends the buyer back to `https://<DOMAIN>/?NP_id=<payment id>`; `?invoiceId=` is accepted too.
-   * The page stores the pending claim in `localStorage` and removes the ID from the address bar, so the claim resumes after a reload or a browser restart.
-   * It polls `GET /api/claim?paymentId=…` with back-off (3 s up to 30 s) for up to 6 hours, honours `Retry-After`, and gives up after 48 hours.
+   * returns `{invoiceUrl, invoiceId, orderId}`. The page saves a pending claim (`orderId` and `invoiceId`) in `localStorage` and then navigates to the invoice, so the token can still be claimed if the buyer never comes back through the redirect.
+2. **Return.** After paying, NOWPayments sends the buyer back to `https://<DOMAIN>/?NP_id=<payment id>`.
+   * The page adds the payment ID to the pending claim and removes it from the address bar, so the claim resumes after a reload or a browser restart. A return in a browser that did not start the checkout has no order ID and cannot claim.
+   * It polls `GET /api/claim?paymentId=…&orderId=…` with back-off (3 s up to 30 s) for up to 6 hours, honours `Retry-After`, and gives up after 48 hours. Before the buyer has returned it polls `?invoiceId=…&orderId=…` instead, at most every 5 minutes.
+   * **Every claim must present the order ID.** A payment or invoice ID alone, or with the wrong order ID, gets the same `404` as an unknown one.
 3. **IPN.** NOWPayments posts each status change to `/webhook/nowpayments`, signed in `x-nowpayments-sig`. The signature is an HMAC-SHA512 with `NOWPAYMENTS_IPN_SECRET` over the JSON body with its keys sorted recursively, compared in constant time.
    * Only `payment_status: "finished"` mints a token.
-   * `waiting`, `confirming`, `confirmed`, `sending`, `partially_paid`, `failed` and `expired` get `200 {"ok":true,"ignored":true}`.
+   * `waiting`, `confirming`, `confirmed`, `sending`, `failed` and `expired` get `200 {"ok":true,"ignored":true}`.
+   * `partially_paid` (the buyer sent less than the invoice amount) gets the same answer and mints nothing, but is remembered: `/api/claim` then answers `200 {"ready":false,"status":"partially_paid"}` and the page tells the buyer, instead of polling in silence. A later `finished` IPN mints as usual.
 
-**Deterministic, restart-safe tokens.** A token is minted only for a finished payment whose `order_id` is one of ours (`pro-1d:`/`pro-30d:` + 32 hex), in USD, with `price_amount` at least the tier's price. Its expiry is `created_at + tier days + 6 h`, so the same payment always yields the same token:
+**Deterministic, restart-safe tokens.** A token is minted only for a finished payment whose `order_id` is one of ours (`pro-1d:`/`pro-30d:` + 32 hex), in USD, with `price_amount` at least the tier's price. Its expiry is `settlement time + tier days`, so the buyer gets the full duration however long the payment took to settle, and the same payment record always yields the same token:
+* the settlement time is the finished payment's `updated_at`, kept between `created_at` and `created_at + 7 days` so a later update to the record cannot keep extending a token. If NOWPayments sends no `updated_at`, `created_at + 6 h` is used;
 * the IPN carries `created_at`, so it mints without an API call; an IPN without it is resolved through `GET /v1/payment/{payment_id}`;
-* a claim by payment ID that misses the in-memory record is answered from `GET /v1/payment/{payment_id}`. That covers a claim after a server restart, or one that arrives before the IPN, and returns the same token;
+* a claim by payment ID that misses the in-memory record is answered from `GET /v1/payment/{payment_id}`, if that payment's `order_id` is the one presented. That covers a claim after a server restart, or one that arrives before the IPN, and returns the same token;
+* those lookups draw on a global budget (`NOWPAYMENTS_MAX_LOOKUPS_PER_MIN`). When it is spent the claim gets `503` with `Retry-After`. Tokens already recorded from an IPN are served without a lookup, and a lookup made for a signed IPN is exempt;
 * a claim by `invoiceId` is answered only from the record of a received IPN, because NOWPayments has no lookup by invoice ID with an API key;
-* the claim window runs from `created_at` plus the 6 h grace, plus `CLAIM_TTL_HOURS`;
+* the claim window is the settlement time plus `CLAIM_TTL_HOURS`;
 * if NOWPayments is unreachable, a claim gets `503` with `Retry-After: 30`, and an IPN that needed a lookup gets `502` (so NOWPayments retries);
-* "not finished yet" answers are cached for 30 s;
+* "not finished yet" answers are cached for 30 s, per payment ID and order ID pair;
 * a redelivered IPN never mints twice.
 
 After the window, `/api/claim` returns `404`. Logs never contain payment, invoice or order IDs, tokens, the API key or lookup URLs.
@@ -283,6 +290,14 @@ Verify that Caddy obtained a TLS certificate and all four containers (`caddy`, `
 docker compose ps
 docker compose logs -f caddy
 ```
+
+A running `coturn` container does not prove that it relays: a bad `denied-peer-ip` rule starts cleanly and then answers every peer with `403 Forbidden IP`, and with logging off nothing shows it. Check the relay itself:
+
+```bash
+sudo scripts/check-turn-relay.sh
+```
+
+It reads `TURN_PUBLIC_IP` and `TURN_SECRET` from `.env` and uses the `turnutils_uclient` and `turnutils_peer` tools from the pinned coturn image to send packets through the running server two ways: to an echo peer on the host, and relay-to-relay (both peers on TURN, as when each ticks "Hide my IP"). Both lines must read `PASS`. Run it again after changing `scripts/gen-turnserver-conf.sh` or the coturn image.
 
 ### 3b. Enable the Onion Mirror (Optional)
 

@@ -48,6 +48,12 @@ TURN_SECRET="$(env_get TURN_SECRET)"
 
 [[ "$TURN_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] \
   || die "TURN_HOST must be set to a hostname"
+# TURN_PUBLIC_IP is validated here but deliberately NOT denied as a peer:
+# when both peers relay ("Hide my IP" on each side), each one's peer address
+# is this server's own relay address, and a deny answers 403 Forbidden IP.
+# Relaying is UDP-only, so this exposes only the host's public UDP services
+# (coturn itself and Caddy's 443/udp). Do not deny "::" either: coturn 4.6.3
+# then rejects every IPv4 peer. scripts/check-turn-relay.sh tests both paths.
 [[ "$TURN_PUBLIC_IP" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] \
   || die "TURN_PUBLIC_IP must be set to the server's public IPv4"
 for octet in "${BASH_REMATCH[@]:1}"; do
@@ -95,8 +101,6 @@ denied-peer-ip=192.0.0.0-192.0.0.255
 denied-peer-ip=192.168.0.0-192.168.255.255
 denied-peer-ip=198.18.0.0-198.19.255.255
 denied-peer-ip=240.0.0.0-255.255.255.255
-denied-peer-ip=$TURN_PUBLIC_IP
-denied-peer-ip=::-::
 denied-peer-ip=::1
 denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255
 denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
