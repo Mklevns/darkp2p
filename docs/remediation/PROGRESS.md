@@ -863,3 +863,12 @@ Phases 1 and 2 are on `main`. Phases 3–5 are in PR #8 (`claude/awesome-albatta
   2. **`LICENSE` copyright holder.** Confirm the name, or give the one to use.
   3. **The affiliate link's text** changed from "zero-log VPN" to "VPN". "Zero-log" is the VPN provider's claim, not something this project can state. Say if the old wording should come back.
   4. The page title still says "No Upload". On the relay path, encrypted frames do pass through the server's memory. Left as it is.
+
+### Decisions after Phase 6 (user, 2026-11-22)
+- **`Caddyfile`: back to Caddy's automatic HTTP→HTTPS redirect.** The hand-written `http://{$DOMAIN}, http://www.{$DOMAIN}` block from the SEO pass is removed, and the two site blocks are `www.{$DOMAIN}` and `{$DOMAIN}` again, as before that pass. The Step 10 decision stands.
+  - What the block did that the automatic redirect does not: it answered plain HTTP with one `301` straight to the apex and without a `Server` header. Neither is needed. The header on port 80 was already weighed and declined in Step 10, and the automatic redirect is also permanent.
+  - What changes on port 80: `http://<domain>` answers `308` to https, `http://www.<domain>` takes two hops (`308` to `https://www`, then `301` to the apex), and the `308` carries `Server: Caddy`. HTTPS responses are unchanged.
+  - **Verified:** `caddy validate` in the pinned `caddy:2.11.9-alpine` image with `DOMAIN=test.local`: "Valid configuration". `caddy adapt` shows a single server on `:443` with the two hosts, so port 80 is entirely Caddy's own.
+  - **Not verified:** the redirects were not requested through a running Caddy, and no ACME issuance was observed (as before).
+- **`LICENSE`:** "Michael Evans" is confirmed as the copyright holder.
+- **Gate:** `npm run check` PASS; `npm test` 166/166 PASS, 0 skipped; `npm run check:compose` PASS.
