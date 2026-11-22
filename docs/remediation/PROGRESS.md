@@ -886,3 +886,15 @@ Phases 1 and 2 are on `main`. Phases 3–5 are in PR #8 (`claude/awesome-albatta
 - **Check against the old code:** with the previous `public/index.html`, 3 of the 6 fail (lagging fresh page, malformed fragment, payment return).
 - **Gate:** `npm run check` PASS; `npm test` 172/172 PASS, 0 skipped.
 - **Not verified:** not tried in Tor Browser itself. The lag is simulated by the harness, so this shows the page no longer depends on the read-back, not that the read-back was the cause there.
+
+### Empty share field with JavaScript off, and silent failures (2026-11-22)
+- **Source:** user report: in Tor Browser the share field is completely empty, on both the domain and the onion address.
+- **Files changed:** `public/index.html`, `README.md`, `test/helpers/page.mjs`, `test/sharelink.test.mjs`, `test/static.test.mjs`. `server.js`, `Caddyfile` and `tor/torrc` are unchanged.
+- **Cause:** only the inline script writes the field (two assignments), and nothing before the first one can throw, so an empty field means the script did not run. Loading the page in Chromium with JavaScript disabled gives exactly that, with no message on the page. Tor Browser's "Safest" level disables JavaScript on every site.
+- **Fix:**
+  - The share box has a `<noscript>` notice (switch to "Standard", reload) and the field a "Requires JavaScript" placeholder.
+  - Missing `crypto.subtle` or `WebSocket` is reported in the log, the drop zone reads `THIS BROWSER CANNOT RUN DARKP2P`, and signaling is not started. The link is still shown.
+  - `error` and `unhandledrejection` on `window` are reported in the log, once.
+- **Tests:** `test/static.test.mjs` (1): `/` carries the notice and placeholder on the main and onion listeners. `test/sharelink.test.mjs` (3): link shown and reason logged without `crypto.subtle`, and without `WebSocket`; an uncaught error is logged once. The harness gained `noSubtle`, `noWebSocket` and a recording `window.addEventListener`.
+- **Gate:** `npm run check` PASS; `npm test` 176/176 PASS, 0 skipped. Checked in Chromium: normal load, JavaScript off, no `crypto.subtle`, no `WebSocket`.
+- **Not verified:** not tried in Tor Browser itself. Whether its "Safer" level also disables JavaScript on the `http://` onion address is unknown.

@@ -415,6 +415,8 @@ docker compose restart tor
 
 Recreating `darkp2p` makes it send `Onion-Location` and allow the onion origin.
 
+The page needs JavaScript. Tor Browser's "Safest" security level turns it off, on both the domain and the onion address: the share-link field then stays empty and the page shows a notice saying to switch to "Standard" (shield icon) and reload.
+
 **Restart tor every time `darkp2p` is recreated** — after an `.env` change, a `--build`, or a `--force-recreate`. tor resolves `darkp2p` in `tor/torrc` (`HiddenServicePort 80 darkp2p:3001`) once, when it starts. A recreated `darkp2p` can come back with a different container address, and tor would keep forwarding to the old one: the onion site then fails while the clearnet site works. `docker compose restart tor` keeps the keys and the address. `docker compose up -d` on its own does not restart tor, because nothing in tor's own configuration changed. Onion clients are always identified by the `3001` listener, never by headers.
 
 ### 3c. Manual checks on the server

@@ -246,3 +246,21 @@ test('/tor shows the onion address only when ONION_HOST is set, and pages send O
     await withOnion.stop();
   }
 });
+
+// With JavaScript off (Tor Browser's "Safest" level) the script never fills
+// the share field, so the HTML itself has to say why it is empty.
+test('/ explains an empty share field when JavaScript is off, on both listeners', async () => {
+  const onionPort = await freePort();
+  const withOnion = await startServer({ ONION_HOST: ONION, ONION_PORT: String(onionPort) });
+  try {
+    for (const port of [withOnion.port, onionPort]) {
+      const html = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+      const box = /<input type="text" id="shareUrl"[^>]*>[\s\S]*?<\/noscript>/.exec(html);
+      assert.ok(box, `port ${port}: no <noscript> after the share field`);
+      assert.match(box[0], /placeholder="Requires JavaScript/);
+      assert.match(box[0], /<noscript>[\s\S]*JavaScript is turned off[\s\S]*Tor Browser[\s\S]*Standard/);
+    }
+  } finally {
+    await withOnion.stop();
+  }
+});
