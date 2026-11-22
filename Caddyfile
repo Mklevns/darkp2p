@@ -6,12 +6,20 @@
     }
 }
 
-www.{$DOMAIN} {
+# Plain HTTP goes straight to the canonical https origin in one 301. Without
+# this block Caddy's automatic redirect answers 308, and http://www takes two
+# hops. Caddy still answers ACME HTTP-01 challenges on port 80.
+http://{$DOMAIN}, http://www.{$DOMAIN} {
     header -Server
     redir https://{$DOMAIN}{uri} permanent
 }
 
-{$DOMAIN} {
+https://www.{$DOMAIN} {
+    header -Server
+    redir https://{$DOMAIN}{uri} permanent
+}
+
+https://{$DOMAIN} {
     header -Server
     encode zstd gzip
     request_body /webhook/nowpayments {

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DarkP2P vs Wormhole, FilePizza, PairDrop and ToffeeShare</title>
+  <meta name="description" content="A factual comparison of browser file-transfer tools: end-to-end encryption, server storage, size limits, Tor Browser support, open source and self-hosting." />
+  <link rel="canonical" href="https://darkp2p.com/compare" />
+  <meta name="theme-color" content="#0a0c0e" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="DarkP2P" />
+  <meta property="og:url" content="https://darkp2p.com/compare" />
+  <meta property="og:title" content="DarkP2P vs Wormhole, FilePizza, PairDrop and ToffeeShare" />
+  <meta property="og:description" content="A factual comparison of browser file-transfer tools: end-to-end encryption, server storage, size limits, Tor Browser support, open source and self-hosting." />
+  <meta property="og:image" content="https://darkp2p.com/og-image.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="DarkP2P: encrypted browser-to-browser file transfer. E2E AES-256-GCM, no server storage, works in Tor Browser." />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://darkp2p.com/og-image.png" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebPage",
+        "@id": "https://darkp2p.com/compare",
+        "url": "https://darkp2p.com/compare",
+        "name": "DarkP2P vs Wormhole, FilePizza, PairDrop and ToffeeShare",
+        "description": "A factual comparison of browser file-transfer tools: end-to-end encryption, server storage, size limits, Tor Browser support, open source and self-hosting.",
+        "inLanguage": "en",
+        "isPartOf": {
+          "@type": "WebSite",
+          "name": "DarkP2P",
+          "url": "https://darkp2p.com/"
+        }
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "DarkP2P",
+            "item": "https://darkp2p.com/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "Compare",
+            "item": "https://darkp2p.com/compare"
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #0a0c0e;
+      --panel: #111519;
+      --border: #232b32;
+      --accent: #00f0ff;
+      --ok: #05ffa1;
+      --warn: #ff2a6d;
+      --text: #d1d9e0;
+      --muted: #8a97a5;
+    }
+    * {
+      box-sizing: border-box;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 16px;
+      font-size: 0.9rem;
+      line-height: 1.7;
+    }
+    .container {
+      width: 100%;
+      max-width: 820px;
+      margin: 24px auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 28px;
+      box-shadow: 0 0 30px rgba(0, 240, 255, 0.05);
+    }
+    .top {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding-bottom: 14px;
+      margin-bottom: 22px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8rem;
+    }
+    .brand { color: var(--accent); letter-spacing: 2px; text-decoration: none; }
+    .cta {
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      padding: 6px 12px;
+      text-decoration: none;
+      text-transform: uppercase;
+      font-size: 0.75rem;
+    }
+    .cta:hover { background: var(--accent); color: #000; }
+    h1 { margin: 0 0 6px; font-size: 1.45rem; line-height: 1.3; color: var(--accent); letter-spacing: 1px; }
+    .lede { color: var(--muted); margin: 0 0 22px; }
+    h2 {
+      margin: 34px 0 10px;
+      padding-top: 16px;
+      border-top: 1px dashed var(--border);
+      font-size: 1.02rem;
+      color: var(--accent);
+      letter-spacing: 0.5px;
+    }
+    h3 { margin: 22px 0 6px; font-size: 0.9rem; color: var(--text); }
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 0 0 12px; padding-left: 22px; }
+    li { margin-bottom: 6px; }
+    main a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    main a:hover { background: var(--accent); color: #000; text-decoration: none; }
+    code {
+      background: #07090b;
+      border: 1px solid var(--border);
+      padding: 1px 5px;
+      font-size: 0.85em;
+      color: var(--accent);
+      overflow-wrap: anywhere;
+    }
+    pre {
+      background: #07090b;
+      border: 1px solid var(--border);
+      padding: 12px;
+      margin: 0 0 12px;
+      overflow-x: auto;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      color: var(--accent);
+    }
+    .note {
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      background: rgba(0, 240, 255, 0.03);
+      padding: 10px 14px;
+      margin: 0 0 14px;
+    }
+    .note.warn { border-left-color: var(--warn); background: rgba(255, 42, 109, 0.04); }
+    .table-wrap { overflow-x: auto; margin: 0 0 14px; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.8rem; line-height: 1.5; }
+    th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+    thead th { color: var(--accent); background: rgba(0, 0, 0, 0.3); white-space: nowrap; }
+    tbody th { color: var(--text); font-weight: normal; background: rgba(0, 0, 0, 0.2); }
+    .yes { color: var(--ok); }
+    .no { color: var(--warn); }
+    .unk { color: var(--muted); font-style: italic; }
+    .small { font-size: 0.78rem; color: var(--muted); }
+    .site-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      margin-top: 34px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      font-size: 0.78rem;
+    }
+    .site-nav a { color: var(--muted); text-decoration: none; }
+    .site-nav a:hover, .site-nav a[aria-current="page"] { color: var(--accent); }
+    @media (max-width: 560px) {
+      .container { padding: 18px; margin: 0 auto; }
+      h1 { font-size: 1.2rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="top">
+      <a class="brand" href="/">DARKP2P // DEAD DROP</a>
+      <a class="cta" href="/">Open the app</a>
+    </header>
+
+    <main>
+      <h1>DarkP2P compared with other browser file-transfer tools</h1>
+      <p class="lede">Six properties, five tools. Cells we could not confirm from a project's own documentation say so instead of guessing.</p>
+      <h2 id="table">Comparison</h2>
+      <p class="small">Checked on 22 November 2026. DarkP2P's column describes its source code. FilePizza's and PairDrop's cells come from their official repositories. These projects change, so check their own documentation before relying on a cell.</p>
+      <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col"></th><th scope="col">DarkP2P</th><th scope="col">Wormhole</th><th scope="col">FilePizza</th><th scope="col">PairDrop</th><th scope="col">ToffeeShare</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">End-to-end encryption</th>
+            <td><span class="yes">Yes.</span> AES-256-GCM in the browser, key in the URL fragment, on top of WebRTC's DTLS.</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: wormhole.app/security says 128-bit AES-GCM in the browser, key in the URL fragment -->Not verified</td>
+            <td>WebRTC's built-in DTLS encryption between the two browsers. Optional password.</td>
+            <td>WebRTC's built-in encryption in transit. Its FAQ says you still have to trust the PairDrop server.</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: toffeeshare.com/faq says DTLS 1.3 (WebRTC transport encryption) -->Not verified</td>
+          </tr>
+          <tr>
+            <th scope="row">Files stored on a server</th>
+            <td><span class="yes">No.</span> Direct between browsers. The relay fallback forwards encrypted data through memory.</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: wormhole.app/faq says files up to 5 GB are stored on its servers for 24 hours; larger files go peer to peer -->Not verified</td>
+            <td><span class="yes">No.</span> Sent directly from the uploader's browser to the downloader's.</td>
+            <td><span class="yes">No.</span> Sent directly between peers; a TURN server relays between different networks.</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: toffeeshare.com says nothing is stored online -->Not verified</td>
+          </tr>
+          <tr>
+            <th scope="row">File size limit</th>
+            <td>None set by the server for direct transfers. Relay: 50 MB per room (500 MB with Pro). 512 MB in browsers that cannot stream to disk.</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: wormhole.app homepage says up to 10 GB -->Not verified</td>
+            <td>"As big as your browser can handle."</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: no limit is stated in the PairDrop README, FAQ or hosting docs -->Not verified</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: toffeeshare.com says no size limits; about 4 GB tested in Safari -->Not verified</td>
+          </tr>
+          <tr>
+            <th scope="row">Works in Tor Browser</th>
+            <td><span class="yes">Yes</span>, through the encrypted WebSocket relay, within the relay's size cap. <a href="/tor">Details</a>.</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: wormhole.app/roadmap lists Tor Browser support -->Not verified</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: FilePizza README says it uses WebRTC and describes no fallback; it does not mention Tor -->Not verified</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: PairDrop docs do not mention Tor; self-hosted instances can enable a WebSocket fallback whose traffic is readable by the server -->Not verified</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: toffeeshare.com FAQ says it works where WebRTC is supported; no Tor statement found -->Not verified</td>
+          </tr>
+          <tr>
+            <th scope="row">Open source</th>
+            <td><span class="yes">Yes.</span> MIT. <a href="https://github.com/Mklevns/darkp2p" rel="noopener noreferrer">Source</a>.</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: the wormhole-crypto library is MIT on GitHub; the FAQ reportedly says the full client and server are not open source -->Not verified</td>
+            <td><span class="yes">Yes.</span> BSD 3-Clause.</td>
+            <td><span class="yes">Yes.</span> GPL-3.0.</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: no public source or licence statement found -->Not verified</td>
+          </tr>
+          <tr>
+            <th scope="row">Self-hostable</th>
+            <td><span class="yes">Yes.</span> Docker Compose, documented in the README.</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: no self-hosting documentation found -->Not verified</td>
+            <td><span class="yes">Yes.</span> Docker and configuration variables are documented in the README.</td>
+            <td><span class="yes">Yes.</span> Docker or Node.js, with a hosting guide.</td>
+            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: no self-hosting documentation found -->Not verified</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+      <p class="small">"Not verified" means we could not confirm the answer from the project's own website or repository when this page was written. It does not mean "no".</p>
+
+      <h2 id="reading">How to read the table</h2>
+      <h3>Transport encryption and end-to-end encryption</h3>
+      <p>Every WebRTC connection is encrypted with DTLS. The two browsers agree on that encryption through a signaling server, so its strength depends on that server behaving honestly. DarkP2P adds a second layer whose key the server never receives, which is why its cell says more than "WebRTC". Whether that difference matters depends on how much you trust the operator of the service you use.</p>
+      <h3>Storage and availability are a trade</h3>
+      <p>A tool that stores your file on a server lets the recipient download it later, when you are offline. A tool that stores nothing, DarkP2P included, needs both people online at the same time with their tabs open.</p>
+      <h3>Where DarkP2P is weaker</h3>
+      <ul>
+        <li>Both peers must be online together. There is no "send now, download later".</li>
+        <li>One file at a time in each direction, between exactly two peers.</li>
+        <li>The relay used by Tor Browser is capped at 50 MB per room without a Pro token.</li>
+        <li>A direct connection shows each peer the other's IP address unless one of the <a href="/security#peer">options to hide it</a> is used.</li>
+      </ul>
+
+      <h2 id="more">Read next</h2>
+      <ul>
+        <li><a href="/how-it-works">How DarkP2P works</a>.</li>
+        <li><a href="/security">Security and threat model</a>.</li>
+      </ul>
+    </main>
+
+    <nav class="site-nav" aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/how-it-works">How it works</a>
+      <a href="/security">Security</a>
+      <a href="/tor">Tor</a>
+      <a href="/compare" aria-current="page">Compare</a>
+      <a href="/abuse">Abuse</a>
+      <a href="https://github.com/Mklevns/darkp2p" rel="noopener noreferrer">Source</a>
+    </nav>
+  </div>
+</body>
+</html>

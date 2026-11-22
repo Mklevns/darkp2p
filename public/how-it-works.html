@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>How DarkP2P Works: Keys, Signaling, WebRTC and the Relay Fallback</title>
+  <meta name="description" content="Step by step: the key in the URL fragment, signaling, the WebRTC DataChannel, the encrypted WebSocket relay fallback, disk streaming and when TURN is used." />
+  <link rel="canonical" href="https://darkp2p.com/how-it-works" />
+  <meta name="theme-color" content="#0a0c0e" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="DarkP2P" />
+  <meta property="og:url" content="https://darkp2p.com/how-it-works" />
+  <meta property="og:title" content="How DarkP2P Works: Keys, Signaling, WebRTC and the Relay Fallback" />
+  <meta property="og:description" content="Step by step: the key in the URL fragment, signaling, the WebRTC DataChannel, the encrypted WebSocket relay fallback, disk streaming and when TURN is used." />
+  <meta property="og:image" content="https://darkp2p.com/og-image.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="DarkP2P: encrypted browser-to-browser file transfer. E2E AES-256-GCM, no server storage, works in Tor Browser." />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://darkp2p.com/og-image.png" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebPage",
+        "@id": "https://darkp2p.com/how-it-works",
+        "url": "https://darkp2p.com/how-it-works",
+        "name": "How DarkP2P Works: Keys, Signaling, WebRTC and the Relay Fallback",
+        "description": "Step by step: the key in the URL fragment, signaling, the WebRTC DataChannel, the encrypted WebSocket relay fallback, disk streaming and when TURN is used.",
+        "inLanguage": "en",
+        "isPartOf": {
+          "@type": "WebSite",
+          "name": "DarkP2P",
+          "url": "https://darkp2p.com/"
+        }
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "DarkP2P",
+            "item": "https://darkp2p.com/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "How it works",
+            "item": "https://darkp2p.com/how-it-works"
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #0a0c0e;
+      --panel: #111519;
+      --border: #232b32;
+      --accent: #00f0ff;
+      --ok: #05ffa1;
+      --warn: #ff2a6d;
+      --text: #d1d9e0;
+      --muted: #8a97a5;
+    }
+    * {
+      box-sizing: border-box;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 16px;
+      font-size: 0.9rem;
+      line-height: 1.7;
+    }
+    .container {
+      width: 100%;
+      max-width: 820px;
+      margin: 24px auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 28px;
+      box-shadow: 0 0 30px rgba(0, 240, 255, 0.05);
+    }
+    .top {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding-bottom: 14px;
+      margin-bottom: 22px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8rem;
+    }
+    .brand { color: var(--accent); letter-spacing: 2px; text-decoration: none; }
+    .cta {
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      padding: 6px 12px;
+      text-decoration: none;
+      text-transform: uppercase;
+      font-size: 0.75rem;
+    }
+    .cta:hover { background: var(--accent); color: #000; }
+    h1 { margin: 0 0 6px; font-size: 1.45rem; line-height: 1.3; color: var(--accent); letter-spacing: 1px; }
+    .lede { color: var(--muted); margin: 0 0 22px; }
+    h2 {
+      margin: 34px 0 10px;
+      padding-top: 16px;
+      border-top: 1px dashed var(--border);
+      font-size: 1.02rem;
+      color: var(--accent);
+      letter-spacing: 0.5px;
+    }
+    h3 { margin: 22px 0 6px; font-size: 0.9rem; color: var(--text); }
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 0 0 12px; padding-left: 22px; }
+    li { margin-bottom: 6px; }
+    main a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    main a:hover { background: var(--accent); color: #000; text-decoration: none; }
+    code {
+      background: #07090b;
+      border: 1px solid var(--border);
+      padding: 1px 5px;
+      font-size: 0.85em;
+      color: var(--accent);
+      overflow-wrap: anywhere;
+    }
+    pre {
+      background: #07090b;
+      border: 1px solid var(--border);
+      padding: 12px;
+      margin: 0 0 12px;
+      overflow-x: auto;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      color: var(--accent);
+    }
+    .note {
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      background: rgba(0, 240, 255, 0.03);
+      padding: 10px 14px;
+      margin: 0 0 14px;
+    }
+    .note.warn { border-left-color: var(--warn); background: rgba(255, 42, 109, 0.04); }
+    .table-wrap { overflow-x: auto; margin: 0 0 14px; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.8rem; line-height: 1.5; }
+    th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+    thead th { color: var(--accent); background: rgba(0, 0, 0, 0.3); white-space: nowrap; }
+    tbody th { color: var(--text); font-weight: normal; background: rgba(0, 0, 0, 0.2); }
+    .yes { color: var(--ok); }
+    .no { color: var(--warn); }
+    .unk { color: var(--muted); font-style: italic; }
+    .small { font-size: 0.78rem; color: var(--muted); }
+    .site-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      margin-top: 34px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      font-size: 0.78rem;
+    }
+    .site-nav a { color: var(--muted); text-decoration: none; }
+    .site-nav a:hover, .site-nav a[aria-current="page"] { color: var(--accent); }
+    @media (max-width: 560px) {
+      .container { padding: 18px; margin: 0 auto; }
+      h1 { font-size: 1.2rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="top">
+      <a class="brand" href="/">DARKP2P // DEAD DROP</a>
+      <a class="cta" href="/">Open the app</a>
+    </header>
+
+    <main>
+      <h1>How DarkP2P works</h1>
+      <p class="lede">What happens between opening the page and a file arriving in the other browser, and which machine sees what at each step.</p>
+      <h2 id="key">1. The key is made in your browser and lives in the URL fragment</h2>
+      <p>When you open the page without a link, your browser generates two random values with the Web Crypto random generator: a 16-byte room ID and a 32-byte (256-bit) secret. Both are written into the part of the address after the <code>#</code>:</p>
+      <pre>https://darkp2p.com/#&lt;room ID, 32 hex characters&gt;:&lt;secret, base64url&gt;</pre>
+      <p>That address is the share link. Whoever opens it gets the same room ID and the same secret.</p>
+      <p>The part of a URL after <code>#</code> is called the fragment. Browsers use it locally and leave it out of the requests they send, so it is not in the HTTP request for the page and not in the WebSocket handshake. The page then sends the room ID to the server on purpose, so the server can pair the two browsers. It never sends the secret.</p>
+      <p>The secret is not used directly. Each file gets its own AES-256-GCM key, derived with HKDF-SHA256 from the secret, a random ID for that file, and two random values the browsers exchange when they connect.</p>
+
+      <h2 id="signaling">2. Signaling: the server introduces two browsers</h2>
+      <p>The page opens a WebSocket to the server it was loaded from and sends a <code>join</code> message with the room ID. The server keeps the room in memory. A room holds at most two peers, and a third is told the room is full.</p>
+      <p>When the second peer joins, the server tells both that they are paired, which of them starts the connection, and which STUN (and, for Pro rooms, TURN) servers to use. From then on it forwards the WebRTC setup messages between them: the offer, the answer and the ICE candidates. It copies only the fields it knows and drops anything else.</p>
+      <p>Rooms exist only in the server's memory and disappear when the last peer leaves. Nothing about a room is written to disk.</p>
+
+      <h2 id="webrtc">3. The direct path: a WebRTC DataChannel</h2>
+      <p>With the setup messages exchanged, the two browsers try to connect to each other directly. If that works, an ordered WebRTC DataChannel opens between them, and file data goes from one browser to the other without passing through the DarkP2P server.</p>
+      <p>WebRTC already encrypts the channel with DTLS. DarkP2P adds its own layer on top, because the server that forwards the setup messages could otherwise interfere with that encryption:</p>
+      <ul>
+        <li>Each side sends a <code>hello</code> with a fresh random 32-byte value, encrypted under a key derived from the link secret. A side that cannot decrypt the other's hello shows "Key mismatch" and file selection stays disabled.</li>
+        <li>Both sides derive the session keys from the secret and both random values, and confirm them to each other. Only then can a file be chosen.</li>
+        <li>The file is read from disk in 16,000-byte chunks. Each chunk is encrypted with AES-256-GCM under a fresh random 12-byte IV. The frame type, the sender's role, the file's ID and the chunk number are authenticated with it, so a chunk cannot be moved, replayed, reordered or reflected without failing.</li>
+        <li>The file's name, size and type travel in an encrypted frame too.</li>
+      </ul>
+      <p>The receiver sees the offer and has to accept it before any data is sent. During the transfer the receiver acknowledges every 64 chunks, and the sender keeps at most 256 chunks unacknowledged, so a slow receiver slows the sender down instead of filling memory. At the end the receiver checks that the number of chunks and bytes matches what was announced, and the sender shows "Delivered" only after the receiver confirms it saved the file.</p>
+      <p>Both tabs have to stay open until the transfer finishes. There is no upload to resume later.</p>
+
+      <h2 id="relay">4. The fallback: an encrypted WebSocket relay</h2>
+      <p>A direct connection is not always possible. The page switches to the relay when:</p>
+      <ul>
+        <li>the browser has no WebRTC at all, which is the case in <a href="/tor">Tor Browser</a>;</li>
+        <li>you tick <em>Force WebSocket relay</em>;</li>
+        <li>no DataChannel has opened 12 seconds after pairing;</li>
+        <li>the WebRTC connection fails.</li>
+      </ul>
+      <p>Either peer can trigger the switch, and both then use the relay. The same encrypted frames are sent as binary messages over the WebSocket that was already open for signaling, and the server passes each one to the other peer. The peers run the hello exchange again, so the relay gets new session keys.</p>
+      <h3>What the relay can see</h3>
+      <ul>
+        <li>The IP address each peer connects from (for a Tor user, the Tor exit, or nothing on the onion service).</li>
+        <li>The room ID, and when frames are sent.</li>
+        <li>The size and number of the encrypted frames, which gives away the approximate size of the file.</li>
+        <li>The unencrypted frame header: a frame type, the random file ID, the chunk number and the IV.</li>
+      </ul>
+      <h3>What it cannot see</h3>
+      <ul>
+        <li>The secret, because it is never sent.</li>
+        <li>The contents of the file, or its name and type.</li>
+      </ul>
+      <p>The relay has limits that the direct path does not. A room can relay 50 MB in total, counting both directions, until both peers have left it (500 MB if either peer has a Pro token). Each sender is held to about 1 MB per second (4 MB per second in a Pro room). Only a limited number of rooms can use the relay at once, and others are told it is busy. Frames are held in the server's memory only while they wait to be delivered, and are never written to disk.</p>
+
+      <h2 id="disk">5. Receiving large files without filling memory</h2>
+      <p>Where the received data goes depends on what the receiving browser supports. The page tries these in order:</p>
+      <ol>
+        <li><strong>A file you choose.</strong> If the browser has a save-file picker, accepting the offer opens it, and chunks are written straight to that file.</li>
+        <li><strong>The Origin Private File System (OPFS).</strong> Otherwise chunks are written to a temporary file in the browser's private storage for this site. When the transfer is complete the file is handed to the browser as a normal download, and the temporary copy is deleted a minute later. Temporary files left behind by a closed or crashed tab are removed on a later visit once they are a day old.</li>
+        <li><strong>Memory.</strong> If neither is available, chunks are kept in RAM and saved at the end. This mode is limited to 512 MB, and a larger file is declined automatically.</li>
+      </ol>
+      <p>The offer shows which mode will be used. The sender never loads the whole file either: it reads one chunk at a time.</p>
+      <p>The server sets no size limit on direct transfers. In practice the limit is the receiver's free disk space and, for OPFS, the storage the browser allows the site.</p>
+
+      <h2 id="turn">6. When TURN is used</h2>
+      <p>STUN lets a browser learn its public address so that two browsers behind ordinary home routers can find each other. Some networks, such as strict corporate firewalls and carrier-grade NAT, block that. A TURN server solves it by relaying the WebRTC traffic.</p>
+      <ul>
+        <li>Free rooms get a STUN server only. If the direct connection fails, they fall back to the WebSocket relay described above.</li>
+        <li>If either peer in a room has a valid Pro token, both peers also get short-lived TURN credentials. WebRTC then uses TURN when it finds no direct route.</li>
+        <li>With a Pro token you can tick <em>Hide my IP from peer</em>. Your browser then offers only TURN routes, so your peer sees the TURN server's address in place of yours. If TURN is not available, the page refuses to connect instead of falling back to a direct connection.</li>
+      </ul>
+      <p>The TURN server relays the DTLS-encrypted WebRTC stream, and DarkP2P's AES-256-GCM layer is inside that. It sees addresses and traffic volume, not content. It has no per-room byte cap like the WebSocket relay, only its own bandwidth and session quotas.</p>
+
+      <h2 id="more">Read next</h2>
+      <ul>
+        <li><a href="/security">Security and threat model</a>: who can observe what, and what is out of scope.</li>
+        <li><a href="/tor">Using DarkP2P in Tor Browser</a>.</li>
+        <li><a href="https://github.com/Mklevns/darkp2p" rel="noopener noreferrer">The source code</a>, including the wire format in the README.</li>
+      </ul>
+    </main>
+
+    <nav class="site-nav" aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/how-it-works" aria-current="page">How it works</a>
+      <a href="/security">Security</a>
+      <a href="/tor">Tor</a>
+      <a href="/compare">Compare</a>
+      <a href="/abuse">Abuse</a>
+      <a href="https://github.com/Mklevns/darkp2p" rel="noopener noreferrer">Source</a>
+    </nav>
+  </div>
+</body>
+</html>
