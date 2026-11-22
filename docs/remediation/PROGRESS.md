@@ -787,3 +787,30 @@
   2. **tor still needs a manual restart** after `darkp2p` is recreated. `depends_on: restart: true` (Compose 2.17+) would do it automatically; not added, since the task asked for documentation.
   3. **IPv6 is documented, not enabled.** The compose network stays IPv4-only.
   4. With `external-ip` set, coturn accepts its own `TURN_LISTEN_IP` as a peer although the address is in a denied range (measured). Same exposure as the public address: UDP services on the host.
+
+### Post-audit Phase 5 — CI and glue tests (2026-11-22)
+- **Source:** the 2026-11-22 audit: CI ran neither the tests nor the inline-script check, and the page's connection/UI glue had no automated test.
+- **Files changed:** `.github/workflows/ci.yml`; new `test/glue.test.mjs` and `test/helpers/page.mjs`. `server.js` and `public/` are unchanged.
+- **CI:** after checkout and Node 22 setup (npm cache), the job now runs `npm ci`, `npm run check` (`node --check server.js` and `scripts/check-inline-js.mjs`), `npm test` and `npm run check:compose`, then the existing image build and `/health` smoke test. The separate `node --check server.js` step is gone, since `npm run check` includes it.
+- **Harness (`test/helpers/page.mjs`):** runs the page's real inline script with a minimal fake DOM, Node's WebCrypto, the `ws` client against a real `server.js`, and an optional fake `RTCPeerConnection` pair whose signaling still goes through the server. It records log lines, drop-zone changes and labels in order, and tracks the page's timers so a test can fire a long one (30 s relay retry, 12 s ICE timeout) at once. No new dependency.
+- **Tests (`test/glue.test.mjs`, 13):**
+  - direct tunnel opens the drop zone only after the key handshake;
+  - `connected` after `disconnected` re-opens the drop zone, and the tunnel still carries a file;
+  - the same during a send keeps the drop zone closed until the send ends;
+  - `connected` without a verified key does not open it;
+  - forced relay: one status line, masked badge, drop zone opens only after the hello-ack, files cross both ways;
+  - key mismatch on the relay stays on screen with the drop zone closed;
+  - ICE failure after a signaled host candidate: "already shared" line and exposed badge on that side, masked on the other;
+  - ICE timeout moves both peers to the relay;
+  - a file over the relay budget is refused locally and nothing is sent; one that fits is charged;
+  - budget used up: shown once, socket stays open, no reconnect, and a new peer in the spent room gets no hello;
+  - idle relay: both pages pause, one click resumes with a fresh handshake, a file then crosses;
+  - idle relay during a send: both sides are told and the offer is removed;
+  - busy relay: said once, never "outdated", retry connects without a click.
+- **Mutation check (each applied to `public/index.html` and reverted; file restored byte-identical):** the original `isTransferring` call; opening the drop zone unconditionally on `connected`; opening it in the fallback before the handshake; a second unconditional "masked" log; ignoring `relay-idle`; starting a handshake on a spent budget; `relay-busy` leaving the hello timer; the drop-zone click not resuming; ignoring `relay-limit-exceeded`; no relay fit check. Each failed at least one glue test.
+- **Gate:** `npm run check` PASS; `npm test` 166/166 PASS, 0 skipped; `npm run check:compose` PASS.
+- **SKIPPED / not verified:** the workflow itself has not run on GitHub (nothing was pushed). `shellcheck` unavailable.
+- **Limits of the harness:** it is not a browser. Layout, real ICE, the save picker, OPFS and `localStorage` blocking are not exercised, and the fake `RTCPeerConnection` reports whatever state a test tells it to.
+- **Open questions:**
+  1. **Budget left after "used up".** The server drops whole frames, so a room that got `relay-limit-exceeded` can still have up to one frame of budget. The page sets its own count to 0, but a later `ready` reports the server's figure, and above 4 KB the page starts a relay handshake again in a room it had called used up. Found while writing the test; behaviour unchanged.
+  2. The 10 s reconnect-backoff rule still has no test.
