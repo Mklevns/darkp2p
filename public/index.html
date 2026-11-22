@@ -765,12 +765,19 @@
       const roomBytes = crypto.getRandomValues(new Uint8Array(16));
       const keyBytes = crypto.getRandomValues(new Uint8Array(32));
       const roomId = Array.from(roomBytes, (b) => b.toString(16).padStart(2, '0')).join('');
-      location.hash = `${roomId}:${toBase64Url(keyBytes)}`;
-      return { roomId, keyBytes };
+      return { roomId, keyBytes, isNew: true };
     }
 
-    const { roomId, keyBytes } = initRoomAndKey();
-    shareUrlEl.value = location.href;
+    const { roomId, keyBytes, isNew: isNewRoom } = initRoomAndKey();
+    // The share link is built from the room ID and key themselves, never read
+    // back from location.href or location.hash: after `location.hash = ...`
+    // those can still hold the old URL for a moment (seen in Tor Browser),
+    // which gave a link without the room and key. The query string is left
+    // out on purpose, so a payment return (?NP_id=...) never ends up in it.
+    const shareFragment = `${roomId}:${toBase64Url(keyBytes)}`;
+    const shareUrl = `${location.origin}${location.pathname}#${shareFragment}`;
+    if (isNewRoom) location.hash = shareFragment;
+    shareUrlEl.value = shareUrl;
 
     const proModal = document.getElementById('proModal');
     document.getElementById('openProModalBtn').onclick = () => proModal.classList.add('open');
@@ -951,9 +958,10 @@
         }
       }
       if (paymentId !== null || params.get('invoiceId') !== null) {
-        const cleanUrl = `${location.pathname}${location.hash}`;
+        // shareFragment, not location.hash: see the note where it is defined.
+        const cleanUrl = `${location.pathname}#${shareFragment}`;
         history.replaceState(null, '', cleanUrl);
-        shareUrlEl.value = location.href;
+        shareUrlEl.value = shareUrl;
       }
 
       const claim = readPendingClaim();

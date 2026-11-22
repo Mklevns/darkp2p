@@ -872,3 +872,17 @@ Phases 1 and 2 are on `main`. Phases 3–5 are in PR #8 (`claude/awesome-albatta
   - **Not verified:** the redirects were not requested through a running Caddy, and no ACME issuance was observed (as before).
 - **`LICENSE`:** "Michael Evans" is confirmed as the copyright holder.
 - **Gate:** `npm run check` PASS; `npm test` 166/166 PASS, 0 skipped; `npm run check:compose` PASS.
+
+### Share link built from the room and key, not from `location.href` (2026-11-22)
+- **Source:** user report: in Tor Browser the share link could be shown without `#roomId:key`.
+- **Files changed:** `public/index.html`, `test/helpers/page.mjs`; new `test/sharelink.test.mjs`. `server.js` is unchanged.
+- **Cause:** `initRoomAndKey()` assigned `location.hash` and the next line copied `location.href` into the share field. Where `location.href` does not reflect that assignment at once, the field got the URL without the room and key. `autoClaimToken()` had the same read-back: it rebuilt the cleaned URL from `location.hash`, so a payment return on a fresh visit could also drop the fragment from the address bar.
+- **Fix:**
+  - The link is computed once as `${location.origin}${location.pathname}#${roomId}:${toBase64Url(keyBytes)}` and used for the share field. `location.hash` is assigned from the same fragment, only when the page had no valid one.
+  - `autoClaimToken()` cleans the URL to `pathname#fragment` from that value and sets the share field to the same link.
+  - The query string is no longer part of the link, so `?NP_id=` cannot appear in it even before the URL is cleaned.
+  - A key given with base64 padding in the URL is shown without it (same key).
+- **Tests:** `test/sharelink.test.mjs` (6): a fresh page whose `location.href` lags still shows the full link, assigns the hash once and joins that room; an up-to-date location gives the same; an opened share link is shown unchanged with no hash assignment; a malformed fragment is replaced; a payment return keeps the fragment in the cleaned URL and out of the link; no rewrite without a payment return. The harness gained `search`, `lazyLocation`, `location.origin` and a recording `history.replaceState`.
+- **Check against the old code:** with the previous `public/index.html`, 3 of the 6 fail (lagging fresh page, malformed fragment, payment return).
+- **Gate:** `npm run check` PASS; `npm test` 172/172 PASS, 0 skipped.
+- **Not verified:** not tried in Tor Browser itself. The lag is simulated by the harness, so this shows the page no longer depends on the read-back, not that the read-back was the cause there.

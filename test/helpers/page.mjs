@@ -242,7 +242,11 @@ export function createFakeRtcNet() {
 
 // Loads the page. `rtc` is a createFakeRtcNet() result; without it the page
 // sees no RTCPeerConnection at all (as in a browser with WebRTC disabled).
-export function loadPage({ port, hash, forceWsRelay = false, hideIp = false, rtc = null, storage = {} }) {
+// `search` is the query string the page is opened with. `lazyLocation` makes
+// location.hash and location.href keep their old value after the page assigns
+// location.hash (until page.settleLocation()), as a browser may.
+export function loadPage({ port, hash = '', search = '', lazyLocation = false, forceWsRelay = false,
+  hideIp = false, rtc = null, storage = {} }) {
   const page = {
     logs: [],        // { text, cls } in order
     events: [],      // log lines, drop enable/disable and label changes, in order
@@ -283,14 +287,40 @@ export function loadPage({ port, hash, forceWsRelay = false, hideIp = false, rtc
     addEventListener() {},
   };
 
+  let currentHash = hash;
+  let currentSearch = search;
+  let pendingHash = null;
   const location = {
     protocol: 'http:',
     host: `127.0.0.1:${port}`,
     pathname: '/',
-    search: '',
-    hash,
-    get href() { return `http://${this.host}/${this.hash}`; },
+    get origin() { return `http://${this.host}`; },
+    get search() { return currentSearch; },
+    get hash() { return currentHash; },
+    set hash(v) {
+      const next = v === '' || String(v).startsWith('#') ? String(v) : `#${v}`;
+      page.hashAssignments.push(next);
+      if (lazyLocation) pendingHash = next;
+      else currentHash = next;
+    },
+    get href() { return `${this.origin}${this.pathname}${currentSearch}${currentHash}`; },
     assign() {},
+  };
+  page.hashAssignments = [];
+  page.historyCalls = [];
+  page.location = location;
+  page.settleLocation = () => {
+    if (pendingHash !== null) currentHash = pendingHash;
+    pendingHash = null;
+  };
+  const history = {
+    replaceState(state, title, url) {
+      page.historyCalls.push(url);
+      const u = new URL(url, location.href);
+      currentSearch = u.search;
+      if (lazyLocation) pendingHash = u.hash;
+      else currentHash = u.hash;
+    },
   };
   const store = new Map(Object.entries(storage));
   const localStorage = {
@@ -360,7 +390,7 @@ export function loadPage({ port, hash, forceWsRelay = false, hideIp = false, rtc
 
   const RTC = rtc ? rtc.makeClass(page) : undefined;
   runScript(
-    document, {}, location, { replaceState() {} }, localStorage, {}, PageWebSocket, RTC, PageURL,
+    document, {}, location, history, localStorage, {}, PageWebSocket, RTC, PageURL,
     async () => { throw new Error('no fetch in the page harness'); },
     (fn, ms = 0, ...args) => addTimer('timeout', fn, ms, args), dropTimer,
     (fn, ms = 0, ...args) => addTimer('interval', fn, ms, args), dropTimer,
