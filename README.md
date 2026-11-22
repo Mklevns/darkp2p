@@ -1,6 +1,8 @@
 # DARKP2P
 
-Zero-knowledge, end-to-end encrypted peer-to-peer file transfer directly in the browser. Files stream browser-to-browser over WebRTC `RTCDataChannel` with zero server storage, zero database, and no file size limits.
+End-to-end encrypted peer-to-peer file transfer directly in the browser. Files stream browser-to-browser over WebRTC `RTCDataChannel`. The server stores no files and has no database, and it cannot read file contents, names or types. It does see network metadata (addresses, timing and, in relay mode, sizes): see **Threat Model & Limitations** and the [security page](https://darkp2p.com/security).
+
+Direct transfers have no size cap set by the server. The WebSocket relay is capped per room (50 MB, 500 MB with Pro), and a browser that cannot stream to disk is limited to 512 MB.
 
 Live instance: [darkp2p.com](https://darkp2p.com)
 
@@ -121,7 +123,13 @@ coturn binds no port below 1024, but it keeps `NET_BIND_SERVICE` because the ima
 
 ## Threat Model & Limitations
 
-* **IP Exposure:** Direct WebRTC P2P connections expose each peer's IP address to the other peer during ICE/NAT traversal. Use a VPN if you need IP anonymity.
+* **IP Exposure:** Direct WebRTC P2P connections expose each peer's IP address to the other peer during ICE/NAT traversal. There are three ways to avoid it, and each protects only the peer who uses it:
+  * *Force WebSocket relay*, ticked before the peer joins: the browser never starts WebRTC. The relay's size cap applies.
+  * *Hide my IP from peer* (needs a Pro token): the browser offers only TURN routes.
+  * A VPN or Tor Browser: the peer and the server see the VPN's or Tor's address.
+* **What the server sees:** peers' IP addresses (used only for rate limiting, as a salted hash, and never logged), room IDs, join and leave times, the WebRTC setup messages and, in relay mode, the size and timing of encrypted frames. It never has the link secret. A visitor cannot verify what a running server logs.
+* **Accounts and payments:** there are no accounts. A Pro token is bought through a third-party payment processor (NOWPayments), which keeps its own records.
+* **Trust in the served page:** the encryption runs in JavaScript the site delivers on each visit, so whoever controls the server could deliver different code. Review the source and self-host if that matters.
 * **Synchronous Transfer:** Both peers must keep their browser tabs open until the transfer completes.
 * **TURN Relay:** Direct STUN works for ~80% of connections. For strict corporate firewalls or CGNAT, the stack includes `coturn` with ephemeral HMAC-SHA1 credentials (optionally gated behind stateless HMAC-signed Pro tokens). Relaying is UDP-only (`--no-tcp-relay`; clients can still reach coturn over TCP 3478), and private, loopback, reserved, NAT64/6to4 and IPv4-mapped addresses are denied as peers.
 * **No TURN Logs:** coturn logs every client and peer address, so its logging is disabled. See **coturn configuration and logging policy** below.
@@ -462,4 +470,4 @@ With a Pro token, either peer can tick *Hide my IP from peer*. This forces TURN-
 
 ## License
 
-MIT
+MIT. See [`LICENSE`](LICENSE).

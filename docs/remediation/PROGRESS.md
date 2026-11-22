@@ -814,3 +814,52 @@
 - **Open questions:**
   1. **Budget left after "used up".** The server drops whole frames, so a room that got `relay-limit-exceeded` can still have up to one frame of budget. The page sets its own count to 0, but a later `ready` reports the server's figure, and above 4 KB the page starts a relay handshake again in a room it had called used up. Found while writing the test; behaviour unchanged.
   2. The 10 s reconnect-backoff rule still has no test.
+
+### Records added afterwards — PR #1, PR #2 and the SEO pass (written 2026-11-22)
+These three changes were merged on 2026-11-21 without an entry here. The entries below are reconstructed from the git history, not written when the work was done, so no gate results from that time are recorded.
+
+- **PR #1 — README markdown fix** (`fce7f02`, merged as `a44deae`). `README.md` only: two broken markdown links inside code blocks.
+- **PR #2 — tunnel and IP status badges** (`c3fa547`, `d0f5bff`, merged as `a561420`). `public/index.html` only.
+  - A status bar with two badges: the tunnel mode and whether the peer saw this side's IP.
+  - The IP badge follows what was actually signaled: an ICE candidate that reveals a real address marks the IP as exposed even if TURN or the relay carries the traffic later.
+  - TURN use is judged from the local candidate of the selected pair; an unreadable route shows as unverified.
+  - Later phases built on it: the Phase 1 `isTransferring` fix and the Phase 3 badge changes are in this code.
+- **SEO and launch-readiness pass** (`0f9951d`, PR #6, merged as `171fb6f`).
+  - **Files:** `public/index.html`, `public/404.html`, `server.js`, `Caddyfile`, `README.md`; new `public/how-it-works.html`, `security.html`, `tor.html`, `compare.html`, `abuse.html`, `og-image.png`, `favicon.svg`, `apple-touch-icon.png`, the IndexNow key file, `assets/og-image.svg`, `scripts/indexnow.sh`, `scripts/render-images.mjs`, `test/static.test.mjs`.
+  - `index.html`: new title and description, OG/Twitter tags, footer nav; the FAQ was corrected to match the code and the FAQPage JSON-LD synced to it.
+  - `server.js`: serves the static pages and assets, `img-src 'self'` in the page CSP, `robots.txt`, `sitemap.xml` with `lastmod`, the IndexNow key file, `Onion-Location` on every page.
+  - `Caddyfile`: a hand-written `http://{$DOMAIN}, http://www.{$DOMAIN}` block (301 to the https origin, `header -Server`) and an explicit `https://www.` block.
+  - **Conflict with a recorded decision — needs confirmation.** The Step 10 decision (user, 2026-11-21) was to leave Caddy's automatic HTTP→HTTPS redirect untouched, because a hand-written `http://` block was judged riskier for ACME HTTP-01 renewals than the `Server` header was worth. This pass added exactly that block, and nothing here records the decision being changed. See Phase 6, open question 1.
+
+### Audit remediation phases — index (2026-11-22)
+The read-only audit of 2026-11-22 was worked off in six phases. Each has its own entry in this file.
+
+| Phase | Scope | Commit | Tests after |
+|---|---|---|---|
+| 1 | coturn deny list, relay check script, `isTransferring` | `47ca6c9` | 134 |
+| 2 | `ws` update, NOWPayments budgets, order-bound claims, settlement anchor | `1c17bd8` | 141 |
+| 3 | relay fallback, relay budget and slots, storage, IP badge | `fa5e9be` | 147 |
+| 4 | container hardening, coturn config guard, Reserved IPs, deploy docs | `c375c9d` | 153 |
+| 5 | CI runs checks and tests; page glue tests | `35bba2d` | 166 |
+| 6 | copy alignment, `LICENSE`, these records | not committed | 166 |
+
+Phases 1 and 2 are on `main`. Phases 3–5 are in PR #8 (`claude/awesome-albattani-w4v3bg` → `main`), open at the time of writing.
+
+### Post-audit Phase 6 — copy, licence and records (2026-11-22)
+- **Source:** the 2026-11-22 audit, Low "copy and records" items.
+- **Files changed:** `README.md`, `public/index.html`, `docs/remediation/PROGRESS.md`; new `LICENSE`. `server.js`, `Caddyfile` and the other pages are unchanged.
+- **Copy aligned with `public/security.html`:**
+  - "Zero-knowledge" is gone from the README intro and the FAQ heading. The README now says what the server cannot read and what it does see.
+  - "No file size limits" became: no server cap on direct transfers, the relay cap per room (50 MB, 500 MB with Pro), 512 MB without disk streaming. The relay-budget log line no longer says "unlimited".
+  - "Zero accounts or logs" in the Pro modal became: no account, and payments go through NOWPayments, which keeps its own records. The JSON-LD feature "Zero server file storage or logging" and the tip label "SUPPORT ZERO-LOG INFRASTRUCTURE" were reworded the same way.
+  - IP hiding: the banner, the FAQ answer (visible text and JSON-LD, kept identical) and the README threat model now name all three ways: Force WebSocket relay, Hide my IP (Pro), a VPN or Tor Browser.
+  - The README threat model gained three items from the security page: what the server sees, accounts and payments, and trust in the served page.
+- **`LICENSE`:** MIT, `Copyright (c) 2026 Michael Evans`. The name and year come from the repository's git history (first commit 2026-11-19).
+- **Caddyfile check:** no change made. See open question 1.
+- **Gate:** `npm run check` PASS; `npm test` 166/166 PASS, 0 skipped.
+- **SKIPPED / not verified:** the reworded page was not looked at in a browser. The other static pages were searched for the same phrases and had none; they were not otherwise re-read.
+- **Open questions:**
+  1. **The `http://` block in `Caddyfile` contradicts the Step 10 decision** (see the SEO pass entry above). Its comment says Caddy still answers ACME HTTP-01 on port 80, which matches how Caddy is documented to work, but no certificate issuance or renewal through this block has been observed: every check so far ran without real ACME. Confirm one of: keep the block (and record the decision as changed), or return to the automatic redirect (308, two hops for `http://www`, `Server: Caddy` on port 80). If the block stays, watch the first renewal, or force one on a staging name.
+  2. **`LICENSE` copyright holder.** Confirm the name, or give the one to use.
+  3. **The affiliate link's text** changed from "zero-log VPN" to "VPN". "Zero-log" is the VPN provider's claim, not something this project can state. Say if the old wording should come back.
+  4. The page title still says "No Upload". On the relay path, encrypted frames do pass through the server's memory. Left as it is.

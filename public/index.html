@@ -44,7 +44,7 @@
           "End-to-end AES-256-GCM client-side encryption",
           "Direct WebRTC peer-to-peer streaming",
           "Automatic E2E-encrypted WebSocket relay fallback for Tor Browser",
-          "Zero server file storage or logging",
+          "No server-side file storage; server logs contain no addresses or file data",
           "Disk streaming for large files (save-file picker or Origin Private File System)",
           "Optional TURN relay for strict corporate firewalls and CGNAT"
         ]
@@ -81,7 +81,7 @@
             "name": "Does WebRTC hide my IP address?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "No. Direct P2P connections expose your IP address to the other peer during NAT traversal. To hide it, turn on Force WebSocket relay, turn on Hide my IP with a Pro token, or use a zero-log VPN or Tor Browser."
+              "text": "No. Direct P2P connections expose your IP address to the other peer during NAT traversal. To hide it, turn on Force WebSocket relay, turn on Hide my IP with a Pro token, or use a VPN or Tor Browser."
             }
           }
         ]
@@ -487,12 +487,14 @@
 
     <div class="monetize">
       <div class="vpn-banner">
-        Direct WebRTC exposes your IP to your peer. Mask it with a
-        <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a>.
+        Direct WebRTC exposes your IP to your peer. To hide it, tick Force WebSocket relay,
+        use Hide my IP (Pro), or use a
+        <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">VPN</a>
+        or Tor Browser.
       </div>
 
       <div class="tip-jar" hidden>
-        <span>SUPPORT ZERO-LOG INFRASTRUCTURE:</span>
+        <span>SUPPORT DARKP2P:</span>
         <div class="tip-btns">
           <button type="button" class="tip-btn" data-coin="XMR" hidden>Copy XMR</button>
           <button type="button" class="tip-btn" data-coin="BTC" hidden>Copy BTC</button>
@@ -501,7 +503,7 @@
     </div>
 
     <section class="faq" aria-label="Frequently Asked Questions">
-      <div class="faq-title">SYSTEM FAQ // ZERO-KNOWLEDGE SPEC</div>
+      <div class="faq-title">SYSTEM FAQ // E2E ENCRYPTION SPEC</div>
 
       <details>
         <summary>How does DarkP2P work without server storage?</summary>
@@ -520,7 +522,7 @@
 
       <details>
         <summary>Does WebRTC hide my IP address?</summary>
-        <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. To hide it, turn on Force WebSocket relay, turn on Hide my IP with a Pro token, or use a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a> or Tor Browser.</p>
+        <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. To hide it, turn on Force WebSocket relay, turn on Hide my IP with a Pro token, or use a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">VPN</a> or Tor Browser.</p>
       </details>
     </section>
 
@@ -541,7 +543,7 @@
           <button type="button" id="closeProModalBtn" style="padding:4px 8px;">✕</button>
         </div>
         <div class="modal-sub">
-          Unlocks dedicated TURN relay traversal through strict corporate firewalls &amp; CGNAT, plus higher WebSocket relay caps for Tor Browser. Zero accounts or logs.
+          Unlocks dedicated TURN relay traversal through strict corporate firewalls &amp; CGNAT, plus higher WebSocket relay caps for Tor Browser. No account. Payments go through NOWPayments, which keeps its own records.
         </div>
 
         <div class="tier-grid">
@@ -2488,7 +2490,7 @@
         log(
           `Blocked: ${file.name} (${fileMb} MB) does not fit the WebSocket relay: ${leftMb} MB of ` +
           `this room's ${capMb} MB left.` +
-          (relayEnabled ? '' : ' Uncheck "Force WebSocket relay" for unlimited direct P2P, or activate a Pro token for a higher cap.'),
+          (relayEnabled ? '' : ' Uncheck "Force WebSocket relay" for direct P2P, which has no relay cap, or activate a Pro token for a higher cap.'),
           'err'
         );
         if (!relayEnabled) proModal.classList.add('open');
