@@ -3,15 +3,25 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DARKP2P // Ephemeral Dead Drop</title>
-  <meta name="description" content="Direct, zero-knowledge P2P file transfer in your browser. End-to-end AES-256-GCM encrypted WebRTC streaming with zero server storage, Tor Browser support, and no file size limits." />
+  <title>DarkP2P: Encrypted P2P File Transfer in Your Browser (No Upload, No Account)</title>
+  <meta name="description" content="Direct, end-to-end encrypted P2P file transfer in your browser. AES-256-GCM over WebRTC, zero server storage, Tor Browser support, no account." />
   <link rel="canonical" href="https://darkp2p.com/" />
+  <meta name="theme-color" content="#0a0c0e" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
   <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="DarkP2P" />
   <meta property="og:url" content="https://darkp2p.com/" />
-  <meta property="og:title" content="DARKP2P // Zero-Knowledge Browser File Transfer" />
-  <meta property="og:description" content="Send large files directly browser-to-browser with AES-256-GCM encryption and zero server storage." />
-  <meta name="twitter:card" content="summary" />
+  <meta property="og:title" content="DarkP2P: Encrypted P2P File Transfer in Your Browser" />
+  <meta property="og:description" content="Send files directly browser-to-browser with end-to-end AES-256-GCM encryption and zero server storage. No upload, no account." />
+  <meta property="og:image" content="https://darkp2p.com/og-image.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="DarkP2P: encrypted browser-to-browser file transfer. E2E AES-256-GCM, no server storage, works in Tor Browser." />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://darkp2p.com/og-image.png" />
 
   <script type="application/ld+json">
   {
@@ -19,11 +29,12 @@
     "@graph": [
       {
         "@type": "SoftwareApplication",
-        "name": "DARKP2P",
+        "name": "DarkP2P",
         "url": "https://darkp2p.com/",
+        "image": "https://darkp2p.com/og-image.png",
         "applicationCategory": "UtilitiesApplication",
         "operatingSystem": "Web, Windows, macOS, Linux, Android, iOS",
-        "description": "Zero-knowledge, end-to-end AES-256-GCM encrypted peer-to-peer file transfer directly in the browser using WebRTC DataChannels with automatic E2E WebSocket relay fallback for Tor Browser.",
+        "description": "End-to-end AES-256-GCM encrypted peer-to-peer file transfer directly in the browser, using WebRTC DataChannels with an automatic end-to-end encrypted WebSocket relay fallback for Tor Browser.",
         "offers": {
           "@type": "Offer",
           "price": "0",
@@ -34,7 +45,7 @@
           "Direct WebRTC peer-to-peer streaming",
           "Automatic E2E-encrypted WebSocket relay fallback for Tor Browser",
           "Zero server file storage or logging",
-          "Origin Private File System (OPFS) disk streaming for large files",
+          "Disk streaming for large files (save-file picker or Origin Private File System)",
           "Optional TURN relay for strict corporate firewalls and CGNAT"
         ]
       },
@@ -43,18 +54,18 @@
         "mainEntity": [
           {
             "@type": "Question",
-            "name": "How does DARKP2P transfer files without server storage?",
+            "name": "How does DarkP2P work without server storage?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "DARKP2P uses WebRTC DataChannels to stream files directly from the sender's browser to the receiver's browser. The signaling server only pairs the two peers in RAM and never touches or stores file payloads."
+              "text": "Files stream directly browser-to-browser over WebRTC DataChannels. The signaling server only pairs two peers in RAM. When a direct connection is not possible, it forwards the already-encrypted chunks through memory. It never writes file data to disk or logs it."
             }
           },
           {
             "@type": "Question",
-            "name": "Can the server decrypt my files?",
+            "name": "Can the server read or decrypt my files?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "No. A 256-bit AES-GCM encryption key is generated locally in the URL fragment after the # symbol. Browsers never send URL fragments to the server, so only peers holding the full share link can decrypt the stream."
+              "text": "No. Every chunk is encrypted in your browser with AES-256-GCM. The keys are derived from a 256-bit secret that exists only in the URL fragment (after #), which browsers never send to the server."
             }
           },
           {
@@ -62,7 +73,7 @@
             "name": "Is there a file size limit?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "There is no server-enforced file size limit for direct P2P transfers. On modern browsers supporting the Origin Private File System (OPFS), incoming chunks stream directly to disk so multi-gigabyte transfers do not exhaust browser RAM."
+              "text": "Not for direct P2P transfers: the server sets no cap, and incoming chunks stream to disk (a file you choose, or the browser's Origin Private File System) instead of RAM. The WebSocket relay, which Tor Browser always uses, is capped at 50 MB per room (500 MB with Pro). Browsers that cannot stream to disk are limited to 512 MB."
             }
           },
           {
@@ -70,7 +81,7 @@
             "name": "Does WebRTC hide my IP address?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "No. Direct peer-to-peer WebRTC connections exchange IP addresses between the two peers during NAT traversal. Use Force WebSocket Relay, a Pro TURN token, a zero-log VPN, or Tor Browser to mask your IP address from your peer."
+              "text": "No. Direct P2P connections expose your IP address to the other peer during NAT traversal. To hide it, turn on Force WebSocket relay, turn on Hide my IP with a Pro token, or use a zero-log VPN or Tor Browser."
             }
           }
         ]
@@ -213,6 +224,13 @@
     .dropzone.active { border-color: var(--accent); background: rgba(0, 240, 255, 0.05); }
     .dropzone.disabled { cursor: not-allowed; opacity: 0.65; }
     progress { width: 100%; height: 6px; accent-color: var(--accent); margin-top: 12px; }
+    .offer .offer-text, .rx-panel .offer-text { font-size: 0.75rem; margin-bottom: 10px; word-break: break-all; }
+    .cancel-btn { display: block; width: 100%; margin: -8px 0 16px; border-color: var(--warn); color: var(--warn); }
+    .cancel-btn:hover:not(:disabled) { background: var(--warn); color: #000; }
+    .cancel-btn[hidden] { display: none; }
+    .rx-panel[hidden] { display: none; }
+    .rx-panel progress { margin: 0 0 12px; }
+    .rx-panel .cancel-btn { margin: 0; }
     #log {
       font-size: 0.75rem;
       color: var(--muted);
@@ -311,6 +329,21 @@
       color: var(--muted);
       line-height: 1.5;
     }
+    .site-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+      font-size: 0.72rem;
+    }
+    .site-nav a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+    .site-nav a:hover,
+    .site-nav a[aria-current="page"] { color: var(--accent); }
     .modal-backdrop {
       display: none;
       position: fixed;
@@ -376,6 +409,10 @@
     }
     .tier-cta {
       display: block;
+      width: 100%;
+      background: none;
+      font: inherit;
+      cursor: pointer;
       text-align: center;
       border: 1px solid var(--accent);
       color: var(--accent);
@@ -384,7 +421,9 @@
       font-size: 0.72rem;
       text-transform: uppercase;
     }
-    .tier-cta:hover { background: var(--accent); color: #000; }
+    .tier-cta:hover:not(:disabled) { background: var(--accent); color: #000; }
+    .tier-cta:disabled { opacity: 0.5; cursor: wait; }
+    .tier-cta[hidden], .tip-jar[hidden], .tip-btn[hidden], .modal-note[hidden] { display: none; }
     .modal-note {
       font-size: 0.68rem;
       color: var(--muted);
@@ -436,6 +475,13 @@
       <input type="file" id="fileInput" hidden disabled />
       <progress id="progress" value="0" max="100"></progress>
     </div>
+    <button type="button" id="cancelBtn" class="cancel-btn" hidden>Cancel send</button>
+
+    <div class="box rx-panel" id="rxPanel" hidden>
+      <div class="offer-text" id="rxLabel"></div>
+      <progress id="rxProgress" value="0" max="100"></progress>
+      <button type="button" id="cancelRxBtn" class="cancel-btn">Cancel receive</button>
+    </div>
 
     <div id="log"></div>
 
@@ -445,11 +491,11 @@
         <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a>.
       </div>
 
-      <div class="tip-jar">
+      <div class="tip-jar" hidden>
         <span>SUPPORT ZERO-LOG INFRASTRUCTURE:</span>
         <div class="tip-btns">
-          <button type="button" class="tip-btn" data-coin="XMR" data-addr="4YOUR_MONERO_ADDRESS_HERE">Copy XMR</button>
-          <button type="button" class="tip-btn" data-coin="BTC" data-addr="bc1qYOUR_BITCOIN_ADDRESS_HERE">Copy BTC</button>
+          <button type="button" class="tip-btn" data-coin="XMR" hidden>Copy XMR</button>
+          <button type="button" class="tip-btn" data-coin="BTC" hidden>Copy BTC</button>
         </div>
       </div>
     </div>
@@ -458,25 +504,35 @@
       <div class="faq-title">SYSTEM FAQ // ZERO-KNOWLEDGE SPEC</div>
 
       <details>
-        <summary>How does DARKP2P work without server storage?</summary>
-        <p>Files stream directly browser-to-browser over WebRTC DataChannels. The signaling node only pairs two peers in RAM and never stores or logs file payloads.</p>
+        <summary>How does DarkP2P work without server storage?</summary>
+        <p>Files stream directly browser-to-browser over WebRTC DataChannels. The signaling server only pairs two peers in RAM. When a direct connection is not possible, it forwards the already-encrypted chunks through memory. It never writes file data to disk or logs it.</p>
       </details>
 
       <details>
         <summary>Can the server read or decrypt my files?</summary>
-        <p>No. Every chunk is encrypted client-side with AES-256-GCM using a 256-bit key stored only in the URL fragment (after #), which browsers never transmit to the server.</p>
+        <p>No. Every chunk is encrypted in your browser with AES-256-GCM. The keys are derived from a 256-bit secret that exists only in the URL fragment (after #), which browsers never send to the server.</p>
       </details>
 
       <details>
         <summary>Is there a file size limit?</summary>
-        <p>No server cap for direct P2P transfers. Incoming chunks stream directly to disk via the browser's Origin Private File System (OPFS) so multi-gigabyte files won't crash your tab.</p>
+        <p>Not for direct P2P transfers: the server sets no cap, and incoming chunks stream to disk (a file you choose, or the browser's Origin Private File System) instead of RAM. The WebSocket relay, which Tor Browser always uses, is capped at 50 MB per room (500 MB with Pro). Browsers that cannot stream to disk are limited to 512 MB.</p>
       </details>
 
       <details>
         <summary>Does WebRTC hide my IP address?</summary>
-        <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. Use Force WebSocket Relay, a Pro TURN token, a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a>, or Tor Browser to mask your IP.</p>
+        <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. To hide it, turn on Force WebSocket relay, turn on Hide my IP with a Pro token, or use a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">zero-log VPN</a> or Tor Browser.</p>
       </details>
     </section>
+
+    <nav class="site-nav" aria-label="Site">
+      <a href="/" aria-current="page">Home</a>
+      <a href="/how-it-works">How it works</a>
+      <a href="/security">Security</a>
+      <a href="/tor">Tor</a>
+      <a href="/compare">Compare</a>
+      <a href="/abuse">Abuse</a>
+      <a href="https://github.com/Mklevns/darkp2p" rel="noopener noreferrer">Source</a>
+    </nav>
 
     <div class="modal-backdrop" id="proModal" role="dialog" aria-modal="true" aria-labelledby="proModalTitle">
       <div class="modal">
@@ -499,9 +555,9 @@
                 <li>• One-off dead drops</li>
               </ul>
             </div>
-            <a class="tier-cta" href="https://btcpay.YOURDOMAIN.com/apps/YOUR_APP_ID/pos?itemCode=pro-1d" target="_blank" rel="noopener noreferrer">
+            <button type="button" class="tier-cta" data-tier="pro-1d" hidden>
               Pay BTC / XMR
-            </a>
+            </button>
           </div>
 
           <div class="tier-card featured">
@@ -514,26 +570,37 @@
                 <li>• Best for frequent use</li>
               </ul>
             </div>
-            <a class="tier-cta" href="https://btcpay.YOURDOMAIN.com/apps/YOUR_APP_ID/pos?itemCode=pro-30d" target="_blank" rel="noopener noreferrer">
+            <button type="button" class="tier-cta" data-tier="pro-30d" hidden>
               Pay BTC / XMR
-            </a>
+            </button>
           </div>
         </div>
 
-        <div class="modal-note">
-          After payment settles on BTCPay Server, you will be redirected back here and your Pro token will auto-claim and save locally.
+        <div class="modal-note" hidden>
+          Checkout runs on NOWPayments. Once the payment is finished you are redirected back here, and your Pro token is claimed and saved locally.
         </div>
       </div>
     </div>
   </div>
 
+  <script type="application/json" id="darkp2p-config">{}</script>
   <script>
     const CHUNK_SIZE = 16000;
     const HIGH_WATER = 1048576;
-    const FRAME_CTRL = 1;
-    const FRAME_DATA = 2;
+    const HELLO_TIMEOUT_MS = 5000;
+    const TRANSFER_KEY_CACHE_MAX = 8;
+    const SEEN_TRANSFER_IDS_MAX = 64;
+    const ENDED_TRANSFER_IDS_MAX = 16;
+    const RX_MAX_PENDING_CHUNKS = 256;
+    const RX_MAX_PENDING_CTRL = 32;
+    const TX_WATCHDOG_MS = 1000;
+    const MSG_KEY_MISMATCH = 'Key mismatch — the link was altered';
+    const MSG_PEER_OUTDATED = 'Peer is running an outdated DARKP2P page — both sides reload';
+    const MSG_SESSION_UNCONFIRMED = 'Peer did not confirm the session key — both sides reload';
+    // Used only if the server's `ready` carries no relay budget (older server).
     const WS_RELAY_LIMIT_FREE = 50 * 1024 * 1024;
     const WS_RELAY_LIMIT_PRO = 500 * 1024 * 1024;
+    const FULL_RETRY_MS = 90_000; // server notices a dead socket within 2 heartbeats (60 s)
 
     let iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
@@ -544,6 +611,11 @@
     const dropLabel = document.getElementById('dropLabel');
     const fileInput = document.getElementById('fileInput');
     const progressEl = document.getElementById('progress');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const rxPanel = document.getElementById('rxPanel');
+    const rxLabel = document.getElementById('rxLabel');
+    const rxProgressEl = document.getElementById('rxProgress');
+    const cancelRxBtn = document.getElementById('cancelRxBtn');
     const modeBadge = document.getElementById('modeBadge');
     const ipBadge = document.getElementById('ipBadge');
 
@@ -727,87 +799,732 @@
       }
     };
 
-    async function autoClaimToken() {
-      const params = new URLSearchParams(location.search);
-      const invoiceId = params.get('invoiceId');
-      if (!invoiceId) return;
+    // A paid invoice is remembered until its token is claimed, so a refresh,
+    // a closed tab or a server restart cannot lose it.
+    const PENDING_CLAIM_KEY = 'darkp2p_pending_claim';
+    const CLAIM_MAX_AGE_MS = 48 * 3600 * 1000;
+    const CLAIM_POLL_MS = 6 * 3600 * 1000;
+    const CLAIM_FIRST_DELAY_MS = 3000;
+    const CLAIM_MAX_DELAY_MS = 30_000;
+    const CLAIM_MAX_RETRY_AFTER_MS = 10 * 60 * 1000;
+    const CLAIM_JOIN_WAIT_MS = 5000;
+    // NOWPayments payment and invoice IDs are decimal integers.
+    const NP_ID_RE = /^[1-9][0-9]{0,19}$/;
+    let joinSent = false;
 
-      const cleanUrl = `${location.pathname}${location.hash}`;
-      history.replaceState(null, '', cleanUrl);
-      shareUrlEl.value = location.href;
+    // A pending claim is {paymentId, startedAt} or {invoiceId, startedAt}.
+    // Only a payment ID survives a server restart before the token is fetched.
+    function readPendingClaim() {
+      try {
+        const c = JSON.parse(localStorage.getItem(PENDING_CLAIM_KEY) || 'null');
+        if (c && Number.isFinite(c.startedAt)) {
+          if (typeof c.paymentId === 'string' && NP_ID_RE.test(c.paymentId)) {
+            return { paymentId: c.paymentId, startedAt: c.startedAt };
+          }
+          if (typeof c.invoiceId === 'string' && NP_ID_RE.test(c.invoiceId)) {
+            return { invoiceId: c.invoiceId, startedAt: c.startedAt };
+          }
+        }
+        // Anything else (an older-format claim) can no longer be claimed.
+        if (c !== null) clearPendingClaim();
+      } catch {}
+      return null;
+    }
 
+    function claimQuery(claim) {
+      return claim.paymentId
+        ? `paymentId=${encodeURIComponent(claim.paymentId)}`
+        : `invoiceId=${encodeURIComponent(claim.invoiceId)}`;
+    }
+
+    function writePendingClaim(claim) {
+      try { localStorage.setItem(PENDING_CLAIM_KEY, JSON.stringify(claim)); } catch {}
+    }
+
+    function clearPendingClaim() {
+      try { localStorage.removeItem(PENDING_CLAIM_KEY); } catch {}
+    }
+
+    // One claim request. Resolves to { token } on success, otherwise to
+    // { retryAfterMs } (null when the server gave no Retry-After).
+    async function claimOnce(claim) {
+      try {
+        const res = await fetch(`/api/claim?${claimQuery(claim)}`, {
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ready && typeof data.token === 'string' && data.token) return { token: data.token };
+          return { retryAfterMs: null };
+        }
+        if (res.status === 429 || res.status === 503) {
+          const secs = Number(res.headers.get('Retry-After'));
+          if (Number.isFinite(secs) && secs > 0) {
+            return { retryAfterMs: Math.min(secs * 1000, CLAIM_MAX_RETRY_AFTER_MS) };
+          }
+        }
+        // 404 means not settled yet (or not yet visible): keep polling.
+      } catch {}
+      return { retryAfterMs: null };
+    }
+
+    async function pollClaim(claim, onFirstAttempt) {
+      const pollUntil = Date.now() + CLAIM_POLL_MS;
+      let delay = CLAIM_FIRST_DELAY_MS;
       log('Checking payment status for Pro TURN token...');
 
-      const maxAttempts = 20;
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          const res = await fetch(`/api/claim?invoiceId=${encodeURIComponent(invoiceId)}`, {
-            cache: 'no-store',
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.ready && data.token) {
-              localStorage.setItem('darkp2p_token', data.token);
-              proTokenEl.value = data.token;
-              log('Pro TURN token claimed and saved.', 'ok');
-              return;
-            }
-          }
-        } catch {}
-
-        if (attempt < maxAttempts) {
-          await new Promise((r) => setTimeout(r, 3000));
+      for (let first = true; ; first = false) {
+        if (Date.now() - claim.startedAt > CLAIM_MAX_AGE_MS) {
+          clearPendingClaim();
+          log('Pro token claim expired (48 h). Contact support with your payment ID if you paid.', 'err');
+          return;
         }
+
+        const result = await claimOnce(claim);
+        if (first) onFirstAttempt();
+
+        if (result.token) {
+          try { localStorage.setItem('darkp2p_token', result.token); } catch {}
+          proTokenEl.value = result.token;
+          clearPendingClaim();
+          log(joinSent ? 'Pro token saved — reload to apply.' : 'Pro TURN token claimed and saved.', 'ok');
+          return;
+        }
+
+        if (Date.now() >= pollUntil) {
+          log('Token not ready yet. Reload this page later to keep checking.', 'err');
+          return;
+        }
+        const wait = Math.max(delay, result.retryAfterMs || 0);
+        await new Promise((r) => setTimeout(r, Math.min(wait, Math.max(0, pollUntil - Date.now()))));
+        delay = Math.min(delay * 2, CLAIM_MAX_DELAY_MS);
+      }
+    }
+
+    // Returns a promise that settles after the first claim attempt (or at once
+    // if there is nothing to claim). Polling continues in the background.
+    // NOWPayments returns the buyer to success_url with ?NP_id=<payment id>;
+    // ?invoiceId= is accepted as well.
+    function autoClaimToken() {
+      const params = new URLSearchParams(location.search);
+      const paymentId = params.get('NP_id');
+      const invoiceId = params.get('invoiceId');
+      const fresh = paymentId && NP_ID_RE.test(paymentId)
+        ? { paymentId }
+        : invoiceId && NP_ID_RE.test(invoiceId) ? { invoiceId } : null;
+      if (fresh) {
+        const existing = readPendingClaim();
+        const same = existing &&
+          existing.paymentId === fresh.paymentId && existing.invoiceId === fresh.invoiceId;
+        if (!same) writePendingClaim({ ...fresh, startedAt: Date.now() });
+      }
+      if (paymentId !== null || invoiceId !== null) {
+        const cleanUrl = `${location.pathname}${location.hash}`;
+        history.replaceState(null, '', cleanUrl);
+        shareUrlEl.value = location.href;
       }
 
-      log('Token not ready yet. Refresh once your payment confirms.', 'err');
+      const claim = readPendingClaim();
+      if (!claim) return Promise.resolve();
+
+      return new Promise((resolve) => {
+        pollClaim(claim, resolve).catch(() => {}).finally(resolve);
+      });
     }
 
     const claimReady = autoClaimToken();
 
-    let cryptoKey = null;
-    const keyReady = crypto.subtle
-      .importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
-      .then((k) => { cryptoKey = k; });
+    // ==BEGIN darkp2p-framing==
+    // Wire format v3: type(1) | transferId(16) | seq(4, BE) | iv(12) | ciphertext||tag(16).
+    // AAD = "DP3" | type | senderRole | transferId | seq.
+    // HELLO frames: HKDF-SHA256(room key, salt = transferId, info = "darkp2p/v3/hello").
+    // CTRL/DATA frames are bound to the session (both peers' hello nonces):
+    //   HKDF-SHA256(room key, salt = transferId | initNonce | respNonce, info = "darkp2p/v3/transfer").
+    // Pure Web Crypto and typed arrays only (no DOM): test/framing.test.mjs evaluates this block.
+    const FRAME_TYPE_HELLO = 0x20;
+    const FRAME_TYPE_CTRL = 0x21;
+    const FRAME_TYPE_DATA = 0x22;
+    const FRAME_TYPES = [FRAME_TYPE_HELLO, FRAME_TYPE_CTRL, FRAME_TYPE_DATA];
+    const LEGACY_FRAME_TYPES = [1, 2, 0x11, 0x12]; // v1, v2
+    const ROLE_INITIATOR = 0x01;
+    const ROLE_RESPONDER = 0x02;
+    const ROOM_KEY_LEN = 32;
+    const SESSION_NONCE_LEN = 32;
+    const TRANSFER_ID_LEN = 16;
+    const FRAME_IV_LEN = 12;
+    const FRAME_TAG_LEN = 16;
+    const FRAME_HEADER_LEN = 1 + TRANSFER_ID_LEN + 4 + FRAME_IV_LEN; // 33
+    const FRAME_OVERHEAD = FRAME_HEADER_LEN + FRAME_TAG_LEN; // 49
 
-    async function encryptFrame(frameType, payloadBytes, seq) {
-      await keyReady;
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const aad = new Uint8Array(5);
-      aad[0] = frameType;
-      new DataView(aad.buffer).setUint32(1, seq, false);
-
-      const ct = await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData: aad },
-        cryptoKey,
-        payloadBytes
-      );
-
-      const out = new Uint8Array(17 + ct.byteLength);
-      out.set(aad, 0);
-      out.set(iv, 5);
-      out.set(new Uint8Array(ct), 17);
-      return out.buffer;
+    function asciiBytes(str) {
+      const out = new Uint8Array(str.length);
+      for (let i = 0; i < str.length; i++) out[i] = str.charCodeAt(i);
+      return out;
     }
 
-    async function decryptFrame(buffer) {
-      await keyReady;
-      const bytes = new Uint8Array(buffer);
-      if (bytes.byteLength < 33) throw new Error('Truncated frame');
+    const AAD_MAGIC = asciiBytes('DP3');
+    const HKDF_INFO_HELLO = asciiBytes('darkp2p/v3/hello');
+    const HKDF_INFO_TRANSFER = asciiBytes('darkp2p/v3/transfer');
 
-      const aad = bytes.subarray(0, 5);
-      const frameType = aad[0];
-      const seq = new DataView(bytes.buffer, bytes.byteOffset + 1, 4).getUint32(0, false);
-      const iv = bytes.subarray(5, 17);
-      const ct = bytes.subarray(17);
-
-      const pt = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv, additionalData: aad },
-        cryptoKey,
-        ct
-      );
-      return { frameType, seq, data: new Uint8Array(pt) };
+    class FrameError extends Error {
+      constructor(code, message) {
+        super(message);
+        this.name = 'FrameError';
+        this.code = code;
+      }
     }
+
+    function isRole(role) {
+      return role === ROLE_INITIATOR || role === ROLE_RESPONDER;
+    }
+
+    function checkTransferId(transferId) {
+      if (!(transferId instanceof Uint8Array) || transferId.length !== TRANSFER_ID_LEN) {
+        throw new FrameError('malformed', 'transferId must be 16 bytes');
+      }
+    }
+
+    function transferIdHex(transferId) {
+      let hex = '';
+      for (const b of transferId) hex += b.toString(16).padStart(2, '0');
+      return hex;
+    }
+
+    function buildAad(type, role, transferId, seq) {
+      const aad = new Uint8Array(AAD_MAGIC.length + 2 + TRANSFER_ID_LEN + 4);
+      aad.set(AAD_MAGIC, 0);
+      aad[3] = type;
+      aad[4] = role;
+      aad.set(transferId, 5);
+      new DataView(aad.buffer).setUint32(5 + TRANSFER_ID_LEN, seq, false);
+      return aad;
+    }
+
+    async function importRoomKey(keyBytes) {
+      if (!(keyBytes instanceof Uint8Array) || keyBytes.length !== ROOM_KEY_LEN) {
+        throw new FrameError('malformed', 'Room key must be 32 bytes');
+      }
+      return crypto.subtle.importKey('raw', keyBytes, 'HKDF', false, ['deriveKey']);
+    }
+
+    function checkNonce(nonce) {
+      if (!(nonce instanceof Uint8Array) || nonce.length !== SESSION_NONCE_LEN) {
+        throw new FrameError('malformed', 'Session nonce must be 32 bytes');
+      }
+    }
+
+    function hkdfAesKey(roomKey, salt, info) {
+      return crypto.subtle.deriveKey(
+        { name: 'HKDF', hash: 'SHA-256', salt, info },
+        roomKey,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+      );
+    }
+
+    // Key for a HELLO frame: room key only (the session does not exist yet).
+    async function deriveHelloKey(roomKey, transferId) {
+      checkTransferId(transferId);
+      return hkdfAesKey(roomKey, transferId, HKDF_INFO_HELLO);
+    }
+
+    // Key for a CTRL/DATA frame: bound to the transfer and to both peers' session nonces.
+    // session = { initNonce, respNonce } (initiator's nonce first).
+    async function deriveTransferKey(roomKey, transferId, session) {
+      checkTransferId(transferId);
+      checkNonce(session && session.initNonce);
+      checkNonce(session.respNonce);
+      const salt = new Uint8Array(TRANSFER_ID_LEN + 2 * SESSION_NONCE_LEN);
+      salt.set(transferId, 0);
+      salt.set(session.initNonce, TRANSFER_ID_LEN);
+      salt.set(session.respNonce, TRANSFER_ID_LEN + SESSION_NONCE_LEN);
+      return hkdfAesKey(roomKey, salt, HKDF_INFO_TRANSFER);
+    }
+
+    // LRU of one session's transfer keys: at most `max` entries, least recently used evicted.
+    function createTransferKeyCache(roomKey, session, max) {
+      checkNonce(session && session.initNonce);
+      checkNonce(session.respNonce);
+      const nonces = { initNonce: session.initNonce.slice(), respNonce: session.respNonce.slice() };
+      const entries = new Map(); // hex(transferId) -> Promise<CryptoKey>, oldest first
+      return function getTransferKey(transferId) {
+        checkTransferId(transferId);
+        const id = transferIdHex(transferId);
+        let pending = entries.get(id);
+        if (pending) {
+          entries.delete(id);
+          entries.set(id, pending);
+          return pending;
+        }
+        pending = deriveTransferKey(roomKey, transferId.slice(), nonces);
+        pending.catch(() => { if (entries.get(id) === pending) entries.delete(id); });
+        entries.set(id, pending);
+        while (entries.size > max) entries.delete(entries.keys().next().value);
+        return pending;
+      };
+    }
+
+    async function encodeFrame({ type, role, transferId, seq, payload, key }) {
+      if (!FRAME_TYPES.includes(type)) throw new FrameError('malformed', 'Unknown frame type');
+      if (!isRole(role)) throw new FrameError('malformed', 'Invalid sender role');
+      checkTransferId(transferId);
+      if (!Number.isInteger(seq) || seq < 0 || seq > 0xffffffff) {
+        throw new FrameError('malformed', 'seq must be a uint32');
+      }
+      if (!(payload instanceof Uint8Array)) throw new FrameError('malformed', 'payload must be a Uint8Array');
+
+      const iv = crypto.getRandomValues(new Uint8Array(FRAME_IV_LEN));
+      const ct = new Uint8Array(await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv, additionalData: buildAad(type, role, transferId, seq), tagLength: 128 },
+        key,
+        payload
+      ));
+
+      const out = new Uint8Array(FRAME_HEADER_LEN + ct.length);
+      out[0] = type;
+      out.set(transferId, 1);
+      new DataView(out.buffer).setUint32(1 + TRANSFER_ID_LEN, seq, false);
+      out.set(iv, 5 + TRANSFER_ID_LEN);
+      out.set(ct, FRAME_HEADER_LEN);
+      return out;
+    }
+
+    // keyLookup(transferId, { type, seq }) resolves to the transfer key, or rejects
+    // to refuse the frame before decryption. peerRole is the SENDER's role.
+    async function decodeFrame(buf, peerRole, keyLookup) {
+      let bytes;
+      if (buf instanceof Uint8Array) bytes = buf;
+      else if (buf instanceof ArrayBuffer) bytes = new Uint8Array(buf);
+      else throw new FrameError('malformed', 'Frame must be binary');
+      if (bytes.length < 1) throw new FrameError('malformed', 'Empty frame');
+
+      const type = bytes[0];
+      if (LEGACY_FRAME_TYPES.includes(type)) throw new FrameError('legacy', 'Legacy (v1/v2) frame');
+      if (!FRAME_TYPES.includes(type)) throw new FrameError('malformed', 'Unknown frame type');
+      if (bytes.length < FRAME_OVERHEAD) throw new FrameError('malformed', 'Truncated frame');
+      if (!isRole(peerRole)) throw new FrameError('malformed', 'Invalid peer role');
+
+      const transferId = bytes.slice(1, 1 + TRANSFER_ID_LEN);
+      const seq = new DataView(bytes.buffer, bytes.byteOffset + 1 + TRANSFER_ID_LEN, 4).getUint32(0, false);
+      const iv = bytes.slice(5 + TRANSFER_ID_LEN, FRAME_HEADER_LEN);
+      const key = await keyLookup(transferId, { type, seq });
+
+      let pt;
+      try {
+        pt = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv, additionalData: buildAad(type, peerRole, transferId, seq), tagLength: 128 },
+          key,
+          bytes.subarray(FRAME_HEADER_LEN)
+        );
+      } catch {
+        throw new FrameError('auth', 'Frame authentication failed');
+      }
+      return { type, transferId, seq, payload: new Uint8Array(pt) };
+    }
+
+    // ---- Transfer protocol (pure state machines; time is passed in) ----
+    // Forward frames (sender -> receiver): meta seq 0, DATA 1..N, done N+1, abort = next seq.
+    // Replies (receiver -> sender) use the same transferId under the receiver's role,
+    // numbered 1, 2, 3, ...: accept | decline | ack | complete | abort.
+    const ABORT_REASONS = ['user', 'integrity', 'disk', 'timeout'];
+    const DECLINE_REASONS = ['user', 'size', 'busy'];
+    const ACK_EVERY = 64;
+    const TX_WINDOW = 256;
+    const RAM_MODE_MAX_BYTES = 512 * 1024 * 1024;
+    const ACCEPT_TIMEOUT_MS = 5 * 60 * 1000;
+    const ACK_STALL_MS = 60 * 1000;
+    const COMPLETE_TIMEOUT_MS = 5 * 60 * 1000;
+    const MAX_FILE_CHUNKS = 0xffffffff - 2; // done (N+1) and an abort (N+2) still fit in seq
+
+    // `reason` is the abort reason to send to the peer.
+    class ProtocolError extends Error {
+      constructor(reason, message) {
+        super(message);
+        this.name = 'ProtocolError';
+        this.reason = reason;
+      }
+    }
+
+    class RxStateMachine {
+      // Validates a decoded meta object and returns the normalized metadata.
+      static parseMeta(meta) {
+        if (!meta || meta.type !== 'meta') throw new ProtocolError('integrity', 'Not a meta frame');
+        const { size, chunks } = meta;
+        if (!Number.isSafeInteger(size) || size < 0) {
+          throw new ProtocolError('integrity', 'Invalid file size in metadata');
+        }
+        if (!Number.isSafeInteger(chunks) || chunks < 0 || chunks > MAX_FILE_CHUNKS ||
+            (size === 0 ? chunks !== 0 : chunks < 1 || chunks > size)) {
+          throw new ProtocolError('integrity', 'Invalid chunk count in metadata');
+        }
+        const name = String(meta.name || 'download.bin').replace(/[\\/]/g, '_');
+        const mime = typeof meta.mime === 'string' && meta.mime ? meta.mime : 'application/octet-stream';
+        return { name, size, mime, chunks };
+      }
+
+      // 'size' when the file would have to be buffered in RAM and is too large.
+      static autoDeclineReason(meta, { diskStreaming }) {
+        return !diskStreaming && meta.size > RAM_MODE_MAX_BYTES ? 'size' : null;
+      }
+
+      constructor(meta) {
+        this.meta = meta;
+        this.phase = 'offered'; // offered | receiving | verifying | complete | declined | aborted
+        this.expectedSeq = 1;
+        this.chunks = 0;
+        this.bytes = 0;
+        this.replySeq = 0;
+      }
+
+      get active() {
+        return this.phase === 'offered' || this.phase === 'receiving' || this.phase === 'verifying';
+      }
+
+      nextReplySeq() {
+        this.replySeq += 1;
+        return this.replySeq;
+      }
+
+      expectPhase(phase, what) {
+        if (this.phase !== phase) throw new ProtocolError('integrity', `Unexpected ${what} (${this.phase})`);
+      }
+
+      accept() {
+        this.expectPhase('offered', 'accept');
+        this.phase = 'receiving';
+      }
+
+      decline() {
+        this.expectPhase('offered', 'decline');
+        this.phase = 'declined';
+      }
+
+      // Returns { ack } with the seq to acknowledge, or null when no ack is due.
+      onData(seq, length) {
+        this.expectPhase('receiving', 'chunk');
+        if (seq !== this.expectedSeq) {
+          throw new ProtocolError('integrity', `Out-of-order chunk (expected ${this.expectedSeq}, got ${seq})`);
+        }
+        if (this.chunks >= this.meta.chunks) throw new ProtocolError('integrity', 'More chunks than announced');
+        if (length < 1) throw new ProtocolError('integrity', 'Empty chunk');
+        if (this.bytes + length > this.meta.size) {
+          throw new ProtocolError('integrity', 'Chunk exceeds announced file size');
+        }
+        this.expectedSeq += 1;
+        this.chunks += 1;
+        this.bytes += length;
+        return { ack: this.chunks % ACK_EVERY === 0 ? seq : null };
+      }
+
+      // Returns { ack } for the final acknowledgement (the last DATA seq), sent as
+      // { type: 'ack', seq, done: true } so the sender can tell it from a chunk ack.
+      onDone(seq, ctrl) {
+        this.expectPhase('receiving', 'done');
+        if (seq !== this.expectedSeq) {
+          throw new ProtocolError('integrity', `Out-of-order done (expected ${this.expectedSeq}, got ${seq})`);
+        }
+        if (ctrl.chunks !== this.chunks || ctrl.size !== this.meta.size ||
+            this.chunks !== this.meta.chunks || this.bytes !== this.meta.size) {
+          throw new ProtocolError('integrity', `Integrity mismatch (got ${this.bytes}/${this.meta.size} bytes)`);
+        }
+        this.expectedSeq += 1;
+        this.phase = 'verifying';
+        return { ack: this.chunks };
+      }
+
+      complete() {
+        this.expectPhase('verifying', 'complete');
+        this.phase = 'complete';
+      }
+
+      // Abort sent by the peer (forward direction).
+      onAbort(seq) {
+        if (!this.active) throw new ProtocolError('integrity', `Unexpected abort (${this.phase})`);
+        if (seq !== this.expectedSeq) {
+          throw new ProtocolError('integrity', `Out-of-order abort (expected ${this.expectedSeq}, got ${seq})`);
+        }
+        this.phase = 'aborted';
+      }
+
+      // Local abort. Returns true if the transfer was active (so the peer must be told).
+      abort() {
+        if (!this.active) return false;
+        this.phase = 'aborted';
+        return true;
+      }
+    }
+
+    class TxWindow {
+      constructor({
+        chunks, now, window = TX_WINDOW, acceptTimeoutMs = ACCEPT_TIMEOUT_MS,
+        ackStallMs = ACK_STALL_MS, completeTimeoutMs = COMPLETE_TIMEOUT_MS,
+      }) {
+        if (!Number.isSafeInteger(chunks) || chunks < 0 || chunks > MAX_FILE_CHUNKS) {
+          throw new ProtocolError('integrity', 'Invalid chunk count');
+        }
+        this.chunks = chunks;
+        this.window = window;
+        this.acceptTimeoutMs = acceptTimeoutMs;
+        this.ackStallMs = ackStallMs;
+        this.completeTimeoutMs = completeTimeoutMs;
+        // offered | sending | awaiting-complete | delivered | unconfirmed | declined | aborted
+        this.phase = 'offered';
+        this.dataSent = 0;
+        this.acked = 0;
+        this.forwardSeq = 0; // meta
+        this.expectedReplySeq = 1;
+        this.since = now; // start of the current wait (accept, ack credit, complete)
+        this.declineReason = null;
+        this.abortReason = null;
+        this.doneAcked = false; // the receiver acknowledged done (every frame reached it)
+      }
+
+      get active() {
+        return this.phase === 'offered' || this.phase === 'sending' || this.phase === 'awaiting-complete';
+      }
+
+      get inFlight() {
+        return this.dataSent - this.acked;
+      }
+
+      canSendData() {
+        return this.phase === 'sending' && this.dataSent < this.chunks && this.inFlight < this.window;
+      }
+
+      nextDataSeq(now) {
+        if (!this.canSendData()) throw new ProtocolError('integrity', 'No send credit');
+        this.dataSent += 1;
+        this.forwardSeq = this.dataSent;
+        if (this.inFlight >= this.window) this.since = now; // window just filled
+        return this.dataSent;
+      }
+
+      doneSeq(now) {
+        if (this.phase !== 'sending' || this.dataSent !== this.chunks) {
+          throw new ProtocolError('integrity', 'done before all chunks were sent');
+        }
+        this.phase = 'awaiting-complete';
+        this.since = now;
+        this.forwardSeq = this.chunks + 1;
+        return this.forwardSeq;
+      }
+
+      // Local abort: returns the forward seq for the abort frame, or null if already finished.
+      abortSeq(reason) {
+        if (!this.active) return null;
+        this.phase = 'aborted';
+        this.abortReason = reason;
+        this.forwardSeq += 1;
+        return this.forwardSeq;
+      }
+
+      // Applies a reply from the receiver. Returns its type; throws ProtocolError on violations.
+      onReply(seq, msg, now) {
+        if (!this.active) throw new ProtocolError('integrity', `Reply to a finished transfer (${this.phase})`);
+        if (seq !== this.expectedReplySeq) {
+          throw new ProtocolError('integrity', `Out-of-order reply (expected ${this.expectedReplySeq}, got ${seq})`);
+        }
+        this.expectedReplySeq += 1;
+        const bad = (what) => new ProtocolError('integrity', `Unexpected ${what} (${this.phase})`);
+
+        switch (msg && msg.type) {
+          case 'accept':
+            if (this.phase !== 'offered') throw bad('accept');
+            this.phase = 'sending';
+            this.since = now;
+            return 'accept';
+          case 'decline':
+            if (this.phase !== 'offered') throw bad('decline');
+            this.phase = 'declined';
+            this.declineReason = DECLINE_REASONS.includes(msg.reason) ? msg.reason : 'user';
+            return 'decline';
+          case 'ack':
+            if (this.phase !== 'sending' && this.phase !== 'awaiting-complete') throw bad('ack');
+            if (!Number.isSafeInteger(msg.seq) || msg.seq < this.acked || msg.seq > this.dataSent) {
+              throw new ProtocolError('integrity', `Invalid ack ${msg.seq} (acked ${this.acked}, sent ${this.dataSent})`);
+            }
+            if (msg.done === true) {
+              if (this.phase !== 'awaiting-complete' || msg.seq !== this.chunks || this.doneAcked) {
+                throw new ProtocolError('integrity', `Unexpected final ack (${this.phase})`);
+              }
+              this.doneAcked = true;
+            } else if (msg.done !== undefined) {
+              throw new ProtocolError('integrity', 'Invalid ack');
+            }
+            if (msg.seq > this.acked) {
+              this.acked = msg.seq;
+              if (this.phase === 'sending') this.since = now;
+            }
+            return 'ack';
+          case 'complete':
+            if (this.phase !== 'awaiting-complete') throw bad('complete');
+            if (!this.doneAcked) throw new ProtocolError('integrity', 'complete before the final ack');
+            this.phase = 'delivered';
+            return 'complete';
+          case 'abort':
+            this.phase = 'aborted';
+            this.abortReason = ABORT_REASONS.includes(msg.reason) ? msg.reason : 'integrity';
+            return 'abort';
+          default:
+            throw new ProtocolError('integrity', 'Unknown reply');
+        }
+      }
+
+      // Which wait has timed out at `now`: 'accept' | 'ack' | 'complete' | 'unconfirmed' | null.
+      // 'unconfirmed' is not a failure: done was acknowledged, only `complete` is missing.
+      timedOut(now) {
+        if (this.phase === 'offered' && now - this.since >= this.acceptTimeoutMs) return 'accept';
+        if (this.phase === 'sending' && this.inFlight >= this.window && now - this.since >= this.ackStallMs) return 'ack';
+        if (this.phase === 'awaiting-complete' && now - this.since >= this.completeTimeoutMs) {
+          return this.doneAcked ? 'unconfirmed' : 'complete';
+        }
+        return null;
+      }
+
+      // Ends a transfer whose done was acknowledged but whose `complete` never came
+      // (timeout, or the peer closed). Neutral outcome: nothing is sent to the peer.
+      endUnconfirmed() {
+        if (this.phase !== 'awaiting-complete' || !this.doneAcked) return false;
+        this.phase = 'unconfirmed';
+        return true;
+      }
+    }
+
+    // ---- Resilience helpers (pure) ----
+    const RECONNECT_BASE_MS = 1000;
+    const RECONNECT_MAX_MS = 30_000;
+    // Room relay budget reserve for meta/done/ack/complete frames, per file.
+    const RELAY_CTRL_RESERVE = 1024;
+    const OPFS_TEMP_PREFIX = 'darkp2p-';
+    const OPFS_STALE_MS = 24 * 3600 * 1000;
+
+    // Delay before signaling reconnect attempt `attempt` (0-based): 1 s doubling to a
+    // 30 s cap, with +-20 % jitter so many clients do not reconnect in lockstep.
+    // `rand` is in [0, 1).
+    function reconnectDelay(attempt, rand) {
+      const n = Number.isInteger(attempt) && attempt > 0 ? Math.min(attempt, 16) : 0;
+      const base = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** n);
+      const r = rand >= 0 && rand < 1 ? rand : 0.5;
+      return Math.round(base * (0.8 + 0.4 * r));
+    }
+
+    // The room's WebSocket relay budget as the server counts it: every binary frame
+    // relayed in either direction, from the `ready` snapshot onwards.
+    class RelayBudget {
+      constructor({ cap, remaining }) {
+        if (!Number.isSafeInteger(cap) || cap < 0) throw new RangeError('Invalid relay cap');
+        if (!Number.isSafeInteger(remaining) || remaining < 0 || remaining > cap) {
+          throw new RangeError('Invalid relay remaining');
+        }
+        this.cap = cap;
+        this.remaining = remaining;
+      }
+
+      charge(bytes) {
+        if (Number.isSafeInteger(bytes) && bytes > 0) this.remaining = Math.max(0, this.remaining - bytes);
+      }
+
+      // Relay bytes a file of `size` bytes uses: every chunk plus its frame overhead,
+      // the receiver's acks (one per 64 chunks) and the meta/done/complete frames.
+      static wireBytes(size, chunkSize) {
+        const chunks = Math.ceil(size / chunkSize);
+        const acks = Math.ceil(chunks / ACK_EVERY) + 1;
+        return size + chunks * FRAME_OVERHEAD + acks * (FRAME_OVERHEAD + 32) + RELAY_CTRL_RESERVE;
+      }
+
+      fits(size, chunkSize) {
+        return RelayBudget.wireBytes(size, chunkSize) <= this.remaining;
+      }
+    }
+
+    // OPFS temp files are named darkp2p-<createdAtMs>-<random>. A file older than
+    // OPFS_STALE_MS is a leftover of a closed or crashed tab (another tab's live
+    // transfer is younger).
+    function isStaleTempName(name, now) {
+      const m = /^darkp2p-(\d{1,15})-[a-z0-9]+$/.exec(name);
+      return Boolean(m) && now - Number(m[1]) > OPFS_STALE_MS;
+    }
+    // ==END darkp2p-framing==
+
+    const roomKeyReady = importRoomKey(keyBytes);
+    let roomKey = null;
+    roomKeyReady.then((k) => { roomKey = k; });
+
+    // Session binding: each side sends a fresh nonce in its hello whenever a transport
+    // opens. Once both nonces are known, CTRL/DATA keys are derived from both, so frames
+    // recorded in an earlier session never decrypt in a later one.
+    let myNonce = null;
+    let peerNonce = null;
+    let session = null; // { keys: transferId -> Promise<CryptoKey> }
+
+    function sameTransferId(a, b) {
+      if (!a || !b || a.length !== b.length) return false;
+      let diff = 0;
+      for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+      return diff === 0;
+    }
+
+    // Transfer IDs already started by the peer (hello or meta), so a relay cannot
+    // replay an earlier file. Capped; the oldest ID is forgotten first.
+    const seenTransferIds = new Set();
+    function rememberTransferId(transferId) {
+      seenTransferIds.add(transferIdHex(transferId));
+      while (seenTransferIds.size > SEEN_TRANSFER_IDS_MAX) {
+        seenTransferIds.delete(seenTransferIds.values().next().value);
+      }
+    }
+
+    let myRole = null;
+    let peerRole = null;
+    // 'idle' | 'pending' | 'ok' | 'mismatch' | 'outdated'
+    let handshake = 'idle';
+    let helloTimer = null;
+
+    // Transfers that already ended (either direction): their late frames are dropped
+    // quietly. Capped; the oldest ID is forgotten first.
+    const endedTransferIds = new Set();
+    function markTransferEnded(transferId) {
+      endedTransferIds.add(transferIdHex(transferId));
+      while (endedTransferIds.size > ENDED_TRANSFER_IDS_MAX) {
+        endedTransferIds.delete(endedTransferIds.values().next().value);
+      }
+    }
+
+    // Every outgoing frame goes through one queue so frames leave in seq order.
+    let outQueue = Promise.resolve();
+    function sendQueued(channel, build) {
+      const step = outQueue.then(async () => {
+        const frame = await build();
+        if (!isChannelOpen(channel)) throw new Error('Channel closed');
+        channel.send(frame.buffer);
+        if (channel instanceof WebSocket && relayBudget) relayBudget.charge(frame.byteLength);
+      });
+      outQueue = step.catch(() => {});
+      return step;
+    }
+
+    // `keys` is captured when the frame is queued, so a frame is never encrypted
+    // under a session that replaced the one it belongs to.
+    function sendCtrl(channel, transferId, seq, obj, keys = session && session.keys) {
+      return sendQueued(channel, async () => {
+        if (!keys) throw new Error('No session key');
+        return encodeFrame({
+          type: FRAME_TYPE_CTRL,
+          role: myRole,
+          transferId,
+          seq,
+          payload: encoder.encode(JSON.stringify(obj)),
+          key: await keys(transferId),
+        });
+      });
+    }
+
+    let tx = null; // active outgoing transfer
+    // Frames received but not yet processed; bounded by the credit window.
+    let rxPendingData = 0;
+    let rxPendingCtrl = 0;
+    let rxOverflowQueued = false;
 
     let pc = null;
     let dc = null;
@@ -816,7 +1533,8 @@
     let iceTimer = null;
     let remoteDescSet = false;
     let iceQueue = [];
-    let isTransferring = false;
+    // Room relay budget from the latest `ready`; charged for every binary frame on the relay.
+    let relayBudget = null;
     let rxQueue = Promise.resolve();
     let rx = null;
 
@@ -824,6 +1542,9 @@
       if (!rx) return;
       const prev = rx;
       rx = null;
+      markTransferEnded(prev.transferId);
+      if (prev.offerEl) prev.offerEl.remove();
+      rxPanel.hidden = true;
       if (prev.writable) {
         await prev.writable.abort().catch(() => {});
       }
@@ -847,7 +1568,18 @@
       }
       remoteDescSet = false;
       iceQueue = [];
-      isTransferring = false;
+      abortAllTransfersLocally();
+    }
+
+    // The transport is gone: end both directions without notifying the peer.
+    function abortAllTransfersLocally() {
+      if (tx && tx.window.endUnconfirmed()) {
+        log(`Sent — peer closed before final confirmation: ${tx.name}`);
+        wakeTx(tx);
+      } else if (tx) {
+        abortTx(tx, null, `Send interrupted: ${tx.name}`);
+      }
+      if (rx) log(`Receive interrupted: ${rx.machine.meta.name}`, 'err');
       resetRxState();
     }
 
@@ -857,7 +1589,129 @@
 
     function isChannelOpen(ch) {
       if (!ch) return false;
-      return ch === ws ? ch.readyState === WebSocket.OPEN : ch.readyState === 'open';
+      return ch instanceof WebSocket ? ch.readyState === WebSocket.OPEN : ch.readyState === 'open';
+    }
+
+    // File selection is offered once the session is confirmed and nothing is being sent
+    // (receiving does not block sending).
+    function enableDropIfReady() {
+      if (handshake === 'ok' && !tx && isChannelOpen(getActiveChannel())) {
+        setDropEnabled(true, readyDropLabel());
+      }
+    }
+
+    function resetHandshake() {
+      clearTimeout(helloTimer);
+      helloTimer = null;
+      handshake = 'idle';
+      myNonce = peerNonce = session = null;
+    }
+
+    function failHandshake(kind) {
+      clearTimeout(helloTimer);
+      helloTimer = null;
+      if (handshake === kind) return;
+      handshake = kind;
+      const msg = kind === 'mismatch' ? MSG_KEY_MISMATCH : MSG_PEER_OUTDATED;
+      abortAllTransfersLocally();
+      log(msg, 'err');
+      setDropEnabled(false, msg);
+    }
+
+    // Queued like every other frame, so our hello always leaves before our hello-ack.
+    function sendHello(channel, nonce) {
+      const transferId = crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN));
+      sendQueued(channel, async () => encodeFrame({
+        type: FRAME_TYPE_HELLO,
+        role: myRole,
+        transferId,
+        seq: 0,
+        payload: encoder.encode(JSON.stringify({ type: 'hello', v: 3, nonce: toBase64Url(nonce) })),
+        key: await deriveHelloKey(await roomKeyReady, transferId),
+      })).catch((err) => log(`Hello failed: ${err.message}`, 'err'));
+    }
+
+    // Derives the session once both nonces are known and confirms it to the peer.
+    function updateSession() {
+      if (!myNonce || !peerNonce || myRole === null) return;
+      if (!roomKey) {
+        roomKeyReady.then(updateSession, () => {});
+        return;
+      }
+      const nonces = myRole === ROLE_INITIATOR
+        ? { initNonce: myNonce, respNonce: peerNonce }
+        : { initNonce: peerNonce, respNonce: myNonce };
+      session = { keys: createTransferKeyCache(roomKey, nonces, TRANSFER_KEY_CACHE_MAX) };
+      const ch = getActiveChannel();
+      if (isChannelOpen(ch)) {
+        const transferId = crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN));
+        sendCtrl(ch, transferId, 0, { type: 'hello-ack', v: 3 }).catch(() => {});
+      }
+    }
+
+    // A session change ends any transfer of the old session.
+    function endTransfersForNewSession() {
+      if (tx || rx) {
+        log('Session renewed — transfers in progress were stopped.', 'err');
+        abortAllTransfersLocally();
+      }
+    }
+
+    function armHelloTimer() {
+      clearTimeout(helloTimer);
+      helloTimer = setTimeout(() => {
+        helloTimer = null;
+        if (handshake !== 'pending' || !isChannelOpen(getActiveChannel())) return;
+        if (!peerNonce) failHandshake('outdated');
+        else log(MSG_SESSION_UNCONFIRMED, 'err');
+      }, HELLO_TIMEOUT_MS);
+    }
+
+    function enterPending() {
+      handshake = 'pending';
+      setDropEnabled(false, 'VERIFYING PEER KEY...');
+      armHelloTimer();
+    }
+
+    // Called whenever a transport opens (DataChannel or WS relay): new nonce, new session.
+    function startHandshake(channel) {
+      myNonce = crypto.getRandomValues(new Uint8Array(SESSION_NONCE_LEN));
+      session = null;
+      sendHello(channel, myNonce);
+      if (handshake === 'mismatch' || handshake === 'outdated') return;
+      endTransfersForNewSession();
+      enterPending();
+      updateSession();
+    }
+
+    function acceptHello(ctrl) {
+      if (ctrl.v !== 3) {
+        failHandshake('outdated');
+        return;
+      }
+      let nonce = null;
+      try {
+        nonce = typeof ctrl.nonce === 'string' ? fromBase64Url(ctrl.nonce) : null;
+      } catch {}
+      if (!nonce || nonce.length !== SESSION_NONCE_LEN) {
+        throw new ProtocolError('integrity', 'Invalid hello nonce');
+      }
+      if (peerNonce && sameTransferId(nonce, peerNonce)) return;
+      endTransfersForNewSession();
+      peerNonce = nonce;
+      session = null;
+      if (handshake === 'ok' || handshake === 'pending') enterPending();
+      updateSession();
+    }
+
+    // The peer derived the same session key (its hello-ack decrypted under it).
+    function acceptHelloAck() {
+      if (handshake !== 'pending') return;
+      clearTimeout(helloTimer);
+      helloTimer = null;
+      handshake = 'ok';
+      log('Peer key verified, session key confirmed (wire format v3).', 'ok');
+      enableDropIfReady();
     }
 
     function activateWsFallback(notifyPeer = false) {
@@ -877,6 +1731,8 @@
         ? 'E2E-encrypted WebSocket relay active (IP was already shared during the WebRTC attempt).'
         : 'E2E-encrypted WebSocket relay active (IP masked from peer).', 'ok');
       setDropEnabled(true, readyDropLabel());
+      log('E2E-encrypted WebSocket relay active (IP masked from peer).', 'ok');
+      startHandshake(ws);
       updateStatusBadges('active');
     }
 
@@ -901,7 +1757,7 @@
     async function waitForBufferDrain(channel) {
       if (channel.bufferedAmount <= HIGH_WATER) return;
 
-      if (channel === ws) {
+      if (channel instanceof WebSocket) {
         while (channel.bufferedAmount > HIGH_WATER) {
           if (channel.readyState !== WebSocket.OPEN) {
             throw new Error('WebSocket closed during transfer');
@@ -926,131 +1782,443 @@
       });
     }
 
-    async function startRxFile(meta) {
-      await resetRxState();
-      const safeName = String(meta.name || 'download.bin').replace(/[\\/]/g, '_');
+    function parseCtrl(payload) {
+      let ctrl;
+      try {
+        ctrl = JSON.parse(decoder.decode(payload));
+      } catch {
+        throw new ProtocolError('integrity', 'Malformed control frame');
+      }
+      if (!ctrl || typeof ctrl !== 'object') throw new ProtocolError('integrity', 'Malformed control frame');
+      return ctrl;
+    }
+
+    function mb(bytes) {
+      return (bytes / 1048576).toFixed(2);
+    }
+
+    // Sends a reply (receiver -> sender) for an incoming transfer.
+    function rxReply(state, obj) {
+      sendCtrl(getActiveChannel(), state.transferId, state.machine.nextReplySeq(), obj, state.keys)
+        .catch((err) => log(`Reply failed: ${err.message}`, 'err'));
+    }
+
+    // Ends an incoming transfer locally and releases its storage and UI.
+    // Receiving never blocks sending, so the drop zone is left alone.
+    function endRx(state) {
+      if (rx !== state) return;
+      resetRxState();
+      enableDropIfReady();
+    }
+
+    // Local abort of the incoming transfer; tells the sender why.
+    function abortRx(reason, message) {
+      const state = rx;
+      if (!state) return;
+      if (state.machine.abort()) rxReply(state, { type: 'abort', reason });
+      log(message, 'err');
+      endRx(state);
+    }
+
+    const canUseSavePicker = () => typeof window.showSaveFilePicker === 'function';
+
+    // Streams to a temp file in the Origin Private File System, if the browser can.
+    async function prepareOpfs(state) {
+      if (!navigator.storage?.getDirectory) return;
+      try {
+        const root = await navigator.storage.getDirectory();
+        const tmpName = `${OPFS_TEMP_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const handle = await root.getFileHandle(tmpName, { create: true });
+        if (typeof handle.createWritable !== 'function') {
+          await root.removeEntry(tmpName).catch(() => {});
+          return;
+        }
+        state.writable = await handle.createWritable();
+        state.opfsRoot = root;
+        state.opfsName = tmpName;
+        state.opfsHandle = handle;
+        state.saveMode = 'opfs';
+      } catch {}
+    }
+
+    // Releases storage a torn-down transfer prepared after it was torn down.
+    async function discardStorage(state) {
+      if (state.writable) await state.writable.abort().catch(() => {});
+      state.writable = null;
+      if (state.opfsRoot && state.opfsName) await state.opfsRoot.removeEntry(state.opfsName).catch(() => {});
+      state.opfsRoot = state.opfsName = null;
+    }
+
+    async function onIncomingMeta(transferId, ctrl) {
+      const channel = getActiveChannel();
+      let meta;
+      try {
+        meta = RxStateMachine.parseMeta(ctrl);
+      } catch (err) {
+        markTransferEnded(transferId);
+        sendCtrl(channel, transferId, 1, { type: 'abort', reason: 'integrity' }).catch(() => {});
+        throw err;
+      }
+
+      // One incoming transfer at a time; an outgoing one does not count.
+      if (rx) {
+        markTransferEnded(transferId);
+        sendCtrl(channel, transferId, 1, { type: 'decline', reason: 'busy' }).catch(() => {});
+        log(`Declined ${meta.name}: already receiving a file.`, 'err');
+        return;
+      }
+
       const state = {
-        meta: { name: safeName, size: Number(meta.size) || 0, mime: meta.mime || 'application/octet-stream' },
-        expectedSeq: 1,
-        bytes: 0,
-        chunks: 0,
+        transferId,
+        keys: session.keys,
+        machine: new RxStateMachine(meta),
         buffers: [],
+        saveMode: 'ram', // 'picker' | 'opfs' | 'ram'
+        savedName: meta.name,
         opfsRoot: null,
         opfsName: null,
         opfsHandle: null,
         writable: null,
+        offerEl: null,
+        accepting: false,
       };
-
-      if (navigator.storage?.getDirectory) {
-        try {
-          const root = await navigator.storage.getDirectory();
-          const tmpName = `darkp2p-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-          const handle = await root.getFileHandle(tmpName, { create: true });
-          if (typeof handle.createWritable === 'function') {
-            state.writable = await handle.createWritable();
-            state.opfsRoot = root;
-            state.opfsName = tmpName;
-            state.opfsHandle = handle;
-          }
-        } catch {}
-      }
-
       rx = state;
-      isTransferring = true;
-      setDropEnabled(false, `RECEIVING: ${safeName}`);
-      progressEl.value = 0;
-      const mode = state.writable ? 'disk-stream' : 'ram-buffer';
-      log(`Receiving: ${safeName} (${(state.meta.size / 1048576).toFixed(2)} MB, ${mode})`);
-    }
 
-    async function finishRxFile(ctrl) {
-      if (!rx) return;
-      const state = rx;
-      rx = null;
-
-      try {
-        if (state.bytes !== state.meta.size || state.chunks !== ctrl.chunks) {
-          throw new Error(`Integrity mismatch (got ${state.bytes}/${state.meta.size} bytes)`);
-        }
-
-        let blob;
-        if (state.writable) {
-          await state.writable.close();
-          blob = await state.opfsHandle.getFile();
-        } else {
-          blob = new Blob(state.buffers, { type: state.meta.mime });
-        }
-
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = state.meta.name;
-        a.click();
-
-        setTimeout(() => {
-          URL.revokeObjectURL(url);
-          if (state.opfsRoot && state.opfsName) {
-            state.opfsRoot.removeEntry(state.opfsName).catch(() => {});
-          }
-        }, 60_000);
-
-        progressEl.value = 100;
-        log(`Verified & saved: ${state.meta.name}`, 'ok');
-      } catch (err) {
-        if (state.writable) await state.writable.abort().catch(() => {});
-        if (state.opfsRoot && state.opfsName) {
-          await state.opfsRoot.removeEntry(state.opfsName).catch(() => {});
-        }
-        log(`Receive failed: ${err.message}`, 'err');
-      } finally {
-        isTransferring = false;
-        if (isChannelOpen(getActiveChannel())) {
-          setDropEnabled(true, readyDropLabel());
-        }
-      }
-    }
-
-    async function handleIncomingFrame(buffer) {
-      const { frameType, seq, data } = await decryptFrame(buffer);
-
-      if (frameType === FRAME_CTRL) {
-        const ctrl = JSON.parse(decoder.decode(data));
-        if (ctrl.type === 'meta') {
-          await startRxFile(ctrl);
-        } else if (ctrl.type === 'done') {
-          await finishRxFile(ctrl);
-        }
+      // With a save picker the target is chosen on Accept; otherwise prepare OPFS now
+      // so the offer can say whether the file streams to disk.
+      if (!canUseSavePicker()) await prepareOpfs(state);
+      if (rx !== state) {
+        await discardStorage(state);
         return;
       }
 
-      if (frameType === FRAME_DATA && rx) {
-        if (seq !== rx.expectedSeq) {
-          throw new Error(`Out-of-order chunk (expected ${rx.expectedSeq}, got ${seq})`);
-        }
-        rx.expectedSeq++;
-        rx.chunks++;
-        rx.bytes += data.byteLength;
-
-        if (rx.writable) {
-          await rx.writable.write(data);
-        } else {
-          rx.buffers.push(data);
-        }
-
-        progressEl.value = rx.meta.size > 0 ? (rx.bytes / rx.meta.size) * 100 : 100;
+      const diskStreaming = canUseSavePicker() || Boolean(state.writable);
+      const autoReason = RxStateMachine.autoDeclineReason(meta, { diskStreaming });
+      if (autoReason) {
+        declineForSize(state);
+        return;
       }
+      showOffer(state);
+    }
+
+    function declineForSize(state) {
+      const { meta } = state.machine;
+      state.machine.decline();
+      rxReply(state, { type: 'decline', reason: 'size' });
+      log(`Declined ${meta.name} (${mb(meta.size)} MB): this browser cannot stream to disk, ` +
+        `and in-memory receives are limited to ${RAM_MODE_MAX_BYTES / 1048576} MB.`, 'err');
+      endRx(state);
+    }
+
+    function showOffer(state) {
+      const { meta } = state.machine;
+      const mode = canUseSavePicker() ? 'save to a file you choose' : state.writable ? 'disk-stream' : 'ram-buffer';
+      const box = document.createElement('div');
+      box.className = 'box offer';
+      const text = document.createElement('div');
+      text.className = 'offer-text';
+      text.textContent = `INCOMING FILE: ${meta.name} (${mb(meta.size)} MB, ${mode})`;
+      const row = document.createElement('div');
+      row.className = 'row';
+      const acceptBtn = document.createElement('button');
+      acceptBtn.type = 'button';
+      acceptBtn.textContent = 'Accept';
+      acceptBtn.onclick = () => acceptRx(state);
+      const declineBtn = document.createElement('button');
+      declineBtn.type = 'button';
+      declineBtn.textContent = 'Decline';
+      declineBtn.onclick = () => declineRx(state);
+      row.append(acceptBtn, declineBtn);
+      box.append(text, row);
+      dropzone.after(box);
+      state.offerEl = box;
+      log(`Incoming offer: ${meta.name} (${mb(meta.size)} MB). Accept or decline below.`);
+    }
+
+    // Chooses where the file goes: the save picker (opened by this click), else OPFS,
+    // else RAM (declined above the RAM cap).
+    async function acceptRx(state) {
+      if (rx !== state || state.machine.phase !== 'offered' || state.accepting) return;
+      state.accepting = true;
+      if (state.offerEl) for (const b of state.offerEl.querySelectorAll('button')) b.disabled = true;
+      const { meta } = state.machine;
+
+      if (canUseSavePicker() && !state.writable) {
+        try {
+          const handle = await window.showSaveFilePicker({ suggestedName: meta.name });
+          state.writable = await handle.createWritable();
+          state.saveMode = 'picker';
+          state.savedName = typeof handle.name === 'string' && handle.name ? handle.name : meta.name;
+        } catch (err) {
+          state.writable = null;
+          log(err && err.name === 'AbortError'
+            ? 'Save dialog cancelled — using browser storage instead.'
+            : 'Save dialog unavailable — using browser storage instead.');
+        }
+        if (rx === state && !state.writable) await prepareOpfs(state);
+        if (rx !== state) {
+          await discardStorage(state);
+          return;
+        }
+      }
+
+      if (!state.writable && meta.size > RAM_MODE_MAX_BYTES) {
+        declineForSize(state);
+        return;
+      }
+
+      state.machine.accept();
+      if (state.offerEl) state.offerEl.remove();
+      state.offerEl = null;
+      rxReply(state, { type: 'accept' });
+      rxLabel.textContent = `RECEIVING: ${meta.name}`;
+      rxProgressEl.value = 0;
+      rxPanel.hidden = false;
+      log(`Receiving: ${meta.name} (${mb(meta.size)} MB, ${state.saveMode === 'ram' ? 'ram-buffer' : state.saveMode === 'picker' ? 'to chosen file' : 'disk-stream'})`);
+    }
+
+    function declineRx(state) {
+      if (rx !== state || state.machine.phase !== 'offered' || state.accepting) return;
+      state.machine.decline();
+      rxReply(state, { type: 'decline', reason: 'user' });
+      log(`Declined: ${state.machine.meta.name}`);
+      endRx(state);
+    }
+
+    async function onIncomingData(state, seq, data) {
+      const { ack } = state.machine.onData(seq, data.byteLength);
+      if (state.writable) {
+        try {
+          await state.writable.write(data);
+        } catch {
+          throw new ProtocolError('disk', 'Writing to disk failed');
+        }
+      } else {
+        state.buffers.push(data);
+      }
+      if (rx !== state) return;
+      if (ack !== null) rxReply(state, { type: 'ack', seq: ack });
+      const { meta } = state.machine;
+      rxProgressEl.value = meta.size > 0 ? (state.machine.bytes / meta.size) * 100 : 100;
+    }
+
+    async function onIncomingDone(state, seq, ctrl) {
+      const { ack } = state.machine.onDone(seq, ctrl);
+      rxReply(state, { type: 'ack', seq: ack, done: true });
+      const { meta } = state.machine;
+
+      let blob = null;
+      try {
+        if (state.saveMode === 'picker') {
+          // Committed to the chosen file only now, after verification.
+          await state.writable.close();
+          state.writable = null;
+        } else if (state.writable) {
+          await state.writable.close();
+          state.writable = null;
+          blob = await state.opfsHandle.getFile();
+        } else {
+          blob = new Blob(state.buffers, { type: meta.mime });
+        }
+      } catch {
+        throw new ProtocolError('disk', 'Saving the received file failed');
+      }
+      if (rx !== state) return;
+
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = meta.name;
+        a.click();
+
+        // The download keeps its own copy; the OPFS temp file is removed after a minute.
+        const { opfsRoot, opfsName } = state;
+        state.opfsRoot = state.opfsName = null;
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+          if (opfsRoot && opfsName) opfsRoot.removeEntry(opfsName).catch(() => {});
+        }, 60_000);
+      }
+
+      state.machine.complete();
+      rxReply(state, { type: 'complete' });
+      rxProgressEl.value = 100;
+      log(state.saveMode === 'picker'
+        ? `Verified & saved: ${meta.name} (to ${state.savedName})`
+        : `Verified & saved: ${meta.name}`, 'ok');
+      endRx(state);
+    }
+
+    function onIncomingAbort(state, seq, ctrl) {
+      state.machine.onAbort(seq);
+      const reason = ABORT_REASONS.includes(ctrl.reason) ? ctrl.reason : 'unknown';
+      log(`Sender aborted ${state.machine.meta.name} (${reason}).`, 'err');
+      endRx(state);
+    }
+
+    // ---- Sender side: replies from the receiver ----
+    function wakeTx(state) {
+      const w = state.wake;
+      state.wake = null;
+      if (w) w();
+    }
+
+    async function waitTx(state, cond) {
+      while (!cond()) await new Promise((resolve) => { state.wake = resolve; });
+    }
+
+    // Local abort of the outgoing transfer. reason null = transport gone, peer not told.
+    function abortTx(state, reason, message) {
+      const seq = state.window.abortSeq(reason || 'user');
+      if (seq === null) return;
+      if (reason) {
+        sendCtrl(state.channel, state.transferId, seq, { type: 'abort', reason }, state.keys).catch(() => {});
+      }
+      log(message, 'err');
+      wakeTx(state);
+    }
+
+    function onTxReply(state, seq, ctrl) {
+      let kind;
+      try {
+        kind = state.window.onReply(seq, ctrl, Date.now());
+      } catch (err) {
+        abortTx(state, err.reason || 'integrity', `Send aborted: ${err.message}`);
+        return;
+      }
+      if (kind === 'abort') log(`Receiver aborted ${state.name} (${state.window.abortReason}).`, 'err');
+      wakeTx(state);
+    }
+
+    // Refuses frames before decryption: DATA and replies only for an active
+    // transfer, and a new transfer (seq 0) only with an unseen transferId.
+    function lookupRxKey(transferId, { type, seq }) {
+      if (type === FRAME_TYPE_HELLO) {
+        if (seq !== 0) throw new FrameError('rejected', 'Malformed hello');
+        if (seenTransferIds.has(transferIdHex(transferId))) throw new FrameError('rejected', 'Replayed hello');
+        return roomKeyReady.then((k) => deriveHelloKey(k, transferId));
+      }
+      // Session frames before both nonces are known (e.g. a hello-ack of a superseded session).
+      if (!session) throw new FrameError('stale', 'No session yet');
+      const rxActive = rx && sameTransferId(transferId, rx.transferId);
+      const txActive = tx && sameTransferId(transferId, tx.transferId);
+      if (!rxActive && !txActive && endedTransferIds.has(transferIdHex(transferId))) {
+        throw new FrameError('dropped', 'Frame of an ended transfer');
+      }
+      if (type === FRAME_TYPE_DATA || seq !== 0) {
+        const allowed = rxActive || (txActive && type === FRAME_TYPE_CTRL);
+        if (!allowed || handshake !== 'ok') throw new FrameError('rejected', 'Frame from an unknown transfer');
+      } else if (seenTransferIds.has(transferIdHex(transferId))) {
+        throw new FrameError('rejected', 'Replayed transfer');
+      }
+      return session.keys(transferId);
+    }
+
+    async function handleIncomingFrame(buffer) {
+      if (peerRole === null || handshake === 'mismatch' || handshake === 'outdated') return;
+
+      let frame;
+      try {
+        frame = await decodeFrame(buffer, peerRole, lookupRxKey);
+      } catch (err) {
+        if (err.code === 'legacy') {
+          failHandshake('outdated');
+          return;
+        }
+        if (err.code === 'stale') return;
+        if (err.code === 'auth' && handshake !== 'ok') {
+          // A hello that fails is a wrong room key. A session frame that fails before the
+          // session is confirmed is a hello-ack from a superseded session: ignore it.
+          if (new Uint8Array(buffer, 0, 1)[0] === FRAME_TYPE_HELLO) failHandshake('mismatch');
+          return;
+        }
+        throw err;
+      }
+
+      if (frame.type === FRAME_TYPE_HELLO) {
+        rememberTransferId(frame.transferId);
+        const ctrl = parseCtrl(frame.payload);
+        if (ctrl.type !== 'hello') throw new ProtocolError('integrity', 'Unexpected hello frame');
+        acceptHello(ctrl);
+        return;
+      }
+
+      // Replies to our own outgoing transfer.
+      if (tx && sameTransferId(frame.transferId, tx.transferId)) {
+        const state = tx;
+        let ctrl;
+        try {
+          ctrl = parseCtrl(frame.payload);
+        } catch (err) {
+          abortTx(state, 'integrity', `Send aborted: ${err.message}`);
+          return;
+        }
+        onTxReply(state, frame.seq, ctrl);
+        return;
+      }
+
+      if (frame.type === FRAME_TYPE_CTRL) {
+        const ctrl = parseCtrl(frame.payload);
+        if (frame.seq === 0) {
+          rememberTransferId(frame.transferId);
+          if (ctrl.type === 'hello-ack') {
+            acceptHelloAck();
+            return;
+          }
+          if (handshake !== 'ok') throw new ProtocolError('integrity', 'Control frame before the session is confirmed');
+          if (ctrl.type === 'meta') {
+            await onIncomingMeta(frame.transferId, ctrl);
+            return;
+          }
+          throw new ProtocolError('integrity', 'Unexpected control frame');
+        }
+
+        const state = rx;
+        if (!state || !sameTransferId(frame.transferId, state.transferId)) {
+          throw new ProtocolError('integrity', 'Control frame from an unknown transfer');
+        }
+        if (ctrl.type === 'done') return onIncomingDone(state, frame.seq, ctrl);
+        if (ctrl.type === 'abort') return onIncomingAbort(state, frame.seq, ctrl);
+        throw new ProtocolError('integrity', 'Unexpected control frame');
+      }
+
+      // DATA
+      const state = rx;
+      if (!state || !sameTransferId(frame.transferId, state.transferId)) {
+        throw new ProtocolError('integrity', 'Chunk from an unknown transfer');
+      }
+      await onIncomingData(state, frame.seq, frame.payload);
     }
 
     function enqueueIncomingBinary(buffer) {
+      const isData = buffer.byteLength > 0 && new Uint8Array(buffer, 0, 1)[0] === FRAME_TYPE_DATA;
+      if (isData ? rxPendingData >= RX_MAX_PENDING_CHUNKS : rxPendingCtrl >= RX_MAX_PENDING_CTRL) {
+        // The sender ignored the credit window: drop the frame and abort once.
+        if (!rxOverflowQueued) {
+          rxOverflowQueued = true;
+          rxQueue = rxQueue.then(() => {
+            rxOverflowQueued = false;
+            abortRx('integrity', 'Receive aborted: the peer exceeded the credit window.');
+          });
+        }
+        return;
+      }
+      if (isData) rxPendingData += 1;
+      else rxPendingCtrl += 1;
+
       rxQueue = rxQueue
         .then(() => handleIncomingFrame(buffer))
         .catch((err) => {
-          log(`Decrypt/receive error: ${err.message}`, 'err');
-          isTransferring = false;
-          resetRxState();
-          if (isChannelOpen(getActiveChannel())) {
-            setDropEnabled(true, readyDropLabel());
-          }
+          if (err.code === 'dropped') return;
+          const reason = err instanceof ProtocolError ? err.reason : 'integrity';
+          // A refused frame from another transfer does not end the active one.
+          if (rx && err.code !== 'rejected') abortRx(reason, `Receive aborted: ${err.message}`);
+          else log(`Decrypt/receive error: ${err.message}`, 'err');
+        })
+        .finally(() => {
+          if (isData) rxPendingData -= 1;
+          else rxPendingCtrl -= 1;
         });
     }
 
@@ -1062,15 +2230,19 @@
         clearTimeout(iceTimer);
         iceTimer = null;
         log('E2E encrypted P2P tunnel established.', 'ok');
-        setDropEnabled(true, readyDropLabel());
+        startHandshake(channel);
         updateStatusBadges('active');
         watchSelectedPair();
       };
 
       channel.onclose = () => {
         log('P2P tunnel closed.', 'err');
-        isTransferring = false;
-        resetRxState();
+        if (peerAway) {
+          // The peer had already left the room: it is gone, wait for a new pairing.
+          enterStandby();
+          return;
+        }
+        abortAllTransfersLocally();
         setDropEnabled(false, 'TUNNEL CLOSED');
         updateStatusBadges('closed');
       };
@@ -1169,145 +2341,300 @@
 
     async function sendFile(file) {
       const ch = getActiveChannel();
-      if (!isChannelOpen(ch) || isTransferring) return;
+      if (!isChannelOpen(ch) || tx || handshake !== 'ok' || !session) return;
+      const chunkCount = Math.ceil(file.size / CHUNK_SIZE);
 
-      if (transportMode === 'ws') {
-        const chunkCount = Math.ceil(file.size / CHUNK_SIZE);
-        const estimatedWireBytes = file.size + chunkCount * 33 + 512;
-        const cap = relayEnabled ? WS_RELAY_LIMIT_PRO : WS_RELAY_LIMIT_FREE;
-
-        if (estimatedWireBytes > cap) {
-          const capMb = Math.floor(cap / (1024 * 1024));
-          const fileMb = (file.size / (1024 * 1024)).toFixed(1);
-          log(
-            `Blocked: ${file.name} (${fileMb} MB) exceeds the ${capMb} MB WebSocket relay cap.` +
-            (relayEnabled ? '' : ' Uncheck "Force WebSocket relay" for unlimited direct P2P, or activate a Pro token for 500 MB.'),
-            'err'
-          );
-          if (!relayEnabled) proModal.classList.add('open');
-          return;
-        }
+      // The relay cap is per room and counts both directions, so check what is left.
+      if (transportMode === 'ws' && relayBudget && !relayBudget.fits(file.size, CHUNK_SIZE)) {
+        const capMb = Math.floor(relayBudget.cap / 1048576);
+        const leftMb = (relayBudget.remaining / 1048576).toFixed(1);
+        const fileMb = (file.size / 1048576).toFixed(1);
+        log(
+          `Blocked: ${file.name} (${fileMb} MB) does not fit the WebSocket relay: ${leftMb} MB of ` +
+          `this room's ${capMb} MB left.` +
+          (relayEnabled ? '' : ' Uncheck "Force WebSocket relay" for unlimited direct P2P, or activate a Pro token for a higher cap.'),
+          'err'
+        );
+        if (!relayEnabled) proModal.classList.add('open');
+        return;
       }
 
-      isTransferring = true;
-      setDropEnabled(false, `SENDING: ${file.name}`);
+      setDropEnabled(false, `OFFERING: ${file.name}`);
       progressEl.value = 0;
 
+      const state = {
+        transferId: crypto.getRandomValues(new Uint8Array(TRANSFER_ID_LEN)),
+        name: file.name,
+        channel: ch,
+        keys: session.keys,
+        window: new TxWindow({ chunks: chunkCount, now: Date.now() }),
+        wake: null,
+      };
+      tx = state;
+      cancelBtn.hidden = false;
+      const { window: win } = state;
+      const TIMEOUT_TEXT = {
+        accept: 'no answer from the peer within 5 minutes',
+        ack: 'the receiver stopped acknowledging chunks',
+        complete: 'the receiver did not acknowledge the end of the file within 5 minutes',
+      };
+      const watchdog = setInterval(() => {
+        const what = win.timedOut(Date.now());
+        if (what === 'unconfirmed') {
+          win.endUnconfirmed();
+          log(`Sent — no final confirmation from the peer: ${file.name}`);
+          wakeTx(state);
+        } else if (what) {
+          abortTx(state, 'timeout', `Send aborted: ${TIMEOUT_TEXT[what]}.`);
+        }
+      }, TX_WATCHDOG_MS);
+
       try {
-        log(`Sending: ${file.name} (${(file.size / 1048576).toFixed(2)} MB)`);
-        const metaBytes = encoder.encode(
-          JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime: file.type })
-        );
-        ch.send(await encryptFrame(FRAME_CTRL, metaBytes, 0));
+        const key = await state.keys(state.transferId);
+        await sendCtrl(ch, state.transferId, 0, {
+          type: 'meta', name: file.name, size: file.size, mime: file.type, chunks: chunkCount,
+        }, state.keys);
+        log(`Offered: ${file.name} (${mb(file.size)} MB) — waiting for the peer to accept...`);
+        await waitTx(state, () => win.phase !== 'offered');
+        if (win.phase === 'declined') {
+          const why = { user: 'declined by the peer', size: 'too large for the peer\'s browser', busy: 'the peer is busy' };
+          log(`Not sent: ${file.name} (${why[win.declineReason]}).`, 'err');
+          return;
+        }
+        if (win.phase !== 'sending') return;
 
-        let offset = 0;
-        let seq = 1;
-        let chunks = 0;
-
-        while (offset < file.size) {
+        setDropEnabled(false, `SENDING: ${file.name}`);
+        log(`Sending: ${file.name} (${mb(file.size)} MB)`);
+        for (let i = 0; i < chunkCount; i++) {
+          await waitTx(state, () => win.phase !== 'sending' || win.canSendData());
+          if (win.phase !== 'sending') return;
           if (!isChannelOpen(ch)) throw new Error('Peer disconnected');
           await waitForBufferDrain(ch);
 
-          const slice = file.slice(offset, offset + CHUNK_SIZE);
-          const buf = await slice.arrayBuffer();
-          const frame = await encryptFrame(FRAME_DATA, new Uint8Array(buf), seq++);
+          const start = i * CHUNK_SIZE;
+          const expected = Math.min(CHUNK_SIZE, file.size - start);
+          let buf;
+          try {
+            buf = new Uint8Array(await file.slice(start, start + expected).arrayBuffer());
+          } catch {
+            abortTx(state, 'disk', `Send aborted: reading ${file.name} failed.`);
+            return;
+          }
+          if (buf.byteLength !== expected) {
+            abortTx(state, 'disk', `Send aborted: ${file.name} changed while it was being sent.`);
+            return;
+          }
+          if (win.phase !== 'sending') return;
 
-          if (!isChannelOpen(ch)) throw new Error('Peer disconnected');
-          ch.send(frame);
-
-          offset += buf.byteLength;
-          chunks++;
-          progressEl.value = (offset / file.size) * 100;
+          const seq = win.nextDataSeq(Date.now());
+          await sendQueued(ch, () => encodeFrame({
+            type: FRAME_TYPE_DATA, role: myRole, transferId: state.transferId, seq, payload: buf, key,
+          }));
+          progressEl.value = file.size > 0 ? ((start + expected) / file.size) * 100 : 100;
         }
 
+        if (win.phase !== 'sending') return;
         await waitForBufferDrain(ch);
-        const doneBytes = encoder.encode(JSON.stringify({ type: 'done', chunks, size: file.size }));
-        ch.send(await encryptFrame(FRAME_CTRL, doneBytes, seq));
+        const doneSeq = win.doneSeq(Date.now());
+        await sendCtrl(ch, state.transferId, doneSeq, { type: 'done', chunks: chunkCount, size: file.size }, state.keys);
+        setDropEnabled(false, 'AWAITING CONFIRMATION...');
+        log(`Sent, awaiting confirmation: ${file.name}`);
 
-        progressEl.value = 100;
-        log(`Sent: ${file.name}`, 'ok');
-      } catch (err) {
-        log(`Send aborted: ${err.message}`, 'err');
-      } finally {
-        isTransferring = false;
-        if (isChannelOpen(getActiveChannel())) {
-          setDropEnabled(true, readyDropLabel());
+        await waitTx(state, () => win.phase !== 'awaiting-complete');
+        if (win.phase === 'delivered') {
+          progressEl.value = 100;
+          log(`Delivered: ${file.name}`, 'ok');
         }
+      } catch (err) {
+        if (isChannelOpen(ch)) abortTx(state, 'integrity', `Send aborted: ${err.message}`);
+        else abortTx(state, null, `Send interrupted: ${file.name}`);
+      } finally {
+        clearInterval(watchdog);
+        markTransferEnded(state.transferId);
+        if (tx === state) tx = null;
+        cancelBtn.hidden = true;
+        enableDropIfReady();
       }
     }
 
+    // ---- Signaling: reconnecting WebSocket, messages handled strictly in order ----
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${location.host}`);
-    ws.binaryType = 'arraybuffer';
+    let ws = null;
+    let wsAttempt = 0;
+    let wsReconnectTimer = null;
+    let signalingLost = false; // set when an established signaling connection drops
+    let fullRetryUntil = 0;
+    // One queue for every inbound WebSocket message, so an async handler (ready ->
+    // initPeer, offer -> createAnswer) finishes before the next message is looked at.
+    let sigQueue = Promise.resolve();
 
-    ws.onopen = async () => {
-      await claimReady;
-      log(`Connected to signaling broker. Room: ${roomId.slice(0, 8)}...`);
-      ws.send(JSON.stringify({
-        type: 'join',
-        room: roomId,
-        token: localStorage.getItem('darkp2p_token') || '',
-      }));
-    };
+    // The peer left the room while its DataChannel stayed up.
+    let peerAway = false;
 
-    ws.onclose = () => {
-      log('Signaling connection closed.', 'err');
+    // Back to "waiting for a peer": no transport, no session, no roles.
+    function enterStandby() {
+      peerAway = false;
+      transportMode = 'webrtc';
+      relayEnabled = false;
+      cleanupPeer();
+      resetHandshake();
+      myRole = peerRole = null;
+      setDropEnabled(false, 'PEER DISCONNECTED — WAITING...');
+      updateStatusBadges('standby');
+    }
+
+    // A verified DataChannel does not need signaling any more.
+    function isDirectTunnelUp() {
+      return transportMode === 'webrtc' && Boolean(dc) && dc.readyState === 'open' && handshake === 'ok';
+    }
+
+    function scheduleReconnect() {
+      clearTimeout(wsReconnectTimer);
+      const delay = reconnectDelay(wsAttempt, Math.random());
+      wsAttempt += 1;
+      wsReconnectTimer = setTimeout(connectSignaling, delay);
+    }
+
+    function onSignalingClosed() {
+      if (!signalingLost) {
+        signalingLost = true;
+        fullRetryUntil = Date.now() + FULL_RETRY_MS;
+        log(isDirectTunnelUp()
+          ? 'Signaling connection lost — direct tunnel still up, reconnecting...'
+          : 'Signaling connection lost — reconnecting...', 'err');
+      }
       if (transportMode === 'ws') {
-        isTransferring = false;
-        resetRxState();
-        setDropEnabled(false, 'RELAY CLOSED');
+        // The relay was the transport: its transfers and session are gone.
+        abortAllTransfersLocally();
+        resetHandshake();
+        setDropEnabled(false, 'RELAY CLOSED — RECONNECTING...');
         updateStatusBadges('closed');
       }
-    };
+      scheduleReconnect();
+    }
 
-    ws.onmessage = async ({ data }) => {
-      if (data instanceof ArrayBuffer) {
-        enqueueIncomingBinary(data);
-        return;
-      }
+    function connectSignaling() {
+      wsReconnectTimer = null;
+      const sock = new WebSocket(`${proto}//${location.host}`);
+      sock.binaryType = 'arraybuffer';
+      ws = sock;
 
-      let msg;
+      sock.onopen = async () => {
+        // Wait for at most the first claim attempt, never the whole poll.
+        await Promise.race([claimReady, new Promise((r) => setTimeout(r, CLAIM_JOIN_WAIT_MS))]);
+        if (ws !== sock || sock.readyState !== WebSocket.OPEN) return;
+        wsAttempt = 0;
+        log(signalingLost
+          ? 'Signaling reconnected — rejoining the room...'
+          : `Connected to signaling broker. Room: ${roomId.slice(0, 8)}...`);
+        joinSent = true;
+        sock.send(JSON.stringify({
+          type: 'join',
+          room: roomId,
+          token: localStorage.getItem('darkp2p_token') || '',
+        }));
+      };
+
+      sock.onclose = () => {
+        if (ws === sock) onSignalingClosed();
+      };
+
+      sock.onmessage = ({ data }) => {
+        if (ws !== sock) return;
+        if (data instanceof ArrayBuffer) {
+          if (transportMode === 'ws' && relayBudget) relayBudget.charge(data.byteLength);
+          sigQueue = sigQueue.then(() => enqueueIncomingBinary(data));
+          return;
+        }
+        let msg;
+        try {
+          msg = JSON.parse(data);
+        } catch {
+          return;
+        }
+        if (!msg || typeof msg !== 'object') return;
+        sigQueue = sigQueue
+          .then(() => (ws === sock ? handleSignal(msg, sock) : undefined))
+          .catch((err) => log(`Signaling handler error: ${err.message}`, 'err'));
+      };
+    }
+
+    function setRelayBudgetFrom(msg) {
       try {
-        msg = JSON.parse(data);
+        relayBudget = new RelayBudget({ cap: msg.wsRelayCap, remaining: msg.wsRelayRemaining });
       } catch {
-        return;
+        // Older server: assume a fresh room at the default caps.
+        const cap = msg.relayEnabled ? WS_RELAY_LIMIT_PRO : WS_RELAY_LIMIT_FREE;
+        relayBudget = new RelayBudget({ cap, remaining: cap });
       }
+    }
 
+    async function handleSignal(msg, sock) {
       if (msg.type === 'ws-fallback') {
         activateWsFallback(false);
         return;
       }
 
       if (msg.type === 'full') {
+        // After a drop, the server may still hold our old socket until its heartbeat
+        // notices: retry for a while before giving up.
+        if (signalingLost && Date.now() < fullRetryUntil) {
+          sock.close();
+          return;
+        }
         log('Room full (max 2 peers). Open a fresh link.', 'err');
         return;
       }
 
       if (msg.type === 'error') {
         if (msg.reason === 'relay-limit-exceeded') {
-          log('WS relay cap reached (50 MB free / 500 MB Pro). Use direct P2P or a Pro token.', 'err');
-          isTransferring = false;
-          resetRxState();
-          if (isChannelOpen(getActiveChannel())) {
-            setDropEnabled(true, readyDropLabel());
-          }
+          const capMb = relayBudget ? Math.floor(relayBudget.cap / 1048576) : null;
+          log(`WS relay cap${capMb !== null ? ` (${capMb} MB for this room)` : ''} reached. ` +
+            'Use direct P2P or a Pro token.', 'err');
+          if (relayBudget) relayBudget.remaining = 0;
+          abortAllTransfersLocally();
+          enableDropIfReady();
         } else {
+          // A relay that will not carry our hello is not an outdated peer.
+          if (msg.reason === 'relay-busy') {
+            clearTimeout(helloTimer);
+            helloTimer = null;
+          }
           log(`Signaling error: ${msg.reason}`, 'err');
         }
         return;
       }
 
       if (msg.type === 'peer-left') {
+        if (isDirectTunnelUp()) {
+          // Only the peer's signaling connection dropped: the tunnel and any transfer
+          // carry on. If the DataChannel closes later, enterStandby() runs from there.
+          peerAway = true;
+          log('Peer lost its signaling connection — direct tunnel still up.');
+          return;
+        }
         log('Remote peer disconnected.', 'err');
-        transportMode = 'webrtc';
-        relayEnabled = false;
-        cleanupPeer();
-        setDropEnabled(false, 'PEER DISCONNECTED — WAITING...');
-        updateStatusBadges('standby');
+        enterStandby();
         return;
       }
 
       if (msg.type === 'ready') {
+        peerAway = false;
+        if (signalingLost) {
+          signalingLost = false;
+          log('Signaling restored.', 'ok');
+        }
+        setRelayBudgetFrom(msg);
+        if (isDirectTunnelUp()) {
+          // Re-pairing after a signaling drop: the verified tunnel to the same peer is
+          // still up, so keep it (and its roles and session) instead of starting over.
+          relayEnabled = Boolean(msg.relayEnabled);
+          log('Rejoined the room — keeping the direct tunnel.');
+          return;
+        }
+        resetHandshake();
+        myRole = msg.initiator ? ROLE_INITIATOR : ROLE_RESPONDER;
+        peerRole = msg.initiator ? ROLE_RESPONDER : ROLE_INITIATOR;
         relayEnabled = Boolean(msg.relayEnabled);
         if (Array.isArray(msg.iceServers) && msg.iceServers.length) {
           iceConfig = { iceServers: msg.iceServers };
@@ -1321,7 +2648,7 @@
           await flushIceQueue();
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          ws.send(JSON.stringify({ type: 'answer', answer }));
+          if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: 'answer', answer }));
         } catch (err) {
           log(`Answer failed: ${err.message}`, 'err');
         }
@@ -1340,6 +2667,32 @@
           iceQueue.push(msg.candidate);
         }
       }
+    }
+
+    // Leftover OPFS temp files from closed or crashed tabs.
+    async function cleanupStaleOpfs() {
+      if (!navigator.storage?.getDirectory) return;
+      try {
+        const root = await navigator.storage.getDirectory();
+        const now = Date.now();
+        const stale = [];
+        for await (const name of root.keys()) {
+          if (isStaleTempName(name, now)) stale.push(name);
+          if (stale.length >= 1000) break;
+        }
+        for (const name of stale) await root.removeEntry(name).catch(() => {});
+        if (stale.length) log(`Removed ${stale.length} leftover temporary file(s) from an earlier visit.`);
+      } catch {}
+    }
+
+    connectSignaling();
+    cleanupStaleOpfs();
+
+    cancelBtn.onclick = () => {
+      if (tx) abortTx(tx, 'user', `Send cancelled: ${tx.name}`);
+    };
+    cancelRxBtn.onclick = () => {
+      if (rx) abortRx('user', `Receive cancelled: ${rx.machine.meta.name}`);
     };
 
     dropzone.onclick = () => { if (!fileInput.disabled) fileInput.click(); };
@@ -1358,9 +2711,82 @@
       if (!fileInput.disabled && e.dataTransfer.files[0]) sendFile(e.dataTransfer.files[0]);
     };
 
+    // Payment details injected by the server at boot (checkout on/off and
+    // prices, TIP_XMR_ADDRESS, TIP_BTC_ADDRESS). Anything unset stays hidden.
+    function readPageConfig() {
+      try {
+        const cfg = JSON.parse(document.getElementById('darkp2p-config')?.textContent || '{}');
+        return cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+      } catch {
+        return {};
+      }
+    }
+
+    function httpsUrl(value) {
+      if (typeof value !== 'string' || !value) return null;
+      try {
+        return new URL(value).protocol === 'https:' ? value : null;
+      } catch {
+        return null;
+      }
+    }
+
+    const pageConfig = readPageConfig();
+
+    // Checkout: the server creates a NOWPayments invoice for the tier and
+    // returns its URL; this tab then navigates there (an open transfer ends).
+    async function startCheckout(tier, buttons) {
+      buttons.forEach((b) => { b.disabled = true; });
+      try {
+        const res = await fetch('/api/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tier }),
+          cache: 'no-store',
+        });
+        const data = res.ok ? await res.json() : null;
+        const invoiceUrl = httpsUrl(data && data.invoiceUrl);
+        if (invoiceUrl) {
+          log('Redirecting to NOWPayments checkout...', 'ok');
+          location.assign(invoiceUrl);
+          return;
+        }
+        log(res.status === 429
+          ? 'Too many checkout attempts — wait a minute and try again.'
+          : 'Checkout is unavailable right now — try again later.', 'err');
+      } catch {
+        log('Checkout is unavailable right now — try again later.', 'err');
+      }
+      buttons.forEach((b) => { b.disabled = false; });
+    }
+
+    if (pageConfig.checkoutEnabled === true) {
+      const buttons = [...document.querySelectorAll('.tier-cta')];
+      const prices = pageConfig.priceUsd && typeof pageConfig.priceUsd === 'object' ? pageConfig.priceUsd : {};
+      buttons.forEach((btn) => {
+        const price = prices[btn.dataset.tier];
+        const priceEl = btn.closest('.tier-card')?.querySelector('.tier-price');
+        if (priceEl && typeof price === 'number' && price > 0) {
+          priceEl.textContent = `$${Number.isInteger(price) ? price : price.toFixed(2)}`;
+        }
+        btn.onclick = () => startCheckout(btn.dataset.tier, buttons);
+        btn.hidden = false;
+      });
+      document.querySelector('.modal-note').hidden = false;
+    }
+
+    const tipAddrs = {
+      XMR: typeof pageConfig.tipXmr === 'string' ? pageConfig.tipXmr : '',
+      BTC: typeof pageConfig.tipBtc === 'string' ? pageConfig.tipBtc : '',
+    };
+    let anyTip = false;
     document.querySelectorAll('.tip-btn').forEach((btn) => {
+      const coin = btn.dataset.coin;
+      const addr = tipAddrs[coin];
+      if (!addr) return;
+      btn.hidden = false;
+      anyTip = true;
       btn.onclick = async () => {
-        const { coin, addr } = btn.dataset;
         try {
           await navigator.clipboard.writeText(addr);
           log(`${coin} tip address copied to clipboard.`, 'ok');
@@ -1369,6 +2795,7 @@
         }
       };
     });
+    document.querySelector('.tip-jar').hidden = !anyTip;
   </script>
 </body>
 </html>

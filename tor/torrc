@@ -1,0 +1,8 @@
+# Onion service only: no SOCKS client port.
+SocksPort 0
+DataDirectory /var/lib/tor
+
+HiddenServiceDir /var/lib/tor/hidden_service/
+HiddenServicePort 80 darkp2p:3001
+HiddenServiceMaxStreams 256
+HiddenServiceMaxStreamsCloseCircuit 1
