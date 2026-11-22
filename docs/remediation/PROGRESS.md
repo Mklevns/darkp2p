@@ -692,3 +692,18 @@
   7. `PRO_TIERS` is removed.
   8. Boot is fatal on mismatched NOWPayments, IPN and Pro secrets; an IPN secret under 32 characters only warns.
   - **Tests keep synthetic look-alike addresses.** The personal tip addresses stay out of tracked files.
+
+### Post-audit Phase 1 — coturn deny list, relay check, `isTransferring` (2026-11-22)
+- **Source:** the 2026-11-22 read-only audit, findings High #1, #2 and #3.
+- **Files changed:** `scripts/gen-turnserver-conf.sh`, `public/index.html`, `test/compose.test.mjs`, `README.md`, `.env.example`; new `scripts/check-turn-relay.sh`. `server.js` is unchanged.
+- **High #1:** `denied-peer-ip=::-::` is removed. In the pinned coturn image that rule alone answers every IPv4 peer with `403 Forbidden IP`, so TURN relayed nothing.
+- **High #2:** `denied-peer-ip=$TURN_PUBLIC_IP` is removed, so two peers who both relay can reach each other's relay address. Relaying stays UDP-only. `TURN_PUBLIC_IP` is still required and validated by the generator, and is now also the address the relay check tests.
+- **Relay check:** `scripts/check-turn-relay.sh [ENV_FILE]` runs `turnutils_peer` and `turnutils_uclient` from the coturn image named in `docker-compose.yml`, on the host network, against the running coturn: client → relay → echo peer, and relay-to-relay (`-y`). It exits 1 with a reason on failure. The README deploy step documents it.
+- **High #3:** the `connected` branch of `pc.onconnectionstatechange` called the removed `isTransferring`. It now calls `enableDropIfReady()`.
+- **Tests:** the generator test no longer requires the two rules and now fails if either returns; one new test checks that the relay check script parses, covers both paths and takes its image from `docker-compose.yml`.
+- **Gate:** `npm run check` PASS; `npm test` 134/134 PASS, 0 skipped.
+- **Verified with the pinned coturn image (local dockerd, not committed):** against a server started from the regenerated config, the check passes both paths. It fails, with the matching reason, when `::-::` is added back, when the own-address deny is added back, with a wrong secret, and with coturn stopped.
+- **SKIPPED:** `shellcheck` (tool unavailable). The `connected`-after-`disconnected` path was not exercised in a browser.
+- **Open questions:**
+  1. `TURN_PUBLIC_IP` no longer affects the generated config, yet the generator still refuses to run without it. **Decided (user, 2026-11-22): keep it required for now.**
+  2. While a send is in progress, a recovered connection leaves the drop label on "CONNECTION LOST" until the send ends, because `enableDropIfReady()` does nothing during a send.

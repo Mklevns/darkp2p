@@ -146,16 +146,35 @@ test('gen-turnserver-conf: hardened coturn flags, secret only in a 0600 file', (
     for (const want of [
       `static-auth-secret=${fixture.TURN_SECRET}`, `realm=${fixture.TURN_HOST}`, 'use-auth-secret',
       'no-tcp-relay', 'total-quota=40', 'no-stdout-log', 'simple-log', 'log-file=/dev/null', 'no-tls', 'no-dtls',
-      'denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255', 'denied-peer-ip=::-::',
-      'denied-peer-ip=127.0.0.0-127.255.255.255', `denied-peer-ip=${fixture.TURN_PUBLIC_IP}`,
+      'denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255', 'denied-peer-ip=::1',
+      'denied-peer-ip=127.0.0.0-127.255.255.255', 'denied-peer-ip=10.0.0.0-10.255.255.255',
     ]) {
       assert.ok(lines.includes(want), `missing: ${want}`);
     }
+    // coturn 4.6.3 answers 403 Forbidden IP for every IPv4 peer when the
+    // unspecified address is denied, and denying the server's own address
+    // blocks relay-to-relay traffic (both peers on TURN). Neither may return.
+    const denied = lines.filter((l) => l.startsWith('denied-peer-ip=')).map((l) => l.slice(15));
+    assert.deepEqual(denied.filter((d) => /^::(-::)?$/.test(d)), []);
+    assert.ok(!denied.includes(fixture.TURN_PUBLIC_IP), 'the server\'s own address must not be denied');
     assert.deepEqual(lines.filter((l) => l !== 'no-stdout-log' && /stdout/i.test(l)), []);
     assert.deepEqual(lines.filter((l) => /^(cert|pkey|tls-listening-port)=/.test(l)), []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('check-turn-relay.sh parses and uses the coturn image pinned in docker-compose.yml', () => {
+  const script = join(ROOT, 'scripts', 'check-turn-relay.sh');
+  const r = spawnSync('bash', ['-n', script], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const text = readFileSync(script, 'utf8');
+  // Both relay paths: an ordinary peer, and relay-to-relay.
+  assert.match(text, /turnutils_peer/);
+  assert.match(text, /turnutils_uclient/);
+  assert.match(text, /\s-y\b/);
+  assert.match(text, /docker-compose\.yml/);
+  assert.doesNotMatch(text, /coturn\/coturn:\d/, 'the image must come from docker-compose.yml, not a second pin');
 });
 
 test('gen-turnserver-conf: refuses a missing or bad TURN_PUBLIC_IP / TURN_SECRET', () => {

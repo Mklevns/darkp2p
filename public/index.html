@@ -2314,7 +2314,7 @@
           setDropEnabled(false, 'CONNECTION LOST');
           updateStatusBadges('interrupted');
         } else if (pc && pc.connectionState === 'connected' && dc?.readyState === 'open') {
-          if (!isTransferring) setDropEnabled(true, readyDropLabel());
+          enableDropIfReady();
           updateStatusBadges('active');
           watchSelectedPair();
         }

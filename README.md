@@ -119,7 +119,7 @@ The receiver rejects:
 
 * **IP Exposure:** Direct WebRTC P2P connections expose each peer's IP address to the other peer during ICE/NAT traversal. Use a VPN if you need IP anonymity.
 * **Synchronous Transfer:** Both peers must keep their browser tabs open until the transfer completes.
-* **TURN Relay:** Direct STUN works for ~80% of connections. For strict corporate firewalls or CGNAT, the stack includes `coturn` with ephemeral HMAC-SHA1 credentials (optionally gated behind stateless HMAC-signed Pro tokens). Relaying is UDP-only (`--no-tcp-relay`; clients can still reach coturn over TCP 3478), and private, loopback, reserved, NAT64/6to4, IPv4-mapped and the server's own public addresses are denied as peers.
+* **TURN Relay:** Direct STUN works for ~80% of connections. For strict corporate firewalls or CGNAT, the stack includes `coturn` with ephemeral HMAC-SHA1 credentials (optionally gated behind stateless HMAC-signed Pro tokens). Relaying is UDP-only (`--no-tcp-relay`; clients can still reach coturn over TCP 3478), and private, loopback, reserved, NAT64/6to4 and IPv4-mapped addresses are denied as peers.
 * **No TURN Logs:** coturn logs every client and peer address, so its logging is disabled. See **coturn configuration and logging policy** below.
 
 ### coturn configuration and logging policy
@@ -135,7 +135,7 @@ Re-run it whenever `TURN_HOST`, `TURN_PUBLIC_IP` or `TURN_SECRET` changes. The s
 
 The generated file:
 * sets UDP-only relaying (`no-tcp-relay`), per-user and total quotas, bandwidth caps, and no TLS/DTLS listener;
-* denies relaying to private, loopback, link-local, CGNAT, reserved, NAT64, 6to4, IPv4-mapped and ULA ranges, and to `TURN_PUBLIC_IP` itself;
+* denies relaying to private, loopback, link-local, CGNAT, reserved, NAT64, 6to4, IPv4-mapped and ULA ranges. The server's own public address is deliberately **not** denied: when both peers relay ("Hide my IP" on each side), each one's peer is the server's own relay address. Because relaying is UDP-only, this exposes only the host's public UDP services (coturn itself and Caddy's `443/udp`);
 * disables logging with `no-stdout-log`, `simple-log` and `log-file=/dev/null`. Without `simple-log`, coturn would append a date to the file name, fail to open `/dev/null_<date>.log`, and fall back to writing a log in `/var/tmp`.
 
 Docker's logging driver for coturn is `none`, so nothing reaches the host disk. To debug temporarily, follow the comment on the `coturn` service in `docker-compose.yml`, then revert and remove the container.
@@ -158,7 +158,7 @@ All configuration lives in `.env`. Compose passes the whole file to `darkp2p` (`
 | `TRUST_PROXY` | `auto` | Trust `X-Forwarded-For`: `auto` only from a loopback/private peer (the bundled Caddy), `1`/`true` always, `0`/`false` never. Never applied on the onion listener. |
 | `TURN_HOST` | empty | coturn hostname. It enables TURN for Pro rooms (with `TURN_SECRET`) and `stun:${TURN_HOST}:3478` as the STUN server. |
 | `TURN_SECRET` | empty | coturn shared secret for ephemeral HMAC credentials. It is read by `darkp2p` and by `scripts/gen-turnserver-conf.sh`. Use ≥ 32 characters (`openssl rand -hex 32`). |
-| `TURN_PUBLIC_IP` | — (**required for coturn**) | The server's public IPv4. It is read only by `scripts/gen-turnserver-conf.sh`, which denies it as a relay peer and refuses to run without it. |
+| `TURN_PUBLIC_IP` | — (**required for coturn**) | The server's public IPv4. It is read only by `scripts/gen-turnserver-conf.sh`, which refuses to run without it, and by `scripts/check-turn-relay.sh`, which tests the relay at that address. |
 | `TURN_TTL` | `3600` | Lifetime of TURN credentials in seconds (60–86400). |
 | `STUN_URLS` | empty | Comma-separated `stun:`/`stuns:` URLs that override the STUN server. Without it and without `TURN_HOST`, the page falls back to `stun.l.google.com` (with a warning). |
 | `PRO_TOKEN_SECRET` | empty | HMAC key for Pro tokens. Without it, Pro is disabled. Required if `NOWPAYMENTS_API_KEY` is set. |
@@ -283,6 +283,14 @@ Verify that Caddy obtained a TLS certificate and all four containers (`caddy`, `
 docker compose ps
 docker compose logs -f caddy
 ```
+
+A running `coturn` container does not prove that it relays: a bad `denied-peer-ip` rule starts cleanly and then answers every peer with `403 Forbidden IP`, and with logging off nothing shows it. Check the relay itself:
+
+```bash
+sudo scripts/check-turn-relay.sh
+```
+
+It reads `TURN_PUBLIC_IP` and `TURN_SECRET` from `.env` and uses the `turnutils_uclient` and `turnutils_peer` tools from the pinned coturn image to send packets through the running server two ways: to an echo peer on the host, and relay-to-relay (both peers on TURN, as when each ticks "Hide my IP"). Both lines must read `PASS`. Run it again after changing `scripts/gen-turnserver-conf.sh` or the coturn image.
 
 ### 3b. Enable the Onion Mirror (Optional)
 
