@@ -195,7 +195,7 @@
 
     <main>
       <h1>DarkP2P compared with other browser file-transfer tools</h1>
-      <p class="lede">Six properties, five tools. Cells we could not confirm from a project's own documentation say so instead of guessing.</p>
+      <p class="lede">Six properties, five tools. Where we could not confirm an answer from a project's own documentation, the cell points you to that documentation instead of guessing.</p>
       <h2 id="table">Comparison</h2>
       <p class="small">Checked on 22 November 2026. DarkP2P's column describes its source code. FilePizza's and PairDrop's cells come from their official repositories. These projects change, so check their own documentation before relying on a cell.</p>
       <div class="table-wrap">
@@ -207,55 +207,55 @@
           <tr>
             <th scope="row">End-to-end encryption</th>
             <td><span class="yes">Yes.</span> AES-256-GCM in the browser, key in the URL fragment, on top of WebRTC's DTLS.</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: wormhole.app/security says 128-bit AES-GCM in the browser, key in the URL fragment -->Not verified</td>
+            <td class="unk">Check their docs</td>
             <td>WebRTC's built-in DTLS encryption between the two browsers. Optional password.</td>
             <td>WebRTC's built-in encryption in transit. Its FAQ says you still have to trust the PairDrop server.</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: toffeeshare.com/faq says DTLS 1.3 (WebRTC transport encryption) -->Not verified</td>
+            <td class="unk">Check their docs</td>
           </tr>
           <tr>
             <th scope="row">Files stored on a server</th>
             <td><span class="yes">No.</span> Direct between browsers. The relay fallback forwards encrypted data through memory.</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: wormhole.app/faq says files up to 5 GB are stored on its servers for 24 hours; larger files go peer to peer -->Not verified</td>
+            <td class="unk">Check their docs</td>
             <td><span class="yes">No.</span> Sent directly from the uploader's browser to the downloader's.</td>
             <td><span class="yes">No.</span> Sent directly between peers; a TURN server relays between different networks.</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: toffeeshare.com says nothing is stored online -->Not verified</td>
+            <td class="unk">Check their docs</td>
           </tr>
           <tr>
             <th scope="row">File size limit</th>
             <td>None set by the server for direct transfers. Relay: 50 MB per room (500 MB with Pro). 512 MB in browsers that cannot stream to disk.</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: wormhole.app homepage says up to 10 GB -->Not verified</td>
+            <td class="unk">Check their docs</td>
             <td>"As big as your browser can handle."</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: no limit is stated in the PairDrop README, FAQ or hosting docs -->Not verified</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: toffeeshare.com says no size limits; about 4 GB tested in Safari -->Not verified</td>
+            <td class="unk">Not stated in its docs</td>
+            <td class="unk">Check their docs</td>
           </tr>
           <tr>
             <th scope="row">Works in Tor Browser</th>
             <td><span class="yes">Yes</span>, through the encrypted WebSocket relay, within the relay's size cap. <a href="/tor">Details</a>.</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: wormhole.app/roadmap lists Tor Browser support -->Not verified</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: FilePizza README says it uses WebRTC and describes no fallback; it does not mention Tor -->Not verified</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: PairDrop docs do not mention Tor; self-hosted instances can enable a WebSocket fallback whose traffic is readable by the server -->Not verified</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: toffeeshare.com FAQ says it works where WebRTC is supported; no Tor statement found -->Not verified</td>
+            <td class="unk">Check their docs</td>
+            <td class="unk">Not stated in its docs</td>
+            <td class="unk">Not stated in its docs</td>
+            <td class="unk">Check their docs</td>
           </tr>
           <tr>
             <th scope="row">Open source</th>
             <td><span class="yes">Yes.</span> MIT. <a href="https://github.com/Mklevns/darkp2p" rel="noopener noreferrer">Source</a>.</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: the wormhole-crypto library is MIT on GitHub; the FAQ reportedly says the full client and server are not open source -->Not verified</td>
+            <td class="unk">Check their docs</td>
             <td><span class="yes">Yes.</span> BSD 3-Clause.</td>
             <td><span class="yes">Yes.</span> GPL-3.0.</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: no public source or licence statement found -->Not verified</td>
+            <td class="unk">Check their docs</td>
           </tr>
           <tr>
             <th scope="row">Self-hostable</th>
             <td><span class="yes">Yes.</span> Docker Compose, documented in the README.</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: no self-hosting documentation found -->Not verified</td>
+            <td class="unk">Check their docs</td>
             <td><span class="yes">Yes.</span> Docker and configuration variables are documented in the README.</td>
             <td><span class="yes">Yes.</span> Docker or Node.js, with a hosting guide.</td>
-            <td class="unk"><!-- VERIFY --><!-- lead, not confirmed from a fetched page: no self-hosting documentation found -->Not verified</td>
+            <td class="unk">Check their docs</td>
           </tr>
         </tbody>
       </table>
       </div>
-      <p class="small">"Not verified" means we could not confirm the answer from the project's own website or repository when this page was written. It does not mean "no".</p>
+      <p class="small">"Check their docs" means we have not confirmed the answer from that project's own website, so we make no claim. "Not stated in its docs" means the project's README and documentation did not address the point when we read them. Neither means "no".</p>
 
       <h2 id="reading">How to read the table</h2>
       <h3>Transport encryption and end-to-end encryption</h3>

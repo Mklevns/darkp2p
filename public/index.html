@@ -44,7 +44,7 @@
           "End-to-end AES-256-GCM client-side encryption",
           "Direct WebRTC peer-to-peer streaming",
           "Automatic E2E-encrypted WebSocket relay fallback for Tor Browser",
-          "Zero server file storage or logging",
+          "Zero server file storage, and no IP address or room ID logging",
           "Disk streaming for large files (save-file picker or Origin Private File System)",
           "Optional TURN relay for strict corporate firewalls and CGNAT"
         ]
@@ -66,6 +66,14 @@
             "acceptedAnswer": {
               "@type": "Answer",
               "text": "No. Every chunk is encrypted in your browser with AES-256-GCM. The keys are derived from a 256-bit secret that exists only in the URL fragment (after #), which browsers never send to the server."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What can the server see?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Not your files, their names or the key. It does see connection metadata: your IP address (held in memory only as a salted hash for rate limiting, never logged), the room ID, and, when the WebSocket relay is used, how many bytes pass through and when."
             }
           },
           {
@@ -492,7 +500,7 @@
       </div>
 
       <div class="tip-jar" hidden>
-        <span>SUPPORT ZERO-LOG INFRASTRUCTURE:</span>
+        <span>SUPPORT THE INFRASTRUCTURE:</span>
         <div class="tip-btns">
           <button type="button" class="tip-btn" data-coin="XMR" hidden>Copy XMR</button>
           <button type="button" class="tip-btn" data-coin="BTC" hidden>Copy BTC</button>
@@ -501,7 +509,7 @@
     </div>
 
     <section class="faq" aria-label="Frequently Asked Questions">
-      <div class="faq-title">SYSTEM FAQ // ZERO-KNOWLEDGE SPEC</div>
+      <div class="faq-title">SYSTEM FAQ // E2E ENCRYPTED • ZERO FILE STORAGE</div>
 
       <details>
         <summary>How does DarkP2P work without server storage?</summary>
@@ -511,6 +519,11 @@
       <details>
         <summary>Can the server read or decrypt my files?</summary>
         <p>No. Every chunk is encrypted in your browser with AES-256-GCM. The keys are derived from a 256-bit secret that exists only in the URL fragment (after #), which browsers never send to the server.</p>
+      </details>
+
+      <details>
+        <summary>What can the server see?</summary>
+        <p>Not your files, their names or the key. It does see connection metadata: your IP address (held in memory only as a salted hash for rate limiting, never logged), the room ID, and, when the WebSocket relay is used, how many bytes pass through and when.</p>
       </details>
 
       <details>
@@ -541,7 +554,7 @@
           <button type="button" id="closeProModalBtn" style="padding:4px 8px;">✕</button>
         </div>
         <div class="modal-sub">
-          Unlocks dedicated TURN relay traversal through strict corporate firewalls &amp; CGNAT, plus higher WebSocket relay caps for Tor Browser. Zero accounts or logs.
+          Unlocks dedicated TURN relay traversal through strict corporate firewalls &amp; CGNAT, plus higher WebSocket relay caps for Tor Browser. No accounts, and no IP address or room ID logs.
         </div>
 
         <div class="tier-grid">

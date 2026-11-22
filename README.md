@@ -1,6 +1,8 @@
 # DARKP2P
 
-Zero-knowledge, end-to-end encrypted peer-to-peer file transfer directly in the browser. Files stream browser-to-browser over WebRTC `RTCDataChannel` with zero server storage, zero database, and no file size limits.
+End-to-end encrypted peer-to-peer file transfer directly in the browser. Files stream browser-to-browser over WebRTC `RTCDataChannel` with zero server file storage and zero database. Direct transfers have no server file-size cap. When a direct connection is not possible, the server relays the already-encrypted frames over WebSocket, in RAM, within a per-room byte cap (50 MB free / 500 MB Pro by default).
+
+The server cannot read file contents, names or keys. It does observe connection metadata: client addresses (held only as salted hashes in RAM), room IDs, and relay byte counts and timing.
 
 Live instance: [darkp2p.com](https://darkp2p.com)
 
@@ -8,13 +10,14 @@ Live instance: [darkp2p.com](https://darkp2p.com)
 
 ## Architecture
 
-* **Zero Server Storage:** `server.js` is a stateless Node.js WebSocket signaling broker (`ws` only) that pairs two peers in RAM and relays SDP offers/answers and ICE candidates. File payloads never touch the server.
+* **Zero Server Storage:** `server.js` is a stateless Node.js WebSocket signaling broker (`ws` only) that pairs two peers in RAM and relays SDP offers/answers and ICE candidates. Nothing is written to disk. On a direct WebRTC DataChannel, file payloads never touch the server. On the WebSocket relay fallback, the server forwards the end-to-end encrypted frames from one peer to the other through RAM, holding each frame only until it is delivered.
+* **WebSocket Relay Fallback:** Used when the browser has no WebRTC (Tor Browser), when *Force WebSocket relay* is ticked, when no DataChannel opens within 12 s, or when the WebRTC connection fails. The same AES-256-GCM frames travel as binary WebSocket messages, so the server sees ciphertext, frame sizes and timing, and the cleartext frame header (type, `transferId`, `seq`, IV), but never the key, the file contents or the file name. Limits apply per room: a byte cap counting both directions until the room empties (`RELAY_CAP_FREE_MB`, default 50 MB; `RELAY_CAP_PRO_MB`, default 500 MB), a per-sender rate of 1 MB/s (4 MB/s in a Pro room), and at most `MAX_RELAY_ROOMS` rooms relaying at once.
 * **Client-Side E2EE (Anti-MITM):** Standard WebRTC DTLS protects against passive observers, but a compromised signaling server could swap SDP certificate fingerprints. DARKP2P adds an application-layer **AES-256-GCM** stream using a 256-bit key generated locally in the URL fragment:
   ```text
   https://darkp2p.com/#<32-hex-roomId>:<base64url-256bit-key>
   ```
   Browsers never transmit URL fragments (`#...`) over HTTP or WebSockets. Only `<roomId>` is sent to the signaling server.
-* **Low-RAM Disk Streaming:** Incoming chunks stream directly to disk: to a file the receiver picks (`showSaveFilePicker`) where supported, otherwise to the browser's Origin Private File System (OPFS), and only as a last resort to an in-memory `Blob` (capped at 512 MB). Multi-gigabyte transfers do not crash browser tabs.
+* **Low-RAM Disk Streaming:** Incoming chunks stream directly to disk: to a file the receiver picks (`showSaveFilePicker`) where supported, otherwise to the browser's Origin Private File System (OPFS), and only as a last resort to an in-memory `Blob` (capped at 512 MB). Multi-gigabyte direct transfers do not crash browser tabs. The server sets no file-size cap on direct transfers; the practical limits are the receiver's disk space and browser storage quota.
 * **Back-Pressure & Chunking:** Files are sliced into `16,000`-byte chunks (leaving headroom for the 49-byte encryption envelope under the 16 KB cross-browser SCTP limit). Flow control uses `bufferedAmount` (capped at 1 MB) plus an end-to-end credit window: at most 256 unacknowledged chunks in flight.
 * **Privacy-Preserving Rate Limiting:** Connection and message limits use a per-boot random salt to HMAC-hash client IPs in RAM—raw IP addresses are never stored or logged.
 * **Isolated Onion Listener:** Tor hidden-service traffic reaches the server on a dedicated port (`ONION_PORT`, `3001` in Docker Compose). Onion clients are identified by that listener alone, never by the `Host` or `X-Forwarded-For` headers, so they cannot pose as clearnet clients to dodge rate limits.
@@ -118,8 +121,11 @@ The receiver rejects:
 ## Threat Model & Limitations
 
 * **IP Exposure:** Direct WebRTC P2P connections expose each peer's IP address to the other peer during ICE/NAT traversal. Use a VPN if you need IP anonymity.
+* **Server-Visible Metadata:** The signaling server sees each client's address (used for rate limiting only as a per-boot salted hash, never stored or logged), room IDs, join and leave timing, the SDP and ICE candidates it forwards, and whether a Pro token was presented. In relay mode it also sees relayed byte counts, frame sizes and timing, which reveal the approximate file size.
+* **File-Size Limits:** Direct DataChannel transfers have no server cap. WebSocket relay transfers are limited by the room's byte cap (50 MB free / 500 MB Pro by default), which covers every Tor Browser transfer. A receiver without disk streaming is limited to 512 MB.
+* **No Forward Secrecy on the Relay:** Every frame key is derived from the room key in the share link, and the session nonces travel encrypted under that same key. Anyone who records relayed frames (the relay operator is best placed to) and later obtains the share link can decrypt the recording. On a direct connection the frames are additionally wrapped in WebRTC's DTLS. Treat the link as a secret for as long as the file matters, and use a fresh link per transfer.
 * **Synchronous Transfer:** Both peers must keep their browser tabs open until the transfer completes.
-* **TURN Relay:** Direct STUN works for ~80% of connections. For strict corporate firewalls or CGNAT, the stack includes `coturn` with ephemeral HMAC-SHA1 credentials (optionally gated behind stateless HMAC-signed Pro tokens). Relaying is UDP-only (`--no-tcp-relay`; clients can still reach coturn over TCP 3478), and private, loopback, reserved, NAT64/6to4, IPv4-mapped and the server's own public addresses are denied as peers.
+* **TURN Relay:** Direct STUN works for ~80% of connections. For strict corporate firewalls or CGNAT, the stack includes `coturn` with ephemeral HMAC-SHA1 credentials (issued only to rooms where a peer holds a stateless HMAC-signed Pro token). Relaying is UDP-only (`--no-tcp-relay`; clients can still reach coturn over TCP 3478), and private, loopback, reserved, NAT64/6to4, IPv4-mapped and the server's own public addresses are denied as peers.
 * **No TURN Logs:** coturn logs every client and peer address, so its logging is disabled. See **coturn configuration and logging policy** below.
 
 ### coturn configuration and logging policy

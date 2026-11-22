@@ -692,3 +692,14 @@
   7. `PRO_TIERS` is removed.
   8. Boot is fatal on mismatched NOWPayments, IPN and Pro secrets; an IPN secret under 32 characters only warns.
   - **Tests keep synthetic look-alike addresses.** The personal tip addresses stay out of tracked files.
+
+### Post-remediation — SEO pass follow-up: compare table and copy accuracy (2026-11-22)
+- **Context:** the SEO and launch-readiness pass (static pages, social card, crawl files, `test/static.test.mjs`) is on branch `claude/upbeat-ptolemy-0imqt2`, PR #6. It was not logged here when it was made. This entry covers the follow-up only.
+- **Files changed:** `public/compare.html`, `public/index.html`, `README.md`, this file.
+- **`public/compare.html`:** all 15 `<!-- VERIFY -->` comments and their lead comments are removed. The 12 Wormhole and ToffeeShare cells read "Check their docs" (their sites were unreachable from the build environment). The FilePizza Tor cell and the PairDrop size-limit and Tor cells read "Not stated in its docs" (their READMEs and docs were read and do not address the point). The lede and the footnote explain both labels.
+- **`public/index.html`:** the FAQ heading no longer says "ZERO-KNOWLEDGE SPEC"; a fifth FAQ entry, "What can the server see?", states the metadata the server observes, in the visible FAQ and in the FAQPage JSON-LD. "ZERO-LOG" and "Zero accounts or logs" are replaced with wording that matches what is logged. No script change.
+- **`README.md`:** the intro, the Zero Server Storage bullet, a new WebSocket Relay Fallback bullet, and three new Threat Model bullets (server-visible metadata, file-size limits, no forward secrecy on the relay) now match `server.js` and the client.
+- **Gate:** `npm run check` PASS; `npm test` 133/133 PASS; `grep -r VERIFY public/` finds nothing.
+- **Decisions (user, 2026-11-22):**
+  - Commit and push approved.
+  - **Caddyfile:** the explicit `http://{$DOMAIN}, http://www.{$DOMAIN}` block from PR #6 is kept, so plain HTTP answers with one 301. This supersedes the decision after Step 10 to leave Caddy's automatic redirect untouched. ACME HTTP-01 renewal with this block has not been exercised (local Caddy used its internal CA): watch the first renewal on the deploy host.
