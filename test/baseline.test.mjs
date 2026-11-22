@@ -218,22 +218,29 @@ test('IPN with a bad signature gets 401', async () => {
   await res.arrayBuffer();
 });
 
-test('finished pro-1d IPN can be claimed for a 1-day token anchored at created_at', async () => {
-  const createdS = Math.floor(Date.now() / 1000) - 600;
-  const ipn = finishedIpn({ created_at: new Date(createdS * 1000).toISOString() });
+test('finished pro-1d IPN can be claimed for a 1-day token anchored at settlement', async () => {
+  const settledS = Math.floor(Date.now() / 1000) - 60;
+  const ipn = finishedIpn({
+    created_at: new Date((settledS - 540) * 1000).toISOString(),
+    updated_at: new Date(settledS * 1000).toISOString(),
+  });
   remember(String(ipn.payment_id), String(ipn.invoice_id), ipn.order_id);
   const res = await postIpn(srv.port, ipn);
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true });
 
-  const claim = await fetch(`${base()}/api/claim?paymentId=${ipn.payment_id}`);
+  // The payment ID alone is not enough: the claim needs the order ID too.
+  const bare = await fetch(`${base()}/api/claim?paymentId=${ipn.payment_id}`);
+  assert.equal(bare.status, 404);
+  await bare.arrayBuffer();
+  const claim = await fetch(`${base()}/api/claim?paymentId=${ipn.payment_id}&orderId=${encodeURIComponent(ipn.order_id)}`);
   assert.equal(claim.status, 200);
   const body = await claim.json();
   assert.equal(body.ready, true);
   assert.equal(typeof body.token, 'string');
   remember(body.token, body.token.split('.')[1]);
 
-  const exp = createdS + 86400 + 6 * 3600;
+  const exp = settledS + 86400;
   const sig = createHmac('sha256', TEST_PRO_TOKEN_SECRET).update(String(exp)).digest('hex');
   assert.equal(body.token, `${exp}.${sig}`);
 });

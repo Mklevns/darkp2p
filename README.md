@@ -163,10 +163,12 @@ All configuration lives in `.env`. Compose passes the whole file to `darkp2p` (`
 | `STUN_URLS` | empty | Comma-separated `stun:`/`stuns:` URLs that override the STUN server. Without it and without `TURN_HOST`, the page falls back to `stun.l.google.com` (with a warning). |
 | `PRO_TOKEN_SECRET` | empty | HMAC key for Pro tokens. Without it, Pro is disabled. Required if `NOWPAYMENTS_API_KEY` is set. |
 | `PRO_TOKEN_DAYS` | `30` | Lifetime of the `pro-30d` tier, in days (1–3650). `pro-1d` is always 1 day. |
-| `CLAIM_TTL_HOURS` | `48` | How long a paid token can be claimed (1–168), counted from the payment's `created_at` + 6 h. See **Pro payments and claims**. |
+| `CLAIM_TTL_HOURS` | `48` | How long a paid token can be claimed (1–168), counted from when the payment settled. See **Pro payments and claims**. |
 | `NOWPAYMENTS_API_KEY` | empty | Enables checkout (`POST /api/checkout`), the IPN webhook (`POST /webhook/nowpayments`) and payment lookups. Without it the checkout buttons are hidden. |
 | `NOWPAYMENTS_IPN_SECRET` | empty | IPN secret from the NOWPayments dashboard. Verifies `x-nowpayments-sig` (HMAC-SHA512 over the key-sorted JSON). Required with `NOWPAYMENTS_API_KEY`, and fatal without it. |
 | `NOWPAYMENTS_API_URL` | `https://api.nowpayments.io` | API base URL (https, no query or credentials), e.g. `https://api-sandbox.nowpayments.io` for testing. |
+| `NOWPAYMENTS_MAX_LOOKUPS_PER_MIN` | `60` | Global budget (1–6000) for `GET /v1/payment` calls made for `/api/claim`, across all clients. When it is spent, claims that need a lookup get `503` with `Retry-After`. Lookups for a signed IPN are exempt. |
+| `NOWPAYMENTS_MAX_CHECKOUTS_PER_MIN` | `30` | Global budget (1–6000) for invoices created through `/api/checkout`, across all clients. When it is spent, checkout gets `503` with `Retry-After`. |
 | `PRO_1D_PRICE_USD` | `2` | Price of the 24-hour pass in USD (positive, ≤ 2 decimals). Shown on the page and charged. |
 | `PRO_30D_PRICE_USD` | `5` | Price of the 30-day pass in USD. |
 | `TIP_XMR_ADDRESS` | empty | Monero address for the tip button: mainnet standard (`4…`) or subaddress (`8…`), 95 characters, or integrated (106). The button is hidden when unset. |
@@ -197,26 +199,31 @@ Payments run on [NOWPayments](https://nowpayments.io). darkp2p creates the invoi
 
 1. **Checkout.** The buyer picks a tier. The page sends `POST /api/checkout {"tier":"pro-1d"|"pro-30d"}`, which:
    * is rate-limited per client (10 per minute; all onion clients share 60) and capped at 4 KB, and needs `Content-Type: application/json`, so other sites cannot trigger it;
+   * also draws on a global budget (`NOWPAYMENTS_MAX_CHECKOUTS_PER_MIN`), so many addresses together cannot spend the NOWPayments API quota;
    * calls NOWPayments `POST /v1/invoice` with:
      * `price_amount` (`PRO_1D_PRICE_USD` / `PRO_30D_PRICE_USD`), `price_currency: "usd"`;
-     * `order_id` set to `<tier>:<random>`;
+     * `order_id` set to `<tier>:<32 random hex>`. This order ID is also the buyer's claim secret;
      * `ipn_callback_url: https://<DOMAIN>/webhook/nowpayments`;
      * `success_url` and `cancel_url` set to `https://<DOMAIN>/`;
-   * returns `{invoiceUrl}`, and the tab navigates to it.
-2. **Return.** After paying, NOWPayments sends the buyer back to `https://<DOMAIN>/?NP_id=<payment id>`; `?invoiceId=` is accepted too.
-   * The page stores the pending claim in `localStorage` and removes the ID from the address bar, so the claim resumes after a reload or a browser restart.
-   * It polls `GET /api/claim?paymentId=…` with back-off (3 s up to 30 s) for up to 6 hours, honours `Retry-After`, and gives up after 48 hours.
+   * returns `{invoiceUrl, invoiceId, orderId}`. The page saves a pending claim (`orderId` and `invoiceId`) in `localStorage` and then navigates to the invoice, so the token can still be claimed if the buyer never comes back through the redirect.
+2. **Return.** After paying, NOWPayments sends the buyer back to `https://<DOMAIN>/?NP_id=<payment id>`.
+   * The page adds the payment ID to the pending claim and removes it from the address bar, so the claim resumes after a reload or a browser restart. A return in a browser that did not start the checkout has no order ID and cannot claim.
+   * It polls `GET /api/claim?paymentId=…&orderId=…` with back-off (3 s up to 30 s) for up to 6 hours, honours `Retry-After`, and gives up after 48 hours. Before the buyer has returned it polls `?invoiceId=…&orderId=…` instead, at most every 5 minutes.
+   * **Every claim must present the order ID.** A payment or invoice ID alone, or with the wrong order ID, gets the same `404` as an unknown one.
 3. **IPN.** NOWPayments posts each status change to `/webhook/nowpayments`, signed in `x-nowpayments-sig`. The signature is an HMAC-SHA512 with `NOWPAYMENTS_IPN_SECRET` over the JSON body with its keys sorted recursively, compared in constant time.
    * Only `payment_status: "finished"` mints a token.
-   * `waiting`, `confirming`, `confirmed`, `sending`, `partially_paid`, `failed` and `expired` get `200 {"ok":true,"ignored":true}`.
+   * `waiting`, `confirming`, `confirmed`, `sending`, `failed` and `expired` get `200 {"ok":true,"ignored":true}`.
+   * `partially_paid` (the buyer sent less than the invoice amount) gets the same answer and mints nothing, but is remembered: `/api/claim` then answers `200 {"ready":false,"status":"partially_paid"}` and the page tells the buyer, instead of polling in silence. A later `finished` IPN mints as usual.
 
-**Deterministic, restart-safe tokens.** A token is minted only for a finished payment whose `order_id` is one of ours (`pro-1d:`/`pro-30d:` + 32 hex), in USD, with `price_amount` at least the tier's price. Its expiry is `created_at + tier days + 6 h`, so the same payment always yields the same token:
+**Deterministic, restart-safe tokens.** A token is minted only for a finished payment whose `order_id` is one of ours (`pro-1d:`/`pro-30d:` + 32 hex), in USD, with `price_amount` at least the tier's price. Its expiry is `settlement time + tier days`, so the buyer gets the full duration however long the payment took to settle, and the same payment record always yields the same token:
+* the settlement time is the finished payment's `updated_at`, kept between `created_at` and `created_at + 7 days` so a later update to the record cannot keep extending a token. If NOWPayments sends no `updated_at`, `created_at + 6 h` is used;
 * the IPN carries `created_at`, so it mints without an API call; an IPN without it is resolved through `GET /v1/payment/{payment_id}`;
-* a claim by payment ID that misses the in-memory record is answered from `GET /v1/payment/{payment_id}`. That covers a claim after a server restart, or one that arrives before the IPN, and returns the same token;
+* a claim by payment ID that misses the in-memory record is answered from `GET /v1/payment/{payment_id}`, if that payment's `order_id` is the one presented. That covers a claim after a server restart, or one that arrives before the IPN, and returns the same token;
+* those lookups draw on a global budget (`NOWPAYMENTS_MAX_LOOKUPS_PER_MIN`). When it is spent the claim gets `503` with `Retry-After`. Tokens already recorded from an IPN are served without a lookup, and a lookup made for a signed IPN is exempt;
 * a claim by `invoiceId` is answered only from the record of a received IPN, because NOWPayments has no lookup by invoice ID with an API key;
-* the claim window runs from `created_at` plus the 6 h grace, plus `CLAIM_TTL_HOURS`;
+* the claim window is the settlement time plus `CLAIM_TTL_HOURS`;
 * if NOWPayments is unreachable, a claim gets `503` with `Retry-After: 30`, and an IPN that needed a lookup gets `502` (so NOWPayments retries);
-* "not finished yet" answers are cached for 30 s;
+* "not finished yet" answers are cached for 30 s, per payment ID and order ID pair;
 * a redelivered IPN never mints twice.
 
 After the window, `/api/claim` returns `404`. Logs never contain payment, invoice or order IDs, tokens, the API key or lookup URLs.

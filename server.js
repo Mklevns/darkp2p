@@ -114,6 +114,15 @@ const MAX_CHECKOUTS_PER_WINDOW = 10;
 const MAX_ONION_CHECKOUTS_PER_WINDOW = 60; // all onion clients share one bucket
 const MAX_CHECKOUT_CLIENTS = 10_000; // tracked client buckets; oldest evicted first
 const MAX_CHECKOUT_BYTES = 4 * 1024;
+const MAX_CLAIM_CLIENTS = 10_000; // tracked claim buckets; oldest evicted first
+// Tracked connection buckets. Only idle ones (no open socket) are evicted,
+// oldest first; buckets with open sockets are bounded by MAX_TOTAL_CONNS.
+const MAX_TRACKED_CLIENTS = 20_000;
+// Global budget for our own calls to the NOWPayments API, whoever asks: the
+// per-client limits alone would let many addresses spend the merchant
+// account's API quota. Claim lookups and checkouts have separate budgets so
+// neither can starve the other. Lookups made for a signed IPN are exempt.
+const NP_BUDGET_WINDOW_MS = 60_000;
 
 const HEARTBEAT_MS = envInt('HEARTBEAT_MS', 30_000, 1000, 300_000);
 // A sender paused this long because its receiver is not draining means the
@@ -125,8 +134,14 @@ const SHUTDOWN_GRACE_MS = 5_000;
 const CLAIM_TTL_MS = envInt('CLAIM_TTL_HOURS', 48, 1, 168) * 3600e3;
 const INVOICE_DEDUPE_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_INVOICES = 20_000; // evicts the earliest forgetAt first
-const SETTLEMENT_GRACE_S = 6 * 3600; // added to deterministic token expiry
+const SETTLEMENT_GRACE_S = 6 * 3600; // assumed settlement delay when NOWPayments gives no updated_at
+// A payment's token lifetime and claim window run from when it settled
+// (updated_at of the finished payment), which is clamped to at most this long
+// after created_at so a later update cannot keep extending a token.
+const MAX_SETTLEMENT_DELAY_S = 7 * 86400;
 const CLAIM_MISS_TTL_MS = 30_000; // negative cache for NOWPayments lookups
+const MAX_PAYMENT_NOTES = 5_000; // partially paid payments; oldest evicted first
+const PAYMENT_NOTE_RECHECK_MS = 5 * 60 * 1000; // a claim by payment ID re-asks NOWPayments after this
 const MAX_CLAIM_MISSES = 5_000; // evicts the oldest entry first
 const CLAIM_RETRY_AFTER_S = 30;
 const MAX_WEBHOOK_BYTES = 64 * 1024;
@@ -141,6 +156,8 @@ const RELAY_RATE_FREE = 1 * MB; // bytes per second, per sender
 const RELAY_RATE_PRO = 4 * MB;
 const RELAY_HIGH_WATER = 512 * 1024; // pause the sender above this much queued for the receiver
 const RELAY_LOW_WATER = 128 * 1024;
+const MAX_NP_LOOKUPS_PER_WINDOW = envInt('NOWPAYMENTS_MAX_LOOKUPS_PER_MIN', 60, 1, 6000);
+const MAX_NP_CHECKOUTS_PER_WINDOW = envInt('NOWPAYMENTS_MAX_CHECKOUTS_PER_MIN', 30, 1, 6000);
 const MAX_RELAY_ROOMS = envInt('MAX_RELAY_ROOMS', 50, 1, 10000); // rooms with relayActive
 const MIN_THROTTLE_MS = 25;
 
@@ -573,8 +590,8 @@ function getClientIdentity(req) {
   return { key, isOnion: false };
 }
 
-const ipState = new Map(); // clientKey -> { active, timestamps[] }
-const claimHits = new Map(); // clientKey -> { count, resetAt }
+const ipState = new Map(); // clientKey -> { active, timestamps[] }; capped at MAX_TRACKED_CLIENTS
+const claimHits = new Map(); // clientKey -> { count, resetAt }; capped at MAX_CLAIM_CLIENTS
 const checkoutHits = new Map(); // clientKey -> { count, resetAt }; capped at MAX_CHECKOUT_CLIENTS
 let totalConns = 0;
 
@@ -591,6 +608,15 @@ function allowConnection({ key, isOnion }) {
   const now = Date.now();
   let state = ipState.get(key);
   if (!state) {
+    if (ipState.size >= MAX_TRACKED_CLIENTS) {
+      // Map order is insertion order: drop the oldest bucket with no open socket.
+      for (const [k, st] of ipState) {
+        if (st.active === 0) {
+          ipState.delete(k);
+          break;
+        }
+      }
+    }
     state = { active: 0, timestamps: [] };
     ipState.set(key, state);
   }
@@ -618,6 +644,10 @@ function allowClaim({ key, isOnion }) {
   const now = Date.now();
   const entry = claimHits.get(key);
   if (!entry || entry.resetAt <= now) {
+    claimHits.delete(key);
+    while (claimHits.size >= MAX_CLAIM_CLIENTS) {
+      claimHits.delete(claimHits.keys().next().value);
+    }
     claimHits.set(key, { count: 1, resetAt: now + CLAIM_WINDOW_MS });
     return true;
   }
@@ -731,15 +761,18 @@ function readRawBody(req, limitBytes) {
   });
 }
 
-// paymentKey -> { token: string|null, claimUntil, forgetAt }
+// paymentKey -> { token: string|null, orderTag, claimUntil, forgetAt }
 // Keyed by salted HMACs of the NOWPayments payment ID and, as an alias, its
-// invoice ID. The token can be read until claimUntil. The record itself is
+// invoice ID. orderTag is the salted HMAC of the order ID, which a claim must
+// present. The token can be read until claimUntil. The record itself is
 // kept until forgetAt so an IPN redelivery cannot mint a second token.
 // Capped at MAX_INVOICES; the entry with the earliest forgetAt is evicted.
 const invoices = new Map();
 
-// paymentKey -> expiresAt. Recent NOWPayments lookups that minted nothing, so
-// a polling client cannot turn every claim into an API call. Capped at
+// HMAC(payment ID + order ID) -> expiresAt. Recent NOWPayments lookups that
+// minted nothing, so a polling client cannot turn every claim into an API
+// call. Keyed on the pair, so a claim with a wrong order ID cannot make the
+// buyer's own claim miss. Capped at
 // MAX_CLAIM_MISSES; Map order is insertion order, so the oldest goes first.
 const claimMisses = new Map();
 
@@ -747,7 +780,70 @@ function paymentKey(kind, id) {
   return crypto.createHmac('sha256', BOOT_SALT).update(`${kind}:${id}`).digest('hex');
 }
 
-function rememberInvoice(key, token) {
+// Salted HMAC of an order ID: what a record keeps to check a claim against.
+function orderTag(orderId) {
+  return paymentKey('order', orderId);
+}
+
+function sameTag(a, b) {
+  return typeof a === 'string' && typeof b === 'string' && a.length === b.length &&
+    crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+// Fixed-window budgets for outbound NOWPayments calls (see NP_BUDGET_WINDOW_MS).
+const npBudget = {
+  lookup: { max: MAX_NP_LOOKUPS_PER_WINDOW, count: 0, resetAt: 0 },
+  checkout: { max: MAX_NP_CHECKOUTS_PER_WINDOW, count: 0, resetAt: 0 },
+};
+
+// Takes one call from the budget. Returns 0 when allowed, otherwise the
+// number of seconds until the window resets.
+function takeNpBudget(kind) {
+  const b = npBudget[kind];
+  const now = Date.now();
+  if (b.resetAt <= now) {
+    b.count = 0;
+    b.resetAt = now + NP_BUDGET_WINDOW_MS;
+  }
+  if (b.count >= b.max) return Math.max(1, Math.ceil((b.resetAt - now) / 1000));
+  b.count += 1;
+  return 0;
+}
+
+// paymentKey -> { status, orderTag, expiresAt, recheckAt }
+// Payments NOWPayments reports as partially_paid, under the same keys as
+// `invoices`, so a claim can say why there is no token. Capped at
+// MAX_PAYMENT_NOTES (oldest first), swept, and removed when the payment is
+// finished and its token minted.
+const paymentNotes = new Map();
+
+function paymentKeys(payment) {
+  const keys = [paymentKey('payment', payment.paymentId)];
+  if (payment.invoiceId) keys.push(paymentKey('invoice', payment.invoiceId));
+  return keys;
+}
+
+function rememberPaymentNote(payment, ttlMs) {
+  const now = Date.now();
+  const note = {
+    status: payment.status,
+    orderTag: orderTag(payment.orderId),
+    expiresAt: now + ttlMs,
+    recheckAt: now + PAYMENT_NOTE_RECHECK_MS,
+  };
+  for (const key of paymentKeys(payment)) {
+    // A short-lived note from a lookup must not shorten the one an IPN left.
+    const prev = paymentNotes.get(key);
+    if (prev && prev.expiresAt > note.expiresAt) note.expiresAt = prev.expiresAt;
+    paymentNotes.delete(key);
+    while (paymentNotes.size >= MAX_PAYMENT_NOTES) {
+      paymentNotes.delete(paymentNotes.keys().next().value);
+    }
+    paymentNotes.set(key, note);
+  }
+}
+
+function rememberInvoice(key, token, tag) {
   if (!invoices.has(key) && invoices.size >= MAX_INVOICES) {
     let oldestKey = null;
     let oldestAt = Infinity;
@@ -760,16 +856,15 @@ function rememberInvoice(key, token) {
     if (oldestKey !== null) invoices.delete(oldestKey);
   }
   const now = Date.now();
-  invoices.set(key, { token, claimUntil: now + CLAIM_TTL_MS, forgetAt: now + INVOICE_DEDUPE_MS });
+  invoices.set(key, { token, orderTag: tag, claimUntil: now + CLAIM_TTL_MS, forgetAt: now + INVOICE_DEDUPE_MS });
 }
 
 // Records a minted token under the payment ID and, when known, the invoice ID.
 function rememberPayment(payment, token) {
-  const keys = [paymentKey('payment', payment.paymentId)];
-  if (payment.invoiceId) keys.push(paymentKey('invoice', payment.invoiceId));
-  for (const key of keys) {
-    if (!invoices.has(key)) rememberInvoice(key, token);
-    claimMisses.delete(key);
+  const tag = orderTag(payment.orderId);
+  for (const key of paymentKeys(payment)) {
+    if (!invoices.has(key)) rememberInvoice(key, token, tag);
+    paymentNotes.delete(key);
   }
 }
 
@@ -806,15 +901,25 @@ function npId(value) {
   return typeof str === 'string' && NP_ID_RE.test(str) ? str : null;
 }
 
+// A NOWPayments timestamp as Unix seconds, or null. They are ISO strings in
+// the API; a number is taken as milliseconds, or seconds if it is too small
+// to be milliseconds.
+function parseTimeS(value) {
+  let ms = NaN;
+  if (typeof value === 'string') ms = Date.parse(value);
+  else if (typeof value === 'number') ms = value > 1e11 ? value : value * 1000;
+  return Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : null;
+}
+
 // Normalizes a NOWPayments payment object (IPN body or GET /v1/payment/{id}).
 // Returns null if a field we rely on is missing or malformed. createdS is
 // null when created_at is absent, so the caller can fall back to a lookup.
+// settledS (updated_at) is null when absent; see paymentAnchorS.
 function parsePayment(obj) {
   if (!isObject(obj)) return null;
   const paymentId = npId(obj.payment_id);
   if (!paymentId || typeof obj.payment_status !== 'string') return null;
   if (obj.invoice_id !== undefined && obj.invoice_id !== null && npId(obj.invoice_id) === null) return null;
-  const createdMs = typeof obj.created_at === 'string' ? Date.parse(obj.created_at) : NaN;
   return {
     paymentId,
     invoiceId: npId(obj.invoice_id),
@@ -822,7 +927,8 @@ function parsePayment(obj) {
     orderId: typeof obj.order_id === 'string' ? obj.order_id : null,
     priceAmount: typeof obj.price_amount === 'number' ? obj.price_amount : Number(obj.price_amount),
     priceCurrency: typeof obj.price_currency === 'string' ? obj.price_currency.toLowerCase() : null,
-    createdS: Number.isFinite(createdMs) && createdMs > 0 ? Math.floor(createdMs / 1000) : null,
+    createdS: parseTimeS(obj.created_at),
+    settledS: parseTimeS(obj.updated_at),
   };
 }
 
@@ -860,12 +966,22 @@ async function fetchPayment(paymentId) {
   return payment;
 }
 
-// Deterministic token for a payment: the same payment always yields the same
-// token (exp = created_at + days + 6 h), so one re-minted after a restart is
-// byte-identical. Returns null when the payment does not qualify: not
-// finished, not one of our orders, underpaid or not in USD, or past its claim
-// window (created_at + settlement grace + CLAIM_TTL), so a restart cannot let
-// a leaked payment ID re-fetch the token for its whole lifetime.
+// When a finished payment settled, in Unix seconds: the start of its token
+// lifetime and of its claim window. That is updated_at, kept within
+// [created_at, created_at + MAX_SETTLEMENT_DELAY_S]. Without updated_at it is
+// created_at + SETTLEMENT_GRACE_S.
+function paymentAnchorS(payment) {
+  if (payment.settledS === null) return payment.createdS + SETTLEMENT_GRACE_S;
+  return Math.min(Math.max(payment.settledS, payment.createdS), payment.createdS + MAX_SETTLEMENT_DELAY_S);
+}
+
+// Deterministic token for a payment: the same payment record always yields
+// the same token (exp = settlement time + days), so one re-minted after a
+// restart is byte-identical. The buyer gets the full paid duration however
+// long the payment took to settle. Returns null when the payment does not
+// qualify: not finished, not one of our orders, underpaid or not in USD, or
+// past its claim window (settlement time + CLAIM_TTL), so a restart cannot
+// let a leaked payment ID re-fetch the token for its whole lifetime.
 function tokenForPayment(payment) {
   if (!payment || payment.status !== 'finished' || payment.createdS === null) return null;
   const m = payment.orderId === null ? null : ORDER_ID_RE.exec(payment.orderId);
@@ -873,14 +989,16 @@ function tokenForPayment(payment) {
   const tier = PRO_TIERS.get(m[1]);
   if (payment.priceCurrency !== 'usd' || !(payment.priceAmount >= tier.priceUsd)) return null;
   const nowS = Math.floor(Date.now() / 1000);
-  if (nowS > payment.createdS + SETTLEMENT_GRACE_S + CLAIM_TTL_MS / 1000) return null;
-  const exp = payment.createdS + tier.days * 86400 + SETTLEMENT_GRACE_S;
+  const anchorS = paymentAnchorS(payment);
+  if (nowS > anchorS + CLAIM_TTL_MS / 1000) return null;
+  const exp = anchorS + tier.days * 86400;
   if (exp <= nowS) return null;
   return mintProTokenAt(exp);
 }
 
-// Every status except "finished" is acknowledged and dropped: waiting,
-// confirming, confirmed, sending, partially_paid, failed, expired, refunded.
+// Only "finished" mints. "partially_paid" is recorded so a claim can report
+// it. Every other status is acknowledged and dropped: waiting, confirming,
+// confirmed, sending, failed, expired, refunded.
 async function handleNowPaymentsWebhook(req, res) {
   if (!PAYMENTS_ENABLED) return respondJson(req, res, 503, { ok: false });
 
@@ -905,6 +1023,16 @@ async function handleNowPaymentsWebhook(req, res) {
 
   let payment = parsePayment(event);
   if (!payment) return respondJson(req, res, 400, { ok: false });
+  if (payment.status === 'partially_paid') {
+    // The buyer sent less than the invoice amount. No token, but remember it
+    // for the claim window so /api/claim can say so instead of a bare 404.
+    const minted = invoices.has(paymentKey('payment', payment.paymentId));
+    if (!minted && payment.orderId !== null && ORDER_ID_RE.test(payment.orderId)) {
+      rememberPaymentNote(payment, CLAIM_TTL_MS);
+      logWarn('Partially paid payment: no token minted');
+    }
+    return respondJson(req, res, 200, { ok: true, ignored: true });
+  }
   if (payment.status !== 'finished') return respondJson(req, res, 200, { ok: true, ignored: true });
 
   // Deduplicate on the payment itself: a redelivery of an IPN we never
@@ -951,7 +1079,7 @@ function allowCheckout({ key, isOnion }) {
   return true;
 }
 
-// POST /api/checkout {tier} -> {invoiceUrl}. Creates a NOWPayments invoice
+// POST /api/checkout {tier} -> {invoiceUrl, invoiceId, orderId}. Creates a NOWPayments invoice
 // whose order_id carries the tier, so the IPN alone decides the token days.
 async function handleCheckout(req, res) {
   if (!PAYMENTS_ENABLED) return respondJson(req, res, 404, { error: 'checkout disabled' });
@@ -983,6 +1111,13 @@ async function handleCheckout(req, res) {
   const tier = PRO_TIERS.get(tierName);
   if (!tier) return respondJson(req, res, 400, { error: 'unknown tier' });
 
+  const retryS = takeNpBudget('checkout');
+  if (retryS > 0) {
+    return respondJson(req, res, 503, { error: 'checkout unavailable' }, { 'Retry-After': String(retryS) });
+  }
+
+  // The random part is the buyer's claim secret: /api/claim returns the
+  // token only to a request that presents this order ID.
   const orderId = `${tierName}:${crypto.randomBytes(16).toString('hex')}`;
   let invoice;
   try {
@@ -1024,12 +1159,17 @@ async function handleCheckout(req, res) {
     logWarn(`NOWPayments checkout failed (${describeLookupError(nowPaymentsError('E_NP_BODY'))})`);
     return respondJson(req, res, 502, { error: 'checkout unavailable' });
   }
-  return respondJson(req, res, 200, { invoiceUrl });
+  // invoiceId lets the page keep a pending claim before it leaves for the
+  // invoice, so the token is not lost if the buyer never comes back through
+  // the success redirect. null if NOWPayments returned no usable ID.
+  return respondJson(req, res, 200, { invoiceUrl, invoiceId: npId(invoice.id), orderId });
 }
 
-// GET /api/claim?paymentId=… (or ?invoiceId=…). Only a payment ID can be
-// re-derived from NOWPayments after a restart; an invoice ID is answered from
-// what the IPN recorded.
+// GET /api/claim?paymentId=…&orderId=… (or ?invoiceId=…&orderId=…).
+// The order ID is the secret /api/checkout handed to the buyer: a payment or
+// invoice ID alone never returns a token. Only a payment ID can be re-derived
+// from NOWPayments after a restart; an invoice ID is answered from what the
+// IPN recorded. A wrong, missing or malformed ID is 404, like an unknown one.
 async function handleClaim(req, res, url) {
   if (!allowClaim(getClientIdentity(req))) {
     stats.rejected429 += 1;
@@ -1040,23 +1180,38 @@ async function handleClaim(req, res, url) {
   const invoiceId = paymentId === null ? url.searchParams.get('invoiceId') : null;
   const kind = paymentId !== null ? 'payment' : 'invoice';
   const id = paymentId !== null ? paymentId : invoiceId || '';
-  if (!NP_ID_RE.test(id)) return respondJson(req, res, 404, { ready: false });
+  const orderId = url.searchParams.get('orderId') || '';
+  if (!NP_ID_RE.test(id) || !ORDER_ID_RE.test(orderId)) return respondJson(req, res, 404, { ready: false });
+  const tag = orderTag(orderId);
   const key = paymentKey(kind, id);
   const entry = invoices.get(key);
 
   // The token stays readable for the whole claim window, so a response lost
   // in transit does not cost the buyer their token.
   if (entry) {
-    if (!entry.token || entry.claimUntil <= Date.now()) {
+    if (!sameTag(entry.orderTag, tag) || !entry.token || entry.claimUntil <= Date.now()) {
       return respondJson(req, res, 404, { ready: false });
     }
     return respondJson(req, res, 200, { ready: true, token: entry.token });
   }
 
+  // Known to be partially paid. A claim by payment ID asks NOWPayments again
+  // after a while, in case the "finished" IPN never reached us.
+  const note = paymentNotes.get(key);
+  if (note && note.expiresAt > Date.now() && sameTag(note.orderTag, tag) &&
+      (kind !== 'payment' || note.recheckAt > Date.now())) {
+    return respondJson(req, res, 200, { ready: false, status: note.status });
+  }
+
   // Cache miss (not finished yet, IPN not delivered, or we restarted): ask
   // NOWPayments for the payment and re-derive the deterministic token.
-  if (kind !== 'payment' || !PAYMENTS_ENABLED || isRecentClaimMiss(key)) {
+  const missKey = paymentKey('miss', `${id}:${orderId}`);
+  if (kind !== 'payment' || !PAYMENTS_ENABLED || isRecentClaimMiss(missKey)) {
     return respondJson(req, res, 404, { ready: false });
+  }
+  const retryS = takeNpBudget('lookup');
+  if (retryS > 0) {
+    return respondJson(req, res, 503, { ready: false }, { 'Retry-After': String(retryS) });
   }
 
   let payment;
@@ -1067,9 +1222,19 @@ async function handleClaim(req, res, url) {
     return respondJson(req, res, 503, { ready: false }, { 'Retry-After': String(CLAIM_RETRY_AFTER_S) });
   }
 
+  // Not this buyer's payment: indistinguishable from one that does not exist.
+  if (!payment || payment.orderId === null || !sameTag(orderTag(payment.orderId), tag)) {
+    rememberClaimMiss(missKey);
+    return respondJson(req, res, 404, { ready: false });
+  }
+  if (payment.status === 'partially_paid') {
+    rememberPaymentNote(payment, PAYMENT_NOTE_RECHECK_MS);
+    return respondJson(req, res, 200, { ready: false, status: payment.status });
+  }
+
   const token = tokenForPayment(payment);
   if (!token) {
-    rememberClaimMiss(key);
+    rememberClaimMiss(missKey);
     return respondJson(req, res, 404, { ready: false });
   }
   rememberPayment(payment, token);
@@ -1555,6 +1720,9 @@ const sweep = setInterval(() => {
   }
   for (const [key, expiresAt] of claimMisses) {
     if (expiresAt <= now) claimMisses.delete(key);
+  }
+  for (const [key, note] of paymentNotes) {
+    if (note.expiresAt <= now) paymentNotes.delete(key);
   }
   for (const [key, entry] of invoices) {
     if (entry.forgetAt <= now) invoices.delete(key);

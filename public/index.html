@@ -806,24 +806,30 @@
     const CLAIM_POLL_MS = 6 * 3600 * 1000;
     const CLAIM_FIRST_DELAY_MS = 3000;
     const CLAIM_MAX_DELAY_MS = 30_000;
+    // A claim saved at checkout that the buyer has not come back from yet (no
+    // payment ID): it may never be paid, so it is polled far less often.
+    const CLAIM_UNCONFIRMED_MAX_DELAY_MS = 5 * 60 * 1000;
     const CLAIM_MAX_RETRY_AFTER_MS = 10 * 60 * 1000;
     const CLAIM_JOIN_WAIT_MS = 5000;
     // NOWPayments payment and invoice IDs are decimal integers.
     const NP_ID_RE = /^[1-9][0-9]{0,19}$/;
+    // The order ID /api/checkout returned. The server gives the token only to
+    // a claim that presents it, so it never leaves this browser's storage.
+    const ORDER_ID_RE = /^(pro-1d|pro-30d):[a-f0-9]{32}$/;
     let joinSent = false;
 
-    // A pending claim is {paymentId, startedAt} or {invoiceId, startedAt}.
-    // Only a payment ID survives a server restart before the token is fetched.
+    // A pending claim is {orderId, startedAt} plus invoiceId (saved at checkout,
+    // when the server has one) and/or paymentId (added when NOWPayments sends
+    // the buyer back). It can be polled once it has either ID. Only a payment
+    // ID survives a server restart before the token is fetched.
     function readPendingClaim() {
       try {
         const c = JSON.parse(localStorage.getItem(PENDING_CLAIM_KEY) || 'null');
-        if (c && Number.isFinite(c.startedAt)) {
-          if (typeof c.paymentId === 'string' && NP_ID_RE.test(c.paymentId)) {
-            return { paymentId: c.paymentId, startedAt: c.startedAt };
-          }
-          if (typeof c.invoiceId === 'string' && NP_ID_RE.test(c.invoiceId)) {
-            return { invoiceId: c.invoiceId, startedAt: c.startedAt };
-          }
+        if (c && Number.isFinite(c.startedAt) && typeof c.orderId === 'string' && ORDER_ID_RE.test(c.orderId)) {
+          const claim = { orderId: c.orderId, startedAt: c.startedAt };
+          if (typeof c.paymentId === 'string' && NP_ID_RE.test(c.paymentId)) claim.paymentId = c.paymentId;
+          if (typeof c.invoiceId === 'string' && NP_ID_RE.test(c.invoiceId)) claim.invoiceId = c.invoiceId;
+          return claim;
         }
         // Anything else (an older-format claim) can no longer be claimed.
         if (c !== null) clearPendingClaim();
@@ -832,9 +838,10 @@
     }
 
     function claimQuery(claim) {
-      return claim.paymentId
+      const id = claim.paymentId
         ? `paymentId=${encodeURIComponent(claim.paymentId)}`
         : `invoiceId=${encodeURIComponent(claim.invoiceId)}`;
+      return `${id}&orderId=${encodeURIComponent(claim.orderId)}`;
     }
 
     function writePendingClaim(claim) {
@@ -846,7 +853,8 @@
     }
 
     // One claim request. Resolves to { token } on success, otherwise to
-    // { retryAfterMs } (null when the server gave no Retry-After).
+    // { retryAfterMs } (null when the server gave no Retry-After), with
+    // status: 'partially_paid' when the server says the payment fell short.
     async function claimOnce(claim) {
       try {
         const res = await fetch(`/api/claim?${claimQuery(claim)}`, {
@@ -855,7 +863,7 @@
         if (res.ok) {
           const data = await res.json();
           if (data.ready && typeof data.token === 'string' && data.token) return { token: data.token };
-          return { retryAfterMs: null };
+          return { retryAfterMs: null, status: data.status === 'partially_paid' ? data.status : undefined };
         }
         if (res.status === 429 || res.status === 503) {
           const secs = Number(res.headers.get('Retry-After'));
@@ -871,12 +879,18 @@
     async function pollClaim(claim, onFirstAttempt) {
       const pollUntil = Date.now() + CLAIM_POLL_MS;
       let delay = CLAIM_FIRST_DELAY_MS;
-      log('Checking payment status for Pro TURN token...');
+      const maxDelay = claim.paymentId ? CLAIM_MAX_DELAY_MS : CLAIM_UNCONFIRMED_MAX_DELAY_MS;
+      let partialShown = false;
+      // A checkout that was never returned from may simply be unpaid: stay quiet.
+      if (claim.paymentId) log('Checking payment status for Pro TURN token...');
 
       for (let first = true; ; first = false) {
         if (Date.now() - claim.startedAt > CLAIM_MAX_AGE_MS) {
           clearPendingClaim();
-          log('Pro token claim expired (48 h). Contact support with your payment ID if you paid.', 'err');
+          // Without a payment ID this was most likely a checkout that was never paid.
+          if (claim.paymentId) {
+            log('Pro token claim expired (48 h). Contact support with your payment ID if you paid.', 'err');
+          }
           return;
         }
 
@@ -891,41 +905,48 @@
           return;
         }
 
+        if (result.status === 'partially_paid' && !partialShown) {
+          partialShown = true;
+          log('Payment received, but it is less than the invoice amount (partially paid), so no Pro ' +
+            'token was issued. Contact support with your NOWPayments payment ID. This page keeps ' +
+            'checking in case the payment is completed.', 'err');
+        }
+
         if (Date.now() >= pollUntil) {
-          log('Token not ready yet. Reload this page later to keep checking.', 'err');
+          if (claim.paymentId) log('Token not ready yet. Reload this page later to keep checking.', 'err');
           return;
         }
         const wait = Math.max(delay, result.retryAfterMs || 0);
         await new Promise((r) => setTimeout(r, Math.min(wait, Math.max(0, pollUntil - Date.now()))));
-        delay = Math.min(delay * 2, CLAIM_MAX_DELAY_MS);
+        delay = Math.min(delay * 2, maxDelay);
       }
     }
 
     // Returns a promise that settles after the first claim attempt (or at once
     // if there is nothing to claim). Polling continues in the background.
-    // NOWPayments returns the buyer to success_url with ?NP_id=<payment id>;
-    // ?invoiceId= is accepted as well.
+    // NOWPayments returns the buyer to success_url with ?NP_id=<payment id>.
+    // The payment ID is added to the claim saved at checkout; without that
+    // saved order ID (another browser, cleared storage) nothing can be claimed.
     function autoClaimToken() {
       const params = new URLSearchParams(location.search);
       const paymentId = params.get('NP_id');
-      const invoiceId = params.get('invoiceId');
-      const fresh = paymentId && NP_ID_RE.test(paymentId)
-        ? { paymentId }
-        : invoiceId && NP_ID_RE.test(invoiceId) ? { invoiceId } : null;
-      if (fresh) {
+      if (paymentId !== null && NP_ID_RE.test(paymentId)) {
         const existing = readPendingClaim();
-        const same = existing &&
-          existing.paymentId === fresh.paymentId && existing.invoiceId === fresh.invoiceId;
-        if (!same) writePendingClaim({ ...fresh, startedAt: Date.now() });
+        if (!existing) {
+          log('Payment return detected, but this browser has no record of the checkout. Open this ' +
+            'page in the browser that started the payment, or contact support with your payment ID.', 'err');
+        } else if (existing.paymentId !== paymentId) {
+          writePendingClaim({ ...existing, paymentId });
+        }
       }
-      if (paymentId !== null || invoiceId !== null) {
+      if (paymentId !== null || params.get('invoiceId') !== null) {
         const cleanUrl = `${location.pathname}${location.hash}`;
         history.replaceState(null, '', cleanUrl);
         shareUrlEl.value = location.href;
       }
 
       const claim = readPendingClaim();
-      if (!claim) return Promise.resolve();
+      if (!claim || !(claim.paymentId || claim.invoiceId)) return Promise.resolve();
 
       return new Promise((resolve) => {
         pollClaim(claim, resolve).catch(() => {}).finally(resolve);
@@ -2747,6 +2768,13 @@
         const data = res.ok ? await res.json() : null;
         const invoiceUrl = httpsUrl(data && data.invoiceUrl);
         if (invoiceUrl) {
+          // Saved before leaving, so the token can still be claimed if the
+          // redirect back never happens (tab closed, paid from another app).
+          if (typeof data.orderId === 'string' && ORDER_ID_RE.test(data.orderId)) {
+            const claim = { orderId: data.orderId, startedAt: Date.now() };
+            if (typeof data.invoiceId === 'string' && NP_ID_RE.test(data.invoiceId)) claim.invoiceId = data.invoiceId;
+            writePendingClaim(claim);
+          }
           log('Redirecting to NOWPayments checkout...', 'ok');
           location.assign(invoiceUrl);
           return;
