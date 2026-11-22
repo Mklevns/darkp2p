@@ -98,7 +98,7 @@
       --accent: #00f0ff;
       --warn: #ff2a6d;
       --text: #d1d9e0;
-      --muted: #6c7a89;
+      --muted: #8a97a5;
     }
     * {
       box-sizing: border-box;
@@ -339,6 +339,10 @@
       font-size: 0.72rem;
     }
     .site-nav a {
+      display: inline-flex;
+      align-items: center;
+      min-width: 24px;
+      min-height: 24px;
       color: var(--muted);
       text-decoration: none;
     }
@@ -441,6 +445,7 @@
 </head>
 <body>
   <div class="container">
+    <main>
     <h1>DARKP2P // DEAD DROP</h1>
     <div class="sub">E2E AES-256-GCM + DTLS P2P STREAM • ZERO SERVER STORAGE</div>
 
@@ -534,6 +539,7 @@
         <p>No. Direct P2P connections expose your IP address to the other peer during NAT traversal. To hide it, turn on Force WebSocket relay, turn on Hide my IP with a Pro token, or use a <a href="https://pr.tn/ref/CHFBFCM8" target="_blank" rel="noopener noreferrer sponsored">VPN</a> or Tor Browser.</p>
       </details>
     </section>
+    </main>
 
     <nav class="site-nav" aria-label="Site">
       <a href="/" aria-current="page">Home</a>
