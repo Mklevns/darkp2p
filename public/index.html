@@ -644,6 +644,98 @@
       return out;
     }
 
+    let badgeSeq = 0;
+    // True once we've signaled an ICE candidate that reveals one of our real IPs
+    // to the current peer. Stays true for that peer even if TURN or the WS relay wins.
+    let localIpSignaled = false;
+
+    function candidateExposesIp(candidate) {
+      const type = candidate.type;
+      const addr = candidate.address || '';
+      if (type === 'srflx' || type === 'prflx') return true;
+      if (type === 'host') return !!addr && !addr.endsWith('.local');
+      if (type === 'relay') {
+        const raddr = candidate.relatedAddress || '';
+        return !!raddr && raddr !== '0.0.0.0' && raddr !== '::';
+      }
+      // Unknown/unparsed candidate type: assume it may expose an address
+      return true;
+    }
+
+    function setBadges(modeClass, modeText, ipClass, ipText) {
+      modeBadge.className = `badge${modeClass ? ' ' + modeClass : ''}`;
+      modeBadge.textContent = modeText;
+      ipBadge.className = `badge${ipClass ? ' ' + ipClass : ''}`;
+      ipBadge.textContent = ipText;
+    }
+
+    async function updateStatusBadges(state = 'standby') {
+      const seq = ++badgeSeq;
+
+      if (state === 'standby') {
+        setBadges('', 'TUNNEL: STANDBY', '', 'IP STATUS: WAITING FOR PEER');
+        return;
+      }
+
+      if (state === 'closed') {
+        setBadges('warn', 'TUNNEL: CLOSED', '', 'IP STATUS: DISCONNECTED');
+        return;
+      }
+
+      if (state === 'interrupted') {
+        setBadges('warn', 'TUNNEL: INTERRUPTED', '', 'IP STATUS: RECONNECTING');
+        return;
+      }
+
+      const exposed = ['warn', 'IP EXPOSED TO PEER'];
+      const masked = ['ok', 'IP MASKED FROM PEER'];
+
+      if (transportMode === 'ws') {
+        // Candidates sent during an earlier WebRTC attempt already reached this peer
+        setBadges('accent', 'TUNNEL: E2E WS RELAY', ...(localIpSignaled ? exposed : masked));
+        return;
+      }
+
+      // Inspect the selected ICE candidate pair to see whether our side goes through TURN.
+      // Only our LOCAL candidate matters: a relayed remote candidate doesn't hide our IP.
+      let route = 'unknown'; // 'relay' | 'direct' | 'unknown'
+      if (pc && typeof pc.getStats === 'function') {
+        try {
+          const stats = await pc.getStats();
+          let pairId = null;
+          stats.forEach((report) => {
+            if (report.type === 'transport' && report.selectedCandidatePairId) {
+              pairId = report.selectedCandidatePairId;
+            }
+          });
+          stats.forEach((report) => {
+            if (report.type !== 'candidate-pair') return;
+            const selected = pairId
+              ? report.id === pairId
+              : report.state === 'succeeded' && report.nominated;
+            if (!selected) return;
+            const local = stats.get(report.localCandidateId);
+            if (local?.candidateType) route = local.candidateType === 'relay' ? 'relay' : 'direct';
+          });
+        } catch {}
+      }
+
+      // A newer state change landed while getStats() was pending — don't overwrite it
+      if (seq !== badgeSeq) return;
+
+      if (route === 'relay') {
+        setBadges('accent', 'TUNNEL: PRO TURN RELAY', ...(localIpSignaled ? exposed : masked));
+      } else if (route === 'direct') {
+        // The peer now sees our address on the packets themselves; that sticks even
+        // if we later switch to TURN or the WS relay.
+        localIpSignaled = true;
+        setBadges('ok', 'TUNNEL: DIRECT P2P (STUN)', ...exposed);
+      } else {
+        setBadges('accent', 'TUNNEL: P2P (ROUTE UNKNOWN)',
+          ...(localIpSignaled ? exposed : ['', 'IP STATUS: UNVERIFIED']));
+      }
+    }
+
     function setDropEnabled(enabled, label) {
       fileInput.disabled = !enabled;
       dropzone.classList.toggle('disabled', !enabled);
@@ -654,60 +746,6 @@
       return transportMode === 'ws'
         ? 'DROP FILE HERE OR CLICK TO SELECT (WS RELAY)'
         : 'DROP FILE HERE OR CLICK TO SELECT';
-    }
-
-    async function updateStatusBadges(state = 'standby') {
-      if (state === 'standby') {
-        modeBadge.className = 'badge';
-        modeBadge.textContent = 'TUNNEL: STANDBY';
-        ipBadge.className = 'badge';
-        ipBadge.textContent = 'IP STATUS: WAITING FOR PEER';
-        return;
-      }
-
-      if (state === 'closed') {
-        modeBadge.className = 'badge warn';
-        modeBadge.textContent = 'TUNNEL: CLOSED';
-        ipBadge.className = 'badge';
-        ipBadge.textContent = 'IP STATUS: DISCONNECTED';
-        return;
-      }
-
-      if (transportMode === 'ws') {
-        modeBadge.className = 'badge accent';
-        modeBadge.textContent = 'TUNNEL: E2E WS RELAY';
-        ipBadge.className = 'badge ok';
-        ipBadge.textContent = 'IP MASKED FROM PEER';
-        return;
-      }
-
-      let usingTurn = document.getElementById('hideIpToggle')?.checked || false;
-      if (pc && typeof pc.getStats === 'function') {
-        try {
-          const stats = await pc.getStats();
-          stats.forEach((report) => {
-            if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) {
-              const local = stats.get(report.localCandidateId);
-              const remote = stats.get(report.remoteCandidateId);
-              if (local?.candidateType === 'relay' || remote?.candidateType === 'relay') {
-                usingTurn = true;
-              }
-            }
-          });
-        } catch {}
-      }
-
-      if (usingTurn) {
-        modeBadge.className = 'badge accent';
-        modeBadge.textContent = 'TUNNEL: PRO TURN RELAY';
-        ipBadge.className = 'badge ok';
-        ipBadge.textContent = 'IP MASKED FROM PEER';
-      } else {
-        modeBadge.className = 'badge ok';
-        modeBadge.textContent = 'TUNNEL: DIRECT P2P (STUN)';
-        ipBadge.className = 'badge warn';
-        ipBadge.textContent = 'IP EXPOSED TO PEER';
-      }
     }
 
     function initRoomAndKey() {
@@ -1683,6 +1721,16 @@
       if (notifyPeer && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'ws-fallback' }));
       }
+      if (ws.readyState !== WebSocket.OPEN) {
+        log('WebRTC unavailable and signaling relay is closed.', 'err');
+        setDropEnabled(false, 'RELAY CLOSED');
+        updateStatusBadges('closed');
+        return;
+      }
+      log(localIpSignaled
+        ? 'E2E-encrypted WebSocket relay active (IP was already shared during the WebRTC attempt).'
+        : 'E2E-encrypted WebSocket relay active (IP masked from peer).', 'ok');
+      setDropEnabled(true, readyDropLabel());
       log('E2E-encrypted WebSocket relay active (IP masked from peer).', 'ok');
       startHandshake(ws);
       updateStatusBadges('active');
@@ -2184,6 +2232,7 @@
         log('E2E encrypted P2P tunnel established.', 'ok');
         startHandshake(channel);
         updateStatusBadges('active');
+        watchSelectedPair();
       };
 
       channel.onclose = () => {
@@ -2207,8 +2256,19 @@
       };
     }
 
+    // Re-check the route when ICE switches to a different candidate pair (where supported)
+    function watchSelectedPair() {
+      const iceTransport = pc?.sctp?.transport?.iceTransport;
+      if (iceTransport && 'onselectedcandidatepairchange' in iceTransport) {
+        iceTransport.onselectedcandidatepairchange = () => {
+          if (transportMode === 'webrtc' && dc?.readyState === 'open') updateStatusBadges('active');
+        };
+      }
+    }
+
     async function initPeer(initiator) {
       transportMode = 'webrtc';
+      localIpSignaled = false;
       const forceWs = document.getElementById('forceWsRelay').checked;
 
       if (forceWs || typeof RTCPeerConnection === 'undefined') {
@@ -2239,7 +2299,9 @@
 
       pc.onicecandidate = ({ candidate }) => {
         if (candidate && ws.readyState === WebSocket.OPEN) {
+          if (candidateExposesIp(candidate)) localIpSignaled = true;
           ws.send(JSON.stringify({ type: 'candidate', candidate }));
+          if (dc?.readyState === 'open') updateStatusBadges('active');
         }
       };
 
@@ -2250,7 +2312,11 @@
         } else if (pc && pc.connectionState === 'disconnected') {
           log('WebRTC connection disconnected.', 'err');
           setDropEnabled(false, 'CONNECTION LOST');
-          updateStatusBadges('closed');
+          updateStatusBadges('interrupted');
+        } else if (pc && pc.connectionState === 'connected' && dc?.readyState === 'open') {
+          if (!isTransferring) setDropEnabled(true, readyDropLabel());
+          updateStatusBadges('active');
+          watchSelectedPair();
         }
       };
 
