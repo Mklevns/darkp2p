@@ -1,10 +1,15 @@
 {
   "name": "darkp2p",
   "version": "1.0.0",
-  "description": "Zero-knowledge WebRTC dead-drop file transfer",
-  "main": "server.js",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "check": "node --check server.js && node scripts/check-inline-js.mjs",
+    "check:compose": "sh scripts/compose-gate.sh"
   },
   "dependencies": {
     "ws": "^8.18.0"
