@@ -37,8 +37,12 @@ public data class ValidMeta(val name: String, val size: Long, val mime: String, 
  * that the state machines refuse too ([Unknown], a null field, [Ack.valid]).
  */
 public sealed interface Ctrl {
-    /** [nonce] is null when the field is missing or not text. */
-    public data class Hello(val versionOk: Boolean, val nonce: String?) : Ctrl
+    /**
+     * [nonce] is null when the field is missing or not text. [caps] are the optional
+     * features the peer offers (see [Capabilities]); the web client sends none and
+     * ignores the field.
+     */
+    public data class Hello(val versionOk: Boolean, val nonce: String?, val caps: Set<String> = emptySet()) : Ctrl
     public data object HelloAck : Ctrl
 
     /** Not yet validated: see [parseMeta]. */
@@ -53,6 +57,14 @@ public sealed interface Ctrl {
     public data class Ack(val seq: Long, val done: Boolean, val valid: Boolean) : Ctrl
     public data object Complete : Ctrl
     public data class Abort(val reason: String?) : Ctrl
+
+    /** A chat message (Android extension). [text] is null unless the field is text. */
+    public class Chat(public val text: String?) : Ctrl {
+        override fun toString(): String = "Chat(***)"
+    }
+
+    /** Receipt for every chat message up to [seq] of the peer's chat stream; null unless an integer. */
+    public data class ChatAck(val seq: Long?) : Ctrl
 
     /** Any other JSON object or array. */
     public data object Unknown : Ctrl
@@ -77,7 +89,14 @@ public sealed interface Ctrl {
         }
 
         public fun of(obj: JsonValue.Obj): Ctrl = when (obj["type"]?.stringOrNull) {
-            "hello" -> Hello((obj["v"] as? JsonValue.Num)?.value == WireConstants.PROTOCOL_VERSION.toDouble(), obj["nonce"]?.stringOrNull)
+            "hello" -> Hello(
+                (obj["v"] as? JsonValue.Num)?.value == WireConstants.PROTOCOL_VERSION.toDouble(),
+                obj["nonce"]?.stringOrNull,
+                // Anything but a list of strings offers nothing; unknown names are kept and ignored.
+                (obj["caps"] as? JsonValue.Arr)?.items?.take(Capabilities.MAX_LISTED)?.mapNotNull { it.stringOrNull }?.toSet() ?: emptySet(),
+            )
+            "chat" -> Chat(obj["text"]?.stringOrNull)
+            "chat-ack" -> ChatAck(obj["seq"]?.safeIntegerOrNull)
             "hello-ack" -> HelloAck
             "meta" -> Meta(obj)
             "done" -> Done(obj["chunks"]?.safeIntegerOrNull, obj["size"]?.safeIntegerOrNull)
@@ -134,8 +153,17 @@ public sealed interface Ctrl {
 
         // ---- Encoding: the exact JSON text the web client produces for each message. ----
 
-        public fun hello(nonce: ByteArray): String =
-            Json.stringify(Json.obj("type" to Json.str("hello"), "v" to Json.num(3), "nonce" to Json.str(Base64Url.encode(nonce))))
+        /** Without [caps] this is the page's hello byte for byte; with them, one more field the page never reads. */
+        public fun hello(nonce: ByteArray, caps: List<String> = emptyList()): String = Json.stringify(
+            Json.obj(
+                "type" to Json.str("hello"), "v" to Json.num(3), "nonce" to Json.str(Base64Url.encode(nonce)),
+                "caps" to caps.takeIf { it.isNotEmpty() }?.let { JsonValue.Arr(it.map(Json::str)) },
+            ),
+        )
+
+        public fun chat(text: String): String = Json.stringify(Json.obj("type" to Json.str("chat"), "text" to Json.str(text)))
+
+        public fun chatAck(seq: Long): String = """{"type":"chat-ack","seq":$seq}"""
 
         public fun helloAck(): String = Json.stringify(Json.obj("type" to Json.str("hello-ack"), "v" to Json.num(3)))
 
@@ -158,4 +186,43 @@ public sealed interface Ctrl {
 
         public fun abort(reason: AbortReason): String = """{"type":"abort","reason":"${reason.wire}"}"""
     }
+}
+
+/**
+ * Optional features a client offers in its `hello` (`"caps": [...]`).
+ *
+ * A feature is used only when both peers offer it. The web client offers none
+ * and reads only `v` and `nonce` from a hello, so offering is invisible to it,
+ * and nothing of an optional feature is ever sent to it.
+ */
+public object Capabilities {
+    /** Text chat between two Android clients. */
+    public const val CHAT: String = "chat"
+
+    /** Names read from one hello; more are ignored. */
+    public const val MAX_LISTED: Int = 16
+}
+
+/**
+ * Chat (Android to Android only).
+ *
+ * Each side has one chat stream per session: a random transfer ID, with CTRL
+ * frames numbered 0, 1, 2, ... under the session's transfer key. A frame is
+ * either `{"type":"chat","text":...}` or `{"type":"chat-ack","seq":n}`, the
+ * receipt for every message up to frame `n` of the other side's stream. The
+ * receiver accepts exactly the next number, so the relay can neither replay,
+ * reorder nor silently drop a message, and a new session starts new streams.
+ */
+public object ChatConstants {
+    /** Longest message, in UTF-8 bytes. With the frame around it this stays far below the relay's 64 KiB limit. */
+    public const val MAX_TEXT_BYTES: Int = 8 * 1024
+
+    /**
+     * Messages awaiting their receipt. The receiver holds control frames in a
+     * queue of 32 while a file chunk is written; this keeps chat well inside it.
+     */
+    public const val WINDOW: Int = 8
+
+    /** Relay budget a message must leave untouched, so chat cannot spend what the room needs to stay usable. */
+    public const val RELAY_RESERVE: Long = WireConstants.RELAY_MIN_REMAINING
 }

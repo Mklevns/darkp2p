@@ -193,6 +193,28 @@ Toggling Force-WS **off** while on the relay → `rejoinRoom()`: close the signa
 * `orderId` = `/^(pro-1d|pro-30d):[a-f0-9]{32}$/` is the claim secret; IDs `/^[1-9][0-9]{0,19}$/`.
 * Page poll schedule (`pollClaim`): first try 3 s, doubling to 30 s (with paymentId) or 5 min (invoice-only), honour `Retry-After` ≤ 10 min, each poll run ≤ 6 h, claim discarded 48 h after `startedAt`.
 
+### 1.10 Chat (Android ↔ Android extension)
+
+Not part of the page's protocol, and built so the page never sees any of it.
+
+**Offer.** The app's hello carries one more field: `{"type":"hello","v":3,"nonce":"…","caps":["chat"]}`. The page's `acceptHello` reads only `v` and `nonce`, so to the page this is an ordinary v3 hello (`test/caps.test.mjs` runs the real page against such a peer). The page's own hello has no `caps`. Chat is on only when **both** hellos of the current session list `"chat"`; with a web peer it is off, the chat box stays hidden, and no chat frame is ever sent. Unknown names in `caps` are ignored, and anything but a list of strings offers nothing.
+
+**Why it must never reach the page.** The page has no `chat` message: it answers one with `Unexpected control frame`, and if it is receiving a file at that moment it aborts that file. The gate is therefore in the state machine (`chatEnabled()`), not in the UI.
+
+**Frames.** Each side has one chat stream per session: a random 16-byte transfer ID with CTRL frames numbered 0, 1, 2, … under the session's transfer key (so chat is bound to both hello nonces like everything else). A frame is one of:
+
+```jsonc
+{"type":"chat","text":"…"}        // 1…8192 UTF-8 bytes
+{"type":"chat-ack","seq":n}       // receipt for the chat message in frame n of the OTHER side's stream
+```
+
+**Rules.**
+* The receiver accepts only the next frame number of the one stream the peer opened in this session. A replayed, reordered or forged frame is refused; if the relay drops a message, the stream stops instead of showing later messages out of sequence. A refused chat frame never ends a file transfer.
+* At most 8 messages may await their receipt (`ChatConstants.WINDOW`). The receiver holds at most 32 control frames while a chunk is written, so chat cannot overflow that queue during a transfer.
+* On the WebSocket relay every chat frame and receipt counts against the room budget like any binary frame. A message is refused locally when it would leave less than `RELAY_MIN_REMAINING` (4096 bytes), so chat cannot exhaust the room.
+* A new session (new hello on either side, relay pause/resume, reconnect) starts new streams. Messages still awaiting a receipt are reported as `SESSION_ENDED`: they may or may not have been read.
+* No timestamps, names or read receipts are sent. The text is never put in a log line, notice or `toString()`.
+
 ---
 
 ## 2. Module & dependency architecture
@@ -830,6 +852,7 @@ Each item names the control and how it is verified. **[T]** = automated test, **
 - [ ] Room key and session keys are memory-only. `RoomKey.close()` zero-fills on leave. Documented limitation: `SecretKeySpec` copies the key and cannot be wiped. **[R]**
 - [ ] No room IDs, keys, tokens, order/payment IDs, SDP/ICE or file names in logs. Release builds strip `android.util.Log` via R8 `-assumenosideeffects`. `checkForbiddenApis` forbids `println`, `Log.*`, `printStackTrace` in main code. **[R][T]** (a log-capture test greps for the room ID during a transfer)
 - [ ] Vault = AES-256-GCM blob under a non-exportable Keystore key (`setIsStrongBoxBacked` when available), AAD `"darkp2p-vault/v1"`, `AtomicFile`. Contents mirror the page's names: `darkp2p_token`, `darkp2p_pending_claim` (same JSON), which allows copy/paste export between web and app. The key does **not** require user authentication, because the background claim worker and auto-join need it. Biometric lock is a UI gate (5.5). **[T]**
+- [ ] Chat text exists only in memory, for the life of the room: never persisted, logged, or shown in a notification's public version; cleared when the room is left. **[T]**
 - [ ] `android:allowBackup="false"`, `dataExtractionRules` excluding all domains, `fullBackupContent="false"`. **[R]**
 - [ ] No room history by default. An optional "recent rooms" list stores the room ID only, never the key. **[R]**
 
@@ -1017,7 +1040,7 @@ Each phase ends with a gate that must pass in CI (or be signed off for **[M]** i
 * **Gate:** 4 GB transfer emulator↔Chromium with heap growth < 16 MB and equal hashes; `am kill` mid-receive leaves no visible file after relaunch; Doze force-idle transfer completes **[M]**; FGS timeout aborts with `timeout`; vault round-trip survives reboot and fails closed when the Keystore key is removed; claim worker re-enqueues at ≥ 5 min and stops at 48 h (`TestDriver`).
 
 ### Phase 5 — `:app` (Compose)
-* Room screen (state-driven from `RoomState`), offer sheet with Downloads/"Save as…" (`ACTION_CREATE_DOCUMENT`), share targets (single + multiple → queue), App Links + manual paste + QR generate/scan, settings (Force WS, Hide IP, Tor/Orbot/embedded, show names in notifications, FLAG_SECURE), Pro screen (checkout via Custom Tab or Tor Browser, payment-ID paste, token import/export), biometric lock.
+* Room screen (state-driven from `RoomState`), chat box shown only while `RoomState.Ready.chat` is true (history kept in memory for the life of the room, cleared on leave; message text hidden from lock-screen notifications), offer sheet with Downloads/"Save as…" (`ACTION_CREATE_DOCUMENT`), share targets (single + multiple → queue), App Links + manual paste + QR generate/scan, settings (Force WS, Hide IP, Tor/Orbot/embedded, show names in notifications, FLAG_SECURE), Pro screen (checkout via Custom Tab or Tor Browser, payment-ID paste, token import/export), biometric lock.
 * **Gate:** Compose UI tests for every `RoomState` (screenshot tests); TalkBack and font-scale 200 % pass **[M]**; link-intake fuzz (intent extras) never crashes and never connects to a non-default host without confirmation; full §5 checklist walked on a physical device **[M]**.
 
 ### Phase 6 — Hardening & distribution
@@ -1037,6 +1060,7 @@ Locked for v1. `server.js` stays untouched; the wire contract in §1 is unchange
 | D3 | Hide My IP without Pro | Fall back to the encrypted WebSocket relay (free cap from `ready`, 50 MB by default) instead of blocking. Inline note: Pro unlocks TURN (no relay cap) and the 500 MB relay. | §0.3 F3, §1.8, §3.4 |
 | D4 | Idle room | The Foreground Service stops after 10 minutes of inactivity and leaves a quiet status notification. `WakeLock`/`WifiLock` are released as soon as bytes stop moving. | §4.7 |
 | D5 | ICE restart on network change | None in v1. libwebrtc rides out `disconnected`; a tunnel that `failed` after being up goes to `Interrupted` with a manual Reconnect (clean rejoin). | §1.8, §3.4, §4.5 |
+| D7 | Chat | Android ↔ Android only, offered as `"caps":["chat"]` in the hello and used only when both sides offer it. No web change. Implemented in `:protocol`; the chat box is Phase 5. | §1.10 |
 | D6 | Local addresses in Direct P2P | Signaled (fast LAN transfers). mDNS obfuscation only if libwebrtc offers it cleanly; the Java API does not today, so v1 has none. Hide My IP (TURN `RELAY` policy, or the WS relay) is the single switch that hides local and public addresses. | §0.3 F12, §4.5, §5.2 |
 
 Notes on how the decisions meet the existing clients:

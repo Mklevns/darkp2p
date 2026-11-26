@@ -19,6 +19,7 @@ import java.security.SecureRandom
  *  - A tunnel that fails after it was up waits for a manual reconnect, or for
  *    the peer to ask for the relay, instead of falling back by itself.
  *  - ICE candidates are capped below the server's per-pairing limit.
+ *  - Chat, used only when the peer's hello offers it too (never with the page).
  *  - A refused WebSocket upgrade with status 403 (wrong Origin) is not retried.
  */
 public class RoomMachine(
@@ -80,6 +81,15 @@ public class RoomMachine(
     private var peerNonce: ByteArray? = null
     private var session: TransferKeyCache? = null
     private var sessionUnconfirmed = false
+
+    // ---- Chat (only when both peers offered it in this session's hellos) ----
+    private var offeredChat = false // what our current hello said
+    private var peerCaps: Set<String> = emptySet()
+    private var myChatId: TransferId? = null
+    private var myChatNext = 0L
+    private var peerChatId: TransferId? = null
+    private var peerChatNext = 0L
+    private val chatUnacked = ArrayDeque<Pair<Long, Long>>() // (frame seq, host's localId), oldest first
 
     // WebSocket relay waiting states, all cleared by resetHandshake():
     private var relayRetryArmed = false // the server's relay was full; a retry is scheduled
@@ -171,6 +181,7 @@ public class RoomMachine(
             RoomInput.CancelReceive -> abortRx(AbortReason.USER, Notice.RECEIVE_ABORTED, "cancelled")
             is RoomInput.SetPolicy -> setPolicy(input.policy)
             is RoomInput.SetToken -> token = input.token
+            is RoomInput.SendChat -> sendChat(input.localId, input.text)
             RoomInput.ResumeRelay -> if (relayIdle) resumeRelay(true)
             RoomInput.Reconnect -> rejoinRoom(closeTunnel = true)
             is RoomInput.ChunkRead -> onChunkRead(input.transfer, input.bytes)
@@ -224,7 +235,7 @@ public class RoomMachine(
                 val onRelay = mode == Mode.WS
                 return RoomState.Ready(
                     transport, ip, relayBudget?.cap.takeIf { onRelay }, relayBudget?.remaining.takeIf { onRelay },
-                    peerSignalingAway = peerAway, hideIpViaRelay = hideIpViaRelay && onRelay,
+                    peerSignalingAway = peerAway, hideIpViaRelay = hideIpViaRelay && onRelay, chat = chatEnabled(),
                 )
             }
             if (handshake == Handshake.PENDING) return RoomState.Verifying(transport, sessionUnconfirmed)
@@ -320,6 +331,8 @@ public class RoomMachine(
         myNonce = null
         peerNonce = null
         session = null
+        peerCaps = emptySet()
+        resetChat()
         sessionUnconfirmed = false
         cancel(TimerId.RELAY_RETRY)
         relayRetryArmed = false
@@ -341,7 +354,10 @@ public class RoomMachine(
 
     private fun sendHello(channel: ChannelRef?, nonce: ByteArray) {
         val id = TransferId(randomBytes(WireConstants.TRANSFER_ID_LEN))
-        sendFrame(channel, FrameType.HELLO, id, 0, Ctrl.hello(nonce).toByteArray(Charsets.UTF_8), FrameKeys.hello(roomKey, id))
+        // The page reads only `v` and `nonce`; `caps` is for a peer that knows it.
+        offeredChat = policy.chat
+        val caps = if (offeredChat) listOf(Capabilities.CHAT) else emptyList()
+        sendFrame(channel, FrameType.HELLO, id, 0, Ctrl.hello(nonce, caps).toByteArray(Charsets.UTF_8), FrameKeys.hello(roomKey, id))
     }
 
     // Derives the session once both nonces are known and confirms it to the peer.
@@ -375,6 +391,7 @@ public class RoomMachine(
         val nonce = randomBytes(WireConstants.SESSION_NONCE_LEN)
         myNonce = nonce
         session = null
+        resetChat()
         sendHello(channel, nonce)
         if (handshakeFailed()) return
         endTransfersForNewSession()
@@ -393,6 +410,8 @@ public class RoomMachine(
         endTransfersForNewSession()
         peerNonce = nonce
         session = null
+        peerCaps = hello.caps
+        resetChat()
         if (handshake == Handshake.OK || handshake == Handshake.PENDING) enterPending()
         updateSession()
     }
@@ -404,6 +423,91 @@ public class RoomMachine(
         handshake = Handshake.OK
         sessionUnconfirmed = false
         notify(Notice.KEY_VERIFIED)
+    }
+
+    // ------------------------------------------------------------------
+    // Chat
+    // ------------------------------------------------------------------
+
+    private fun chatEnabled(): Boolean =
+        offeredChat && Capabilities.CHAT in peerCaps && handshake == Handshake.OK && session != null && isOpen(activeChannel())
+
+    // A session change starts new chat streams; receipts of the old one cannot arrive any more.
+    private fun resetChat() {
+        while (chatUnacked.isNotEmpty()) out += RoomEffect.ChatFailed(chatUnacked.removeFirst().second, ChatFailure.SESSION_ENDED)
+        myChatId = null
+        myChatNext = 0
+        peerChatId = null
+        peerChatNext = 0
+    }
+
+    // The next frame of our chat stream. Returns its seq, or null if it could not be sent.
+    private fun sendChatFrame(json: String): Long? {
+        val id = myChatId ?: TransferId(randomBytes(WireConstants.TRANSFER_ID_LEN)).also { myChatId = it }
+        if (myChatNext > FrameCodec.MAX_SEQ) return null
+        if (!sendCtrl(activeChannel(), id, myChatNext, json, session)) return null
+        return myChatNext++
+    }
+
+    private fun sendChat(localId: Long, text: String) {
+        val failure = when {
+            !chatEnabled() -> ChatFailure.UNAVAILABLE
+            text.isEmpty() -> ChatFailure.EMPTY
+            text.toByteArray(Charsets.UTF_8).size > ChatConstants.MAX_TEXT_BYTES -> ChatFailure.TOO_LONG
+            chatUnacked.size >= ChatConstants.WINDOW -> ChatFailure.BUSY
+            else -> null
+        }
+        if (failure != null) {
+            out += RoomEffect.ChatFailed(localId, failure)
+            return
+        }
+        val json = Ctrl.chat(text)
+        // The relay counts the message and its receipt against the room.
+        val cost = 2L * WireConstants.FRAME_OVERHEAD + json.toByteArray(Charsets.UTF_8).size + 64
+        if (mode == Mode.WS && relayBudget?.let { it.remaining - cost < ChatConstants.RELAY_RESERVE } == true) {
+            out += RoomEffect.ChatFailed(localId, ChatFailure.NO_RELAY_BUDGET)
+            return
+        }
+        val seq = sendChatFrame(json)
+        if (seq == null) out += RoomEffect.ChatFailed(localId, ChatFailure.UNAVAILABLE) else chatUnacked.addLast(seq to localId)
+    }
+
+    // A frame of the peer's chat stream. A violation refuses the frame and nothing
+    // else: chat never ends a file transfer.
+    private fun onChatFrame(id: TransferId, seq: Long, ctrl: Ctrl) {
+        val known = peerChatId
+        val inOrder = if (known == null) seq == 0L else id == known && seq == peerChatNext
+        if (!chatEnabled() || !inOrder) {
+            notify(Notice.CHAT_FRAME_REFUSED)
+            return
+        }
+        when (ctrl) {
+            is Ctrl.Chat -> {
+                val text = ctrl.text
+                if (text.isNullOrEmpty() || text.toByteArray(Charsets.UTF_8).size > ChatConstants.MAX_TEXT_BYTES) {
+                    notify(Notice.CHAT_FRAME_REFUSED)
+                    return
+                }
+                peerChatId = id
+                peerChatNext = seq + 1
+                out += RoomEffect.ChatReceived(text)
+                sendChatFrame(Ctrl.chatAck(seq))
+            }
+            is Ctrl.ChatAck -> {
+                val upTo = ctrl.seq
+                // A receipt for a frame we have not sent is not a receipt.
+                if (upTo == null || upTo < 0 || upTo >= myChatNext) {
+                    notify(Notice.CHAT_FRAME_REFUSED)
+                    return
+                }
+                peerChatId = id
+                peerChatNext = seq + 1
+                while (chatUnacked.isNotEmpty() && chatUnacked.first().first <= upTo) {
+                    out += RoomEffect.ChatDelivered(chatUnacked.removeFirst().second)
+                }
+            }
+            else -> notify(Notice.CHAT_FRAME_REFUSED)
+        }
     }
 
     // ------------------------------------------------------------------
@@ -926,6 +1030,8 @@ public class RoomMachine(
         val txActive = tx?.id == id
         if (!rxActive && !txActive && id.hex in endedTransferIds) throw FrameError.Dropped()
         if (type == FrameType.DATA || seq != 0L) {
+            // Later frames of the peer's chat stream; onChatFrame checks their order.
+            if (type == FrameType.CTRL && peerChatId == id && handshake == Handshake.OK) return keys[id]
             val allowed = rxActive || (txActive && type == FrameType.CTRL)
             if (!allowed || handshake != Handshake.OK) throw FrameError.Rejected("Frame from an unknown transfer")
         } else if (id.hex in seenTransferIds) {
@@ -986,11 +1092,19 @@ public class RoomMachine(
                     return
                 }
                 if (handshake != Handshake.OK) throw ProtocolError(AbortReason.INTEGRITY, "Control frame before the session is confirmed")
+                if (ctrl is Ctrl.Chat || ctrl is Ctrl.ChatAck) {
+                    onChatFrame(frame.transferId, frame.seq, ctrl)
+                    return
+                }
                 if (ctrl is Ctrl.Meta) {
                     onIncomingMeta(frame.transferId, ctrl)
                     return
                 }
                 throw ProtocolError(AbortReason.INTEGRITY, "Unexpected control frame")
+            }
+            if (frame.transferId == peerChatId) {
+                onChatFrame(frame.transferId, frame.seq, ctrl)
+                return
             }
             val state = rx?.takeIf { it.id == frame.transferId } ?: throw ProtocolError(AbortReason.INTEGRITY, "Control frame from an unknown transfer")
             when (ctrl) {

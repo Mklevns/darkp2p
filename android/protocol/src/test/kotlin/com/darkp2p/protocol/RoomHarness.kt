@@ -221,6 +221,12 @@ internal class Peer(val name: String, private val world: World, val machine: Roo
     var holdWrites = false
     var heldWrite: Int? = null
 
+    val chatReceived = ArrayList<String>()
+    val chatDelivered = ArrayList<Long>()
+    val chatFailed = ArrayList<Pair<Long, ChatFailure>>()
+
+    fun chat(localId: Long, text: String) = post(RoomInput.SendChat(localId, text))
+
     var pc: Int? = null
     private var initiator = false
 
@@ -318,6 +324,9 @@ internal class Peer(val name: String, private val world: World, val machine: Roo
                 received.remove(e.transfer)
                 discarded++
             }
+            is RoomEffect.ChatReceived -> chatReceived += e.text
+            is RoomEffect.ChatDelivered -> chatDelivered += e.localId
+            is RoomEffect.ChatFailed -> chatFailed += e.localId to e.reason
             is RoomEffect.Notify -> {
                 notices += e.event
                 if (e.event.notice == Notice.INCOMING_OFFER && autoAccept) post(RoomInput.AcceptIncoming)

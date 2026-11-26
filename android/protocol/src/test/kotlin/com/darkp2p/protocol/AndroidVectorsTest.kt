@@ -39,8 +39,9 @@ class AndroidVectorsTest {
         val b = Role.RESPONDER
 
         // Handshake, both directions.
-        Ctrl.hello(initNonce).let { add(FrameType.HELLO, a, id(), 0, it.toByteArray(), it) }
-        Ctrl.hello(respNonce).let { add(FrameType.HELLO, b, id(), 0, it.toByteArray(), it) }
+        // The hello offers chat, as the app sends it: the page must still accept it.
+        Ctrl.hello(initNonce, listOf(Capabilities.CHAT)).let { add(FrameType.HELLO, a, id(), 0, it.toByteArray(), it) }
+        Ctrl.hello(respNonce, listOf(Capabilities.CHAT)).let { add(FrameType.HELLO, b, id(), 0, it.toByteArray(), it) }
         ctrl(a, id(), 0, Ctrl.helloAck())
         ctrl(b, id(), 0, Ctrl.helloAck())
 

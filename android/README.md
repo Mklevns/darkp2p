@@ -5,7 +5,7 @@ roadmap: [`docs/android/TECHNICAL_DESIGN.md`](../docs/android/TECHNICAL_DESIGN.m
 
 Status: **Phase 1** done. `:protocol` is complete and tested: framing and
 keys, control messages, the receive/send state machines, the relay budget, the
-link parser and the room state machine (`RoomMachine`). The Android modules are
+link parser, the room state machine (`RoomMachine`) and app-to-app chat (design doc §1.10). The Android modules are
 still empty; networking (`:transport`) is Phase 2.
 
 ## Modules

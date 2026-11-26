@@ -29,6 +29,8 @@ public data class LocalPolicy(
     val hideIp: Boolean = false,
     /** False in Tor mode: WebRTC is never started. */
     val webRtcAvailable: Boolean = true,
+    /** Offer chat to the peer. It is used only if the peer offers it too (never with a web client). */
+    val chat: Boolean = true,
 )
 
 /** Everything that can happen to a room. Each is handled to completion, in arrival order. */
@@ -67,6 +69,9 @@ public sealed interface RoomInput {
     public data class DeclineIncoming(val reason: DeclineReason = DeclineReason.USER) : RoomInput
     public data object CancelReceive : RoomInput
     public data class SetPolicy(val policy: LocalPolicy) : RoomInput
+
+    /** Send a chat message. [localId] is the host's own handle for it, echoed in the outcome. */
+    public class SendChat(public val localId: Long, public val text: String) : RoomInput
     public data class SetToken(val token: String) : RoomInput
 
     /** Resume a relay the server paused for idleness. */
@@ -118,6 +123,17 @@ public sealed interface RoomEffect {
     public data class DiscardSink(val transfer: Int) : RoomEffect
 
     public data class Notify(val event: RoomEvent) : RoomEffect
+
+    /** A chat message from the peer, authenticated and in order. Never logged. */
+    public class ChatReceived(public val text: String) : RoomEffect {
+        override fun toString(): String = "ChatReceived(***)"
+    }
+
+    /** The peer confirmed it received the message. */
+    public data class ChatDelivered(val localId: Long) : RoomEffect
+
+    /** The message was not sent, or its receipt can no longer arrive. */
+    public data class ChatFailed(val localId: Long, val reason: ChatFailure) : RoomEffect
 }
 
 /** Something to tell the user. [detail] is a file name or a reason, never a room ID, key or token. */
@@ -132,7 +148,24 @@ public enum class Notice {
     OFFERED, DOES_NOT_FIT_RELAY, FILE_TOO_LARGE, SENDING, AWAITING_CONFIRMATION, DELIVERED, SENT_UNCONFIRMED,
     NOT_SENT_DECLINED, NOT_SENT_PEER_BUSY, NOT_SENT_TOO_LARGE_FOR_PEER, SEND_ABORTED, SEND_INTERRUPTED, SEND_CANCELLED,
     RECEIVER_ABORTED,
+    CHAT_FRAME_REFUSED,
     INCOMING_OFFER, DECLINED_BUSY, RECEIVING, SAVED, RECEIVE_ABORTED, RECEIVE_INTERRUPTED, SENDER_ABORTED, FRAME_REFUSED,
+}
+
+public enum class ChatFailure {
+    /** The peer does not offer chat (a web client), or no verified session is up. */
+    UNAVAILABLE,
+    EMPTY,
+    TOO_LONG,
+
+    /** Too many messages are waiting for their receipt. */
+    BUSY,
+
+    /** The room's WebSocket relay budget cannot carry it. */
+    NO_RELAY_BUDGET,
+
+    /** The session ended before the receipt arrived: the message may or may not have been read. */
+    SESSION_ENDED,
 }
 
 public enum class Transport { DIRECT, TURN, WS_RELAY }
@@ -160,6 +193,8 @@ public sealed interface RoomState {
         val peerSignalingAway: Boolean,
         /** Hide My IP is on without TURN: the relay stands in. Pro unlocks TURN and a larger relay cap. */
         val hideIpViaRelay: Boolean,
+        /** Both peers offer chat. False with a web client: the chat box stays hidden. */
+        val chat: Boolean,
     ) : RoomState
 
     /** [canReconnect]: the tunnel failed and only a manual reconnect (or the peer asking for the relay) restores it. */

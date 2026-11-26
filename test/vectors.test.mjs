@@ -137,7 +137,9 @@ test('android-v3.json: the page decrypts every Android frame', async () => {
   const hellos = frames.filter((f) => f.type === F.FRAME_TYPE_HELLO);
   assert.equal(hellos.length, 2);
   for (const h of hellos) {
-    assert.deepEqual(Object.keys(h.ctrl), ['type', 'v', 'nonce']);
+    // The app's hello offers chat; the page reads only v and nonce (test/caps.test.mjs).
+    assert.deepEqual(Object.keys(h.ctrl), ['type', 'v', 'nonce', 'caps']);
+    assert.deepEqual(h.ctrl.caps, ['chat']);
     assert.equal(h.ctrl.v, 3);
     assert.equal(Buffer.from(h.ctrl.nonce, 'base64url').toString('hex'), h.role === 1 ? android.initNonce : android.respNonce);
     assert.ok(!/[=+/]/.test(h.ctrl.nonce));
