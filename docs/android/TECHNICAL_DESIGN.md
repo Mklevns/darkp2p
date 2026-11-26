@@ -52,7 +52,7 @@ Symbol references use the names in the source (grep for them; line numbers drift
 | F8 | — | OkHttp `WebSocket.send()` **gracefully closes the socket** if its queue would exceed 16 MiB. | All relay sends are gated on `queueSize() ≤ HIGH_WATER` (1 MiB) — mandatory, not an optimisation. |
 | F9 | — | The server **pauses reading** a relay sender for throttling (token bucket) and backpressure, up to `RELAY_STALL_MS` = 60 s. A client-side WS ping issued during a pause gets no pong. | OkHttp `pingInterval` must be **≥ 90 s** (we use 90 s). A 15–30 s ping interval kills legitimate relay transfers. |
 | F10 | — | Server closes a socket after **200 ICE candidates per pairing** (`too-many-candidates`) and after **120 JSON messages / 10 s**. | `GATHER_ONCE`, client-side cap of 150 candidates, never `GATHER_CONTINUALLY`. |
-| F11 | — | `ack` messages must **not** carry `"done": false`: `TxWindow.onReply` rejects any `done` that is not exactly `true` or absent. | Kotlin JSON encoder: `explicitNulls = false`, no default `done` field. |
+| F11 | — | `ack` messages must **not** carry `"done": false`: `TxWindow.onReply` rejects any `done` that is not exactly `true` or absent. | `Ctrl.ack()` writes `done` only for the final ack; the page's own `TxWindow` checks this in `npm test`. |
 | F12 | — | Native libwebrtc does **not** obfuscate host candidates with mDNS (Chrome does). | Direct mode **signals host candidates** (fast LAN transfers) and shows `IP EXPOSED`. The Java API has no clean mDNS obfuscation, so none is used in v1. **Hide My IP** is the single switch that hides local and public addresses (§8 D6). |
 
 ---
@@ -226,7 +226,7 @@ ASCII equivalent:
 
 Rules, enforced by `./gradlew checkStructure` (part of `check`) in CI:
 
-* `:protocol` is `kotlin("jvm")` with **zero** Android imports (`checkProtocolPurity`). Its only runtime dependencies are `kotlin-stdlib`, `kotlinx-coroutines-core`, `kotlinx-serialization-json`.
+* `:protocol` is `kotlin("jvm")` with **zero** Android imports (`checkProtocolPurity`). It has no runtime dependency beyond `kotlin-stdlib`.
 * `:transport` exposes interfaces + factories; libwebrtc types never leak past it (`api` vs `implementation`).
 * `:storage` depends on `:transport` only for `ServerApi` (the Tor-aware HTTP client) — it never touches WebRTC.
 * Test-only modules (not shipped): `:interop-cli` (JVM; §6.3) and `:testing` (fakes: `FakePeerChannel`, `FakeClock`, deterministic RNG).
@@ -240,7 +240,7 @@ Rules, enforced by `./gradlew checkStructure` (part of `check`) in CI:
 | JDK / AGP / Gradle | Java 17 bytecode, built with JDK 21 in CI; AGP 9.5.3 (built-in Kotlin); Gradle 9.9.2 wrapper with `distributionSha256Sum` | Reproducibility (§5.7). |
 | Kotlin | 2.4.21, explicit API mode in every library module, warnings as errors in `:protocol` | |
 | Coroutines | `kotlinx-coroutines` 1.11.0 | Single-threaded engine via `limitedParallelism(1)`. |
-| Serialization | `kotlinx-serialization-json` with `explicitNulls = false`, `encodeDefaults = false`, `ignoreUnknownKeys = true` | F11; unknown fields tolerated like `JSON.parse`. |
+| JSON | In-house strict parser and serializer in `:protocol` (`Json.kt`), vector-tested | F11; the same accept/reject decisions as `JSON.parse`, the same text as `JSON.stringify`. |
 | HTTP/WS | **OkHttp 5.5.1** | Custom `Dns`, `SocketFactory`, Origin header, `queueSize()`. |
 | WebRTC | `io.github.webrtc-sdk:android` 150.7871.09 (community-maintained Google libwebrtc build); `libre` flavor: same tag built from source (§5.7) | `org.webrtc:google-webrtc` is unmaintained since 2020. Only `DataChannel` is used; no audio/video tracks. |
 | Crypto | JCA `AES/GCM/NoPadding` (Conscrypt/BoringSSL on device, SunJCE in JVM tests) + in-house RFC 5869 HKDF (~30 lines, vector-tested) | No BouncyCastle/Tink needed in `:protocol`; identical code on JVM and device. |
@@ -252,6 +252,7 @@ Rules, enforced by `./gradlew checkStructure` (part of `check`) in CI:
 | Checkout | `androidx.browser` Custom Tabs (clearnet only) | §3.6, §5.3. |
 | Tor | Orbot via its public intents (default) or embedded `info.guardianproject:tor-android` + `jtorctl` (`full` flavor) | §4.6. |
 | Biometrics | `androidx.biometric` (`BIOMETRIC_STRONG or DEVICE_CREDENTIAL`) | |
+| Coverage | Kover 0.9.11 on `:protocol`, 90 % line minimum in `check` | |
 | Static analysis | `checkStructure` (source-scanning Gradle tasks in `android/build.gradle.kts`: module graph, `:protocol` purity, forbidden APIs, pinned versions) and Android Lint `warningsAsErrors`. No extra analysis plugin: the checks needed are simple patterns, and each plugin is more supply chain | |
 
 Build flavors: `full` (GitHub/Play: prebuilt libwebrtc AAR, embedded Tor option) and `libre` (F-Droid: from-source libwebrtc, Orbot only, no `autoVerify` App Links — §5.4).
@@ -273,6 +274,15 @@ Android reproduces this with:
 1. **One engine dispatcher** (`Dispatchers.Default.limitedParallelism(1)`) that owns all mutable protocol state (`RoomMachine`). Every callback (OkHttp reader thread, libwebrtc signaling thread, I/O completions, timers, UI intents) is converted into an `EngineInput` and posted to it. Nothing else mutates state.
 2. **One outbound queue** per channel (`Channel<OutFrame>(capacity = 64)`) drained by a single coroutine that does `awaitWritable() → trySend()`. Frames are encrypted on the engine dispatcher *before* enqueueing, which gives the same "keys captured at queue time" property as `sendCtrl(..., keys = session.keys)`.
 3. **One inbound queue** (`Channel<InFrame>` with separate DATA/CTRL counters capped at 256/32, `trySend` only). Overflow ⇒ one `abort{integrity}`, exactly as `enqueueIncomingBinary`.
+
+> **Implemented (Phase 1).** §3.2–3.4 are built in `android/protocol`, and the code is now authoritative for exact signatures. The listings below are the design sketch; the implementation differs in these ways:
+> - The reducer's types are `RoomInput` / `RoomEffect` (not `EngineInput` / `Effect`). Sockets, WebRTC sessions and transfers are identified by small integers the machine allocates, and inputs for a stale one are ignored.
+> - `seq` is a `Long` (0…2³²−1) and frame types/roles are enums with a `wire` value, not value classes.
+> - `:protocol` has **no dependencies at all**: JSON is read by its own strict RFC 8259 parser (`Json.kt`), because a general-purpose library does not promise the same accept/reject decisions as the page's `JSON.parse`.
+> - `Ctrl` decoding maps everything the page would refuse to values the state machines refuse (`Ctrl.Unknown`, `Ack.valid == false`), not to exceptions.
+> - Backpressure: the machine issues one `ReadChunk` at a time and waits for `FrameSent` (the frame left the local send buffer) before the next. Inbound frames wait inside the machine while a write is pending, which is where the 256/32 queue caps are enforced.
+> - Before accepting, the host opens the destination itself; the effects are `WriteChunk`, `CommitSink` and `DiscardSink` (no `OpenSink`).
+> - `RoomState.Ready` carries `relayCap`/`relayRemaining` directly; there is no `ProRequiredForHideIp` or `SetForceWs` (one `SetPolicy` input carries all three switches).
 
 ### 3.2 `:protocol` — framing & crypto
 
@@ -990,6 +1000,8 @@ Each phase ends with a gate that must pass in CI (or be signed off for **[M]** i
 ### Phase 1 — `:protocol` (pure JVM)
 * `Hkdf`, `FrameCodec`, `TransferKeyCache`, `CtrlCodec`, `RxStateMachine`, `TxWindow`, `RelayBudget`, `Backoff`, `RoomLink`, `CandidatePolicy`, LRU sets, then `RoomMachine` + `toRoomState()`.
 * **Gate:** 100 % of `v3.json` vectors (including `rxTraces`/`txTraces`) pass; reverse vectors decode in Node; sticky-state invariant tests (§3.4 table) pass; Kover line coverage ≥ 90 % on `:protocol`; Jazzer 10 min on `decode`/`parse` with no findings.
+* **Status: done, with one substitution.** 56 tests. Every vector group passes. `test/vectors/android-v3.json` (99 Kotlin-produced frames: handshake, a 70-chunk transfer, every decline/abort) is decrypted by the page's `decodeFrame` and accepted by its `RxStateMachine`/`TxWindow` in `npm test`. The room state machine is exercised by two machines against a fake server that follows `server.js` (pairing, relay switch, budget, `relay-busy`/`relay-idle`/limit, `full`, `peer-left`), including every sticky-state row of §3.4 and decisions D3, D5 and D6. Line coverage is 95.9 %, enforced at 90 % by `koverVerify` in `check`. **Jazzer was not run:** in its place `RobustnessTest` and the room tests feed about 500 000 seeded random and mutated inputs to the JSON parser, frame decoder, link parser, candidate policy and a live room. Coverage-guided fuzzing is still open and moves to Phase 6.
+* The fake server is a model of `server.js`, not `server.js`: agreement with the real server and page over a real socket is the Phase 2 gate.
 
 ### Phase 2 — `:transport` WebSocket signaling + relay + Tor
 * `OkHttpSignalingClient` (Origin, ping policy, close-cause mapping), `WsRelayChannel` (queue-size gating, budget charging), `ServerApi`, `Socks5hSocketFactory`/`TorDns`, Orbot integration, `network_security_config`.

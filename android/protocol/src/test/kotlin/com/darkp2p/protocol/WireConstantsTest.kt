@@ -1,11 +1,5 @@
 package com.darkp2p.protocol
 
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -58,20 +52,21 @@ class WireConstantsTest {
         else -> value
     }
 
-    private fun fromJson(element: JsonElement): Any = when (element) {
-        is JsonArray -> element.map(::fromJson)
-        is JsonPrimitive -> if (element.isString) element.content else element.long
-        else -> error("unexpected constant $element")
+    private fun fromJson(value: JsonValue): Any = when (value) {
+        is JsonValue.Arr -> value.items.map(::fromJson)
+        is JsonValue.Str -> value.value
+        is JsonValue.Num -> value.long()
+        else -> error("unexpected constant $value")
     }
 
     @Test
     fun `the vector file is the v3 format`() {
-        assertEquals("darkp2p/v3", Vectors.root.getValue("format").jsonPrimitive.content)
+        assertEquals("darkp2p/v3", Vectors.root.str("format"))
     }
 
     @Test
     fun `every constant exported by the web client has the same value here`() {
-        val theirs = Vectors.root.getValue("constants").jsonObject.mapValues { fromJson(it.value) }
+        val theirs = Vectors.obj("constants").fields.mapValues { fromJson(it.value) }
         // Same names on both sides: a constant added to the page must be added here too.
         assertEquals(theirs.keys.sorted(), ours.keys.sorted())
         for ((name, value) in theirs) assertEquals(value, normalize(ours.getValue(name)), name)

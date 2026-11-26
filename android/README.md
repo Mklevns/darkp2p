@@ -3,8 +3,10 @@
 Native Kotlin client for the `darkp2p/v3` protocol. Design, wire contract and
 roadmap: [`docs/android/TECHNICAL_DESIGN.md`](../docs/android/TECHNICAL_DESIGN.md).
 
-Status: **Phase 0** (scaffold). The modules build and the structural checks
-run. `:protocol` holds the wire constants; the rest is empty until its phase.
+Status: **Phase 1** done. `:protocol` is complete and tested: framing and
+keys, control messages, the receive/send state machines, the relay budget, the
+link parser and the room state machine (`RoomMachine`). The Android modules are
+still empty; networking (`:transport`) is Phase 2.
 
 ## Modules
 
@@ -32,7 +34,8 @@ cd android
 ./gradlew check :app:assembleFullDebug
 ```
 
-`check` runs the unit tests, Android Lint and `checkStructure`:
+`check` runs the unit tests, the `:protocol` coverage minimum (90 % of lines),
+Android Lint and `checkStructure`:
 
 | Task | Fails when |
 |---|---|
@@ -43,15 +46,16 @@ cd android
 
 ## Test vectors
 
-`:protocol` tests read `../test/vectors/v3.json`, generated from the web client:
+Two committed files tie this client to the web client, one per direction:
 
-```bash
-node test/vectors/export.mjs
-```
+| File | Produced by | Checked by |
+|---|---|---|
+| `test/vectors/v3.json` | the page's own code (`node test/vectors/export.mjs`) | `:protocol` tests: same keys, same frame bytes, same decisions |
+| `test/vectors/android-v3.json` | `:protocol` (`./gradlew :protocol:test -PwriteVectors`) | `npm test`: the page decrypts each frame and its state machines accept the transfer |
 
-Run that from the repository root after any change to the wire format in
-`public/index.html`. `npm test` fails while the committed file is stale, and
-the Kotlin tests then show what the Android side must change.
+After a change to the wire format in `public/index.html`, run the first
+command from the repository root. `npm test` fails while a committed file is
+stale, and the Kotlin tests then show what the Android side must change.
 
 ## Dependencies
 

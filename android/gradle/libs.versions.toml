@@ -5,6 +5,7 @@ agp = "9.5.3"
 kotlin = "2.4.21"
 coroutines = "1.11.0"
 serialization = "1.13.0"
+kover = "0.9.11"
 
 minSdk = "29"
 compileSdk = "37"
@@ -40,4 +41,5 @@ biometric = { module = "androidx.biometric:biometric", version.ref = "biometric"
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
