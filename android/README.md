@@ -3,10 +3,10 @@
 Native Kotlin client for the `darkp2p/v3` protocol. Design, wire contract and
 roadmap: [`docs/android/TECHNICAL_DESIGN.md`](../docs/android/TECHNICAL_DESIGN.md).
 
-Status: **Phase 1** done. `:protocol` is complete and tested: framing and
-keys, control messages, the receive/send state machines, the relay budget, the
-link parser, the room state machine (`RoomMachine`) and app-to-app chat (design doc §1.10). The Android modules are
-still empty; networking (`:transport`) is Phase 2.
+Status: **Phase 2** done. `:protocol` is complete, and `:transport` connects it
+to a real server over the WebSocket relay, directly or through a Tor SOCKS
+proxy. Its tests exchange files with the unmodified `server.js` and page.
+WebRTC is Phase 3; `:storage`, `:service` and `:app` are still empty.
 
 ## Modules
 
@@ -56,6 +56,23 @@ Two committed files tie this client to the web client, one per direction:
 After a change to the wire format in `public/index.html`, run the first
 command from the repository root. `npm test` fails while a committed file is
 stale, and the Kotlin tests then show what the Android side must change.
+
+## Interop tests
+
+`:transport`'s unit tests run on the host JVM and start `test/interop/peer.mjs`,
+which runs the real `server.js` and real copies of the page. They need Node 22
+and `npm ci` in the repository root.
+
+```bash
+./gradlew :transport:testDebugUnitTest
+```
+
+With Playwright and its Chromium installed, the page can also run in a real
+headless browser:
+
+```bash
+DARKP2P_CHROMIUM=1 ./gradlew :transport:testDebugUnitTest --tests '*Chromium*'
+```
 
 ## Dependencies
 

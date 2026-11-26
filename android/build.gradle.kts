@@ -141,10 +141,32 @@ val checkDependencies by tasks.registering {
     }
 }
 
+val checkTests by tasks.registering {
+    group = "verification"
+    description = "Fails on test methods JUnit would silently skip."
+    val dirs = moduleDirs
+    dirs.values.forEach { inputs.dir(it.resolve("src")).optional() }
+    doLast {
+        // JUnit 5 ignores a test method that returns a value. `= runBlocking { ... }`
+        // returns whatever its last expression is, so the test would never run.
+        val risky = Regex("""\)\s*=\s*(runBlocking|runTest)\s*(\(|\{)""")
+        val problems = mutableListOf<String>()
+        for ((_, dir) in dirs) {
+            for (file in sourcesOf(dir, main = false)) {
+                if ("/src/main/" in file.invariantSeparatorsPath) continue
+                file.readLines().forEachIndexed { i, line ->
+                    if (risky.containsMatchIn(line)) problems += "${file.relativeTo(projectDir)}:${i + 1}: write runBlocking<Unit> { } so JUnit runs the test"
+                }
+            }
+        }
+        if (problems.isNotEmpty()) throw GradleException(problems.joinToString("\n"))
+    }
+}
+
 val checkStructure by tasks.registering {
     group = "verification"
     description = "All structural checks."
-    dependsOn(checkModuleGraph, checkProtocolPurity, checkForbiddenApis, checkDependencies)
+    dependsOn(checkModuleGraph, checkProtocolPurity, checkForbiddenApis, checkDependencies, checkTests)
 }
 
 subprojects {
