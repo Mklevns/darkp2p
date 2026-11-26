@@ -1,6 +1,6 @@
 # darkp2p for Android — Technical Design Document
 
-Status: **Draft for review** · Wire format: **`darkp2p/v3`** · Applies to: `server.js`, `public/index.html` as of commit `d1b9cd7`
+Status: **v1 decisions locked (§8)** · Wire format: **`darkp2p/v3`** · Applies to: `server.js`, `public/index.html` as of commit `d1b9cd7`
 
 This document specifies a native Kotlin Android client that is byte-for-byte and state-for-state compatible with the existing web client and signaling/relay server. Every constant, message and transition below was read from the source, not from the product description. Where the two disagree, the source wins, and the difference is called out in **§0.3**.
 
@@ -20,7 +20,7 @@ Symbol references use the names in the source (grep for them; line numbers drift
 5. [Security & leak-prevention checklist](#5-security--leak-prevention-checklist)
 6. [Cross-client verification plan](#6-cross-client-verification-plan)
 7. [Phased implementation roadmap](#7-phased-implementation-roadmap)
-8. [Open questions & proposed (optional) server additions](#8-open-questions--proposed-optional-server-additions)
+8. [v1 decisions](#8-v1-decisions)
 
 ---
 
@@ -29,8 +29,8 @@ Symbol references use the names in the source (grep for them; line numbers drift
 ### 0.1 Goals
 
 * A native client that can sit on either side of a room with the current web page, on clearnet or `.onion`, over DataChannel, TURN-only DataChannel, or the WebSocket relay.
-* No server change is required for the core feature set. Two optional, backwards-compatible server additions improve App Links and payment return (§8).
-* The Android client's local behaviour may be *stricter* than the page (e.g. refusing host candidates by default), never *looser* on the wire.
+* v1 ships with `server.js` untouched. The only server-side item is a static `assetlinks.json`, added at release (§8 D1).
+* The Android client's local behaviour may be *stricter* than the page (e.g. capping ICE candidates below the server's limit), never *looser* on the wire.
 
 ### 0.2 Non-goals (v1)
 
@@ -44,16 +44,16 @@ Symbol references use the names in the source (grep for them; line numbers drift
 |---|---|---|---|
 | F1 | "fragment must never be sent to the server" | Correct, and the WS upgrade is also **Origin-checked** (`isOriginAllowed`): `Origin` must be in `ALLOWED_ORIGINS` (`https://${DOMAIN}`, plus `http://${ONION_HOST}`) or match `Host`. A missing Origin → **HTTP 403**. | OkHttp must send `Origin: https://darkp2p.com` (clearnet) or `Origin: http://<onion>` (onion). 403 is a terminal config error, not a retry. |
 | F2 | "50 MB free / 500 MB Pro" | Server sends the live figures in `ready.wsRelayCap` / `ready.wsRelayRemaining`; the room budget persists while either peer stays in the room and counts **both directions, every binary frame, header included**. | `RelayBudget` is seeded from `ready`, never from constants (constants are the fallback for an old server only, exactly as `setRelayBudgetFrom`). |
-| F3 | "Pro tokens unlock coturn" | TURN is in `ready.iceServers` only when `room.isPro && TURN_ENABLED` (`turnEnabled`, alias `relayEnabled`). Hide-IP **without** TURN is refused by the page (`PRO TOKEN REQUIRED TO HIDE IP`). | Hide-IP state requires `turnEnabled == true`; otherwise a local `ProRequiredForHideIp` state (and an Android-only offer to use the WS relay instead, which also masks the IP). |
+| F3 | "Pro tokens unlock coturn" | TURN is in `ready.iceServers` only when `room.isPro && TURN_ENABLED` (`turnEnabled`, alias `relayEnabled`). Hide-IP **without** TURN is refused by the page (`PRO TOKEN REQUIRED TO HIDE IP`). | Hide-IP uses TURN when `turnEnabled == true`; otherwise Android falls back to the **WS relay** (which also masks the IP) with an inline note that Pro unlocks TURN (no relay cap) and the 500 MB relay (§8 D3). On the wire this is an ordinary `ws-fallback`. |
 | F4 | WorkManager "max every 5 min" | `PeriodicWorkRequest` has a **15-minute floor**. | Background polling uses a chain of `OneTimeWorkRequest`s with `setInitialDelay(≥5 min)`; foreground polling mirrors the page's 3 s→30 s schedule (§3.6). |
-| F5 | "`/api/claim` requires orderId + paymentId/invoiceId" | An **invoiceId** claim is answered only from the IPN record in server RAM (lost on restart); only a **paymentId** claim can be re-derived from NOWPayments. `success_url` is `https://${DOMAIN}/` (no app return). | `?NP_id=` capture is best-effort (App Link from the Custom Tab); a manual "paste payment ID" path is mandatory; see §8 S-2 for an optional server fix. |
+| F5 | "`/api/claim` requires orderId + paymentId/invoiceId" | An **invoiceId** claim is answered only from the IPN record in server RAM (lost on restart); only a **paymentId** claim can be re-derived from NOWPayments. `success_url` is `https://${DOMAIN}/` (no app return). | v1 polls with `{invoiceId, orderId}` and offers a manual "paste payment ID" field; the existing `?NP_id=` redirect is captured automatically once verified App Links exist at release (§8 D1, D2). |
 | F6 | `TRANSFER_KEY_CACHE_MAX` | `= 8`, LRU keyed by `hex(transferId)`, **per session** (re-created whenever both nonces change). | Mirrored exactly; key cache dies with the session. |
 | F7 | Reconnect backoff reset "after a stable window" | `RECONNECT_STABLE_MS = 10 000`, timer starts **after** the claim wait (≤ `CLAIM_JOIN_WAIT_MS` = 5 s) on `onopen`. | Same; reset only from the stable timer, never from `onopen`. |
 | F8 | — | OkHttp `WebSocket.send()` **gracefully closes the socket** if its queue would exceed 16 MiB. | All relay sends are gated on `queueSize() ≤ HIGH_WATER` (1 MiB) — mandatory, not an optimisation. |
 | F9 | — | The server **pauses reading** a relay sender for throttling (token bucket) and backpressure, up to `RELAY_STALL_MS` = 60 s. A client-side WS ping issued during a pause gets no pong. | OkHttp `pingInterval` must be **≥ 90 s** (we use 90 s). A 15–30 s ping interval kills legitimate relay transfers. |
 | F10 | — | Server closes a socket after **200 ICE candidates per pairing** (`too-many-candidates`) and after **120 JSON messages / 10 s**. | `GATHER_ONCE`, client-side cap of 150 candidates, never `GATHER_CONTINUALLY`. |
 | F11 | — | `ack` messages must **not** carry `"done": false`: `TxWindow.onReply` rejects any `done` that is not exactly `true` or absent. | Kotlin JSON encoder: `explicitNulls = false`, no default `done` field. |
-| F12 | — | Native libwebrtc does **not** obfuscate host candidates with mDNS (Chrome does). | Direct mode drops `typ host` candidates by default (parity with the browser's exposure level); user can opt in for LAN speed. |
+| F12 | — | Native libwebrtc does **not** obfuscate host candidates with mDNS (Chrome does). | Direct mode **signals host candidates** (fast LAN transfers) and shows `IP EXPOSED`. The Java API has no clean mDNS obfuscation, so none is used in v1. **Hide My IP** is the single switch that hides local and public addresses (§8 D6). |
 
 ---
 
@@ -178,8 +178,9 @@ charge(n)  : remaining = max(0, remaining − n) for every binary frame sent or 
 
 | Mode | Trigger | RTCConfiguration | Fallback |
 |---|---|---|---|
-| Direct P2P | default | `iceServers` from `ready`, policy `all` | 12 s ICE timer, or `connectionState == failed` → `ws-fallback` |
-| Hide My IP | toggle on **and** `turnEnabled` | policy `relay` | same |
+| Direct P2P | default | `iceServers` from `ready`, policy `all` | before the tunnel opens: 12 s ICE timer or `failed` → `ws-fallback`. After it was up, Android goes to `Interrupted` (§8 D5); the page falls back automatically |
+| Hide My IP (TURN) | toggle on **and** `turnEnabled` | policy `relay` | same |
+| Hide My IP (relay) | toggle on, no `turnEnabled` (Android only; the page blocks instead) | none | — |
 | WS relay | Force-WS toggle, no WebRTC, timeout/failure, **or Tor mode** | none (PeerConnection never created) | — |
 
 Toggling Force-WS **off** while on the relay → `rejoinRoom()`: close the signaling socket, reconnect (backoff applies), new `ready` → fresh pairing → WebRTC attempt. Toggling it **on** with a PeerConnection → `activateWsFallback(true)`.
@@ -223,9 +224,9 @@ ASCII equivalent:
    └──► :storage ──────────┘──────────────┘
 ```
 
-Rules, enforced by a Gradle `dependencyAnalysis`/`module-graph-assert` check in CI:
+Rules, enforced by `./gradlew checkStructure` (part of `check`) in CI:
 
-* `:protocol` is `kotlin("jvm")` with **zero** Android imports (CI greps `^import android` → fail). Its only runtime dependencies are `kotlin-stdlib`, `kotlinx-coroutines-core`, `kotlinx-serialization-json`.
+* `:protocol` is `kotlin("jvm")` with **zero** Android imports (`checkProtocolPurity`). Its only runtime dependencies are `kotlin-stdlib`, `kotlinx-coroutines-core`, `kotlinx-serialization-json`.
 * `:transport` exposes interfaces + factories; libwebrtc types never leak past it (`api` vs `implementation`).
 * `:storage` depends on `:transport` only for `ServerApi` (the Tor-aware HTTP client) — it never touches WebRTC.
 * Test-only modules (not shipped): `:interop-cli` (JVM; §6.3) and `:testing` (fakes: `FakePeerChannel`, `FakeClock`, deterministic RNG).
@@ -235,23 +236,23 @@ Rules, enforced by a Gradle `dependencyAnalysis`/`module-graph-assert` check in 
 | Item | Choice | Rationale |
 |---|---|---|
 | `minSdk` | **29** (Android 10) | Scoped storage + `MediaStore.Downloads` + `IS_PENDING`; OpenJDK-based `libcore`; TLS 1.3 by default. |
-| `targetSdk` / `compileSdk` | **36** | Current Play requirement; exercises Android 15 `dataSync` FGS timeout and Android 14 FGS-type rules. |
-| JDK / AGP / Gradle | JDK 17 toolchain, AGP 8.x latest stable, Gradle wrapper with `distributionSha256Sum` | Reproducibility (§5.7). |
-| Kotlin | 2.x (K2), `-Xjsr305=strict`, explicit API mode in `:protocol` and `:transport` | |
-| Coroutines | `kotlinx-coroutines` 1.10.x | Single-threaded engine via `limitedParallelism(1)`. |
+| `targetSdk` / `compileSdk` | **37** | Newest released level (Lint rejects an older `compileSdk`); exercises Android 15 `dataSync` FGS timeout and Android 14 FGS-type rules. |
+| JDK / AGP / Gradle | Java 17 bytecode, built with JDK 21 in CI; AGP 9.5.3 (built-in Kotlin); Gradle 9.9.2 wrapper with `distributionSha256Sum` | Reproducibility (§5.7). |
+| Kotlin | 2.4.21, explicit API mode in every library module, warnings as errors in `:protocol` | |
+| Coroutines | `kotlinx-coroutines` 1.11.0 | Single-threaded engine via `limitedParallelism(1)`. |
 | Serialization | `kotlinx-serialization-json` with `explicitNulls = false`, `encodeDefaults = false`, `ignoreUnknownKeys = true` | F11; unknown fields tolerated like `JSON.parse`. |
-| HTTP/WS | **OkHttp 5.x** (or 4.12 if 5.x blocks R8 reproducibility) | Custom `Dns`, `SocketFactory`, Origin header, `queueSize()`. |
-| WebRTC | `io.github.webrtc-sdk:android` (community-maintained Google libwebrtc build, M12x+), pinned exact version; `libre` flavor: same tag built from source (§5.7) | `org.webrtc:google-webrtc` is unmaintained since 2020. Only `DataChannel` is used; no audio/video tracks. |
+| HTTP/WS | **OkHttp 5.5.1** | Custom `Dns`, `SocketFactory`, Origin header, `queueSize()`. |
+| WebRTC | `io.github.webrtc-sdk:android` 150.7871.09 (community-maintained Google libwebrtc build); `libre` flavor: same tag built from source (§5.7) | `org.webrtc:google-webrtc` is unmaintained since 2020. Only `DataChannel` is used; no audio/video tracks. |
 | Crypto | JCA `AES/GCM/NoPadding` (Conscrypt/BoringSSL on device, SunJCE in JVM tests) + in-house RFC 5869 HKDF (~30 lines, vector-tested) | No BouncyCastle/Tink needed in `:protocol`; identical code on JVM and device. |
 | Keystore | Android Keystore AES-256-GCM key, StrongBox when available | Vault encryption (§3.6). Jetpack `security-crypto` is deprecated — not used. |
 | Persistence | `AtomicFile` blob (vault) — no SQLite | Two small records only. |
-| Background | WorkManager 2.10.x | Claim polling. |
+| Background | WorkManager 2.12.0 | Claim polling. |
 | UI | Jetpack Compose (BOM pinned), Material 3, Navigation-Compose | |
-| QR | **ZXing `core` 3.5.x** (generate + decode) + **CameraX 1.4.x** `ImageAnalysis` | FOSS; ML Kit is proprietary and rejected by F-Droid. |
+| QR | **ZXing `core` 3.5.4** (generate + decode) + **CameraX 1.7.0** `ImageAnalysis` | FOSS; ML Kit is proprietary and rejected by F-Droid. |
 | Checkout | `androidx.browser` Custom Tabs (clearnet only) | §3.6, §5.3. |
 | Tor | Orbot via its public intents (default) or embedded `info.guardianproject:tor-android` + `jtorctl` (`full` flavor) | §4.6. |
 | Biometrics | `androidx.biometric` (`BIOMETRIC_STRONG or DEVICE_CREDENTIAL`) | |
-| Static analysis | detekt with forbidden-API rules (§5.1), Android Lint `warningsAsErrors` | |
+| Static analysis | `checkStructure` (source-scanning Gradle tasks in `android/build.gradle.kts`: module graph, `:protocol` purity, forbidden APIs, pinned versions) and Android Lint `warningsAsErrors`. No extra analysis plugin: the checks needed are simple patterns, and each plugin is more supply chain | |
 
 Build flavors: `full` (GitHub/Play: prebuilt libwebrtc AAR, embedded Tor option) and `libre` (F-Droid: from-source libwebrtc, Orbot only, no `autoVerify` App Links — §5.4).
 
@@ -379,7 +380,7 @@ public data class RoomLink(val origin: ServerOrigin, val roomId: String, val key
 
 public object CandidatePolicy {                             // port of candidateExposesIp + Android rules
   public fun exposesIp(line: String): Boolean
-  public fun decide(line: String, mode: IceMode, allowHost: Boolean): CandidateDecision   // SIGNAL | DROP
+  public fun decide(line: String, mode: IceMode): CandidateDecision   // ALL: signal; RELAY: relay-only, raddr blanked
 }
 ```
 
@@ -393,7 +394,7 @@ public class RoomMachine(
   private val clock: () -> Long,
   private val rng: SecureRandom,
   private val crypto: FrameCrypto,
-  private val policy: LocalPolicy,               // forceWs, hideIp, torMode, allowHostCandidates
+  private val policy: LocalPolicy,               // forceWs, hideIp, torMode
 ) {
   public val snapshot: EngineState
   public fun handle(input: EngineInput): List<Effect>
@@ -423,6 +424,7 @@ public sealed interface EngineInput {
   public data object CancelReceive : EngineInput
   public data class SetForceWs(val on: Boolean) : EngineInput
   public data object ResumeRelay : EngineInput
+  public data object Reconnect : EngineInput                    // manual clean rejoin from Interrupted
   public data class TokenChanged(val token: String?) : EngineInput
   // I/O completions (from TransferController)
   public data class ChunkReady(val id: TransferId, val index: Long, val bytes: ByteArray) : EngineInput
@@ -451,7 +453,7 @@ public sealed interface Effect {
 }
 ```
 
-`EngineState` holds exactly the page's variables (`transportMode`, `handshake`, `myRole/peerRole`, `myNonce/peerNonce/session`, `relayBudget`, `relayEnabled`, `relayRetryTimer`, `relayBusyShown`, `relayIdle`, `relayExhausted`, `peerAway`, `localIpSignaled`, `signalingLost`, `fullRetryUntil`, `wsAttempt`, `rejoining`, `tx`, `rx`, the two LRU sets, plus local `blocked` reasons such as `ProRequiredForHideIp`, `RoomFull`, `RelayClosed`). The UI never sees it; it sees the derived `RoomState`:
+`EngineState` holds exactly the page's variables (`transportMode`, `handshake`, `myRole/peerRole`, `myNonce/peerNonce/session`, `relayBudget`, `relayEnabled`, `relayRetryTimer`, `relayBusyShown`, `relayIdle`, `relayExhausted`, `peerAway`, `localIpSignaled`, `signalingLost`, `fullRetryUntil`, `wsAttempt`, `rejoining`, `tx`, `rx`, the two LRU sets, plus local `blocked` reasons such as `RoomFull`, `RelayClosed`). The UI never sees it; it sees the derived `RoomState`:
 
 ```kotlin
 public sealed interface RoomState {
@@ -459,15 +461,17 @@ public sealed interface RoomState {
   public data object WaitingForPeer : RoomState
   public data class Negotiating(val role: Role, val mode: IceMode) : RoomState              // ICE in progress
   public data class Verifying(val transport: Transport, val unconfirmed: Boolean) : RoomState
-  public data class Ready(val transport: Transport, val ip: IpExposure,
-                          val relay: RelayView?, val peerSignalingAway: Boolean) : RoomState
-  public data class Interrupted(val transport: Transport) : RoomState                     // pc 'disconnected' / relay socket lost
+  public data class Ready(val transport: Transport, val ip: IpExposure, val relay: RelayView?,
+                          val peerSignalingAway: Boolean,
+                          val hideIpViaRelay: Boolean /* show the "Pro unlocks TURN" note */) : RoomState
+  /** pc 'disconnected' (may recover by itself), an established tunnel that 'failed'
+   *  (canReconnect: manual clean rejoin), or the relay socket lost. */
+  public data class Interrupted(val transport: Transport, val canReconnect: Boolean) : RoomState
   public data class RelayBusy(val retryAtMs: Long) : RoomState
   public data object RelayIdle : RoomState                                                 // tap to resume
   public data class RelayExhausted(val capBytes: Long, val canTryDirect: Boolean, val proWouldRaise: Boolean) : RoomState
   public data object KeyMismatch : RoomState
   public data object PeerOutdated : RoomState
-  public data object ProRequiredForHideIp : RoomState
   public data object RoomFull : RoomState
   public data class Fatal(val reason: FatalReason) : RoomState  // ORIGIN_REJECTED, TOR_UNAVAILABLE, INVALID_ROOM
 }
@@ -482,12 +486,11 @@ Fatal                        if fatal != null
 KeyMismatch / PeerOutdated   if handshake ∈ {MISMATCH, OUTDATED}
 RelayExhausted               if relayExhausted
 RoomFull                     if blocked == ROOM_FULL
-ProRequiredForHideIp         if blocked == PRO_REQUIRED
 RelayBusy                    if relayRetryTimer armed
 RelayIdle                    if relayIdle
 Connecting                   if signaling not open and !(direct tunnel up && handshake == OK)
 WaitingForPeer               if myRole == null
-Interrupted                  if pc == DISCONNECTED or (mode == WS and relay socket gone)
+Interrupted                  if pc ∈ {DISCONNECTED, FAILED-after-open} or (mode == WS and relay socket gone)
 Ready                        if handshake == OK and active channel open
 Verifying                    if handshake == PENDING
 Negotiating                  otherwise
@@ -513,7 +516,7 @@ stateDiagram-v2
   WaitingForPeer --> Verifying: ready + forceWs/tor (ws-fallback)
   Negotiating --> Verifying: DataChannel open → hello
   Negotiating --> Verifying: 12 s / failed → ws-fallback
-  Negotiating --> ProRequiredForHideIp: hideIp && !turnEnabled
+  WaitingForPeer --> Verifying: ready + hideIp && !turnEnabled (ws-fallback)
   Verifying --> Ready: hello-ack
   Verifying --> KeyMismatch: HELLO auth fail
   Verifying --> PeerOutdated: 5 s no hello / legacy / v≠3
@@ -523,8 +526,10 @@ stateDiagram-v2
   RelayIdle --> Verifying: user resume (ws-fallback)
   Ready --> RelayExhausted: relay-limit-exceeded / remaining < 4096
   Verifying --> RelayExhausted: remaining < 4096
-  Ready --> Interrupted: pc disconnected / relay socket closed
-  Interrupted --> Connecting: reconnect (backoff)
+  Ready --> Interrupted: pc disconnected / failed / relay socket closed
+  Interrupted --> Ready: pc reconnects by itself
+  Interrupted --> Verifying: peer sends ws-fallback
+  Interrupted --> Connecting: relay socket backoff, or manual Reconnect (rejoin)
   Ready --> WaitingForPeer: peer-left (no direct tunnel)
   KeyMismatch --> Negotiating: next ready (new pairing)
   RelayExhausted --> Connecting: Force-WS off → rejoin
@@ -630,6 +635,7 @@ public interface TransferController {               // owned by DarkP2PService; 
   public fun setForceWsRelay(on: Boolean)
   public fun setHideIp(on: Boolean)
   public fun resumeRelay()
+  public fun reconnect()                             // clean rejoin after a failed tunnel
 }
 public sealed interface SaveTarget {
   public data object Downloads : SaveTarget                      // MediaStore.Downloads / "Download/DarkP2P"
@@ -783,9 +789,10 @@ Reconnect: `Backoff.reconnectDelay(wsAttempt++)`; `wsAttempt = 0` only on `Signa
 * `PeerConnectionFactory` is created lazily, only for `NetworkProfile.Clearnet`; no `AudioDeviceModule` use, no tracks; merged-manifest `RECORD_AUDIO`/`MODIFY_AUDIO_SETTINGS`/`CAMERA` from the AAR are removed with `tools:node="remove"` (CI asserts on the merged manifest).
 * `RTCConfiguration`: `iceServers` from `ready` (STUN fallback as the page), `iceTransportsType = RELAY` (Hide IP) or `ALL`, `continualGatheringPolicy = GATHER_ONCE`, `sdpSemantics = UNIFIED_PLAN`, `tcpCandidatePolicy = DISABLED` except Hide-IP (TURN/TCP allowed).
 * Initiator creates `createDataChannel("darkdrop", Init().apply { ordered = true })`; responder adopts the remote channel in `onDataChannel`.
-* Outbound candidates pass `CandidatePolicy.decide` (§5.2) and a 150-per-pairing cap. Empty end-of-candidates strings from the browser are ignored on receipt. A missing `sdpMid`/`sdpMLineIndex` defaults to `"0"`/`0`.
+* Outbound candidates pass `CandidatePolicy.decide` (§5.2: everything in direct mode, relay-only in Hide-IP) and a 150-per-pairing cap. Empty end-of-candidates strings from the browser are ignored on receipt. A missing `sdpMid`/`sdpMLineIndex` defaults to `"0"`/`0`.
 * SDP sent in Hide-IP mode is scrubbed of `a=candidate` lines and `c=` addresses other than `0.0.0.0` (trickle only), so a late-read local description cannot leak.
-* 12 s ICE timer and `PeerConnectionState.FAILED` → `ws-fallback`; `DISCONNECTED` → `Interrupted` (no ICE restart, as the page).
+* Before the DataChannel has opened: 12 s ICE timer or `PeerConnectionState.FAILED` → `ws-fallback`, as the page.
+* After it has opened (§8 D5): `DISCONNECTED` → `Interrupted`, and libwebrtc is left to recover; `FAILED` → `Interrupted(canReconnect = true)`, transfers aborted locally, **no automatic `ws-fallback` and no ICE restart**. "Reconnect" is a clean rejoin (`rejoinRoom`): the user decides whether to gather candidates on the new network. A web peer reaches `failed` on its own and sends `ws-fallback`; Android honours it (the relay exposes no address), which moves both sides to the relay without user action.
 
 ### 4.6 Tor / `.onion`
 
@@ -793,13 +800,13 @@ Reconnect: `Backoff.reconnectDelay(wsAttempt++)`; `wsAttempt = 0` only on `Signa
 * **Orbot.** Send `org.torproject.android.intent.action.START` (package `org.torproject.android`), read the SOCKS host/port from its status broadcast (default `127.0.0.1:9050`), and probe the port before use. If Orbot is missing, deep-link to F-Droid/Play. **Embedded** (`full` flavor): `tor-android` `TorService` bound in-process, `SocksPort auto`, port read via the control port.
 * **SOCKS5h.** `Socks5hSocketFactory` performs RFC 1928 itself: no auth, or username/password with a random per-room isolation token (Tor's `IsolateSOCKSAuth` ⇒ a separate circuit per room). It always uses `ATYP = 0x03` (domain name). The hostname reaches it through OkHttp's resolved `InetAddress`, which our `TorDns` creates with `InetAddress.getByAddress(host, byteArrayOf(0,0,0,0))`, a placeholder that never touches a resolver. `Dns.SYSTEM` is unreachable in Tor mode, and a JVM test enforces that (§6.3).
 * **Cleartext.** `network_security_config.xml`: `cleartextTrafficPermitted="false"` globally, `true` only for `<domain includeSubdomains="true">onion</domain>`. OkHttp honours it.
-* **Mode coupling.** Tor ⇒ `webRtc == null` ⇒ on `ready` the engine always takes the WS-relay path and sends `ws-fallback` (the web peer follows). Hide-IP is hidden (it is moot), and checkout opens in Tor Browser (`org.torproject.torbrowser`) or shows the invoice URL as a QR/copyable text. Custom Tabs are never used in Tor mode.
+* **Mode coupling.** Tor ⇒ `webRtc == null` ⇒ on `ready` the engine always takes the WS-relay path and sends `ws-fallback` (the web peer follows). the Hide-IP switch is hidden (it is moot), and checkout opens in Tor Browser (`org.torproject.torbrowser`) or shows the invoice URL as a QR/copyable text. Custom Tabs are never used in Tor mode.
 
 ### 4.7 Foreground service
 
-* `DarkP2PService` with `foregroundServiceType="dataSync"`, permissions `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS`, `WAKE_LOCK`. Started from a visible Activity (join, share, accept). It lives while a room is joined and stops after 10 min with no peer and no transfer.
+* `DarkP2PService` with `foregroundServiceType="dataSync"`, permissions `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS`, `WAKE_LOCK`. Started from a visible Activity (join, share, accept). It lives while a room is joined and stops after **10 min of inactivity** (no transfer and no handshake; §8 D4): it leaves the room and replaces the ongoing notification with a quiet, dismissible "Room closed after 10 minutes idle" status notification.
 * Android 15+ caps `dataSync` at 6 h / 24 h: `onTimeout(startId, fgsType)` ⇒ abort active transfers with `timeout`, leave the room, post a notification, `stopSelf()` within the grace period. (Alternative for API 34+: user-initiated data transfer jobs; evaluated in Phase 4, not v1.)
-* `PARTIAL_WAKE_LOCK` (`"darkp2p:transfer"`, 10 min timeout, renewed on progress) and a `WifiLock` (`WIFI_MODE_FULL_LOW_LATENCY` when foreground; `FULL_HIGH_PERF` below API 34) **only while `tx` or `rx` is active**.
+* `PARTIAL_WAKE_LOCK` (`"darkp2p:transfer"`) and a `WifiLock` (`WIFI_MODE_FULL_LOW_LATENCY` when foreground; `FULL_HIGH_PERF` below API 34) are held **only while bytes move**: acquired on the first DATA frame, released at once when the transfer ends or aborts, and after 5 s without a frame sent or received (waiting for accept, a stalled window, `Interrupted`); reacquired when frames flow again. Both also carry a 10 min safety timeout.
 * Notification channel `transfers` (IMPORTANCE_LOW, ≤ 1 update/s), `offers` (IMPORTANCE_HIGH: Accept → Downloads / Decline actions). `VISIBILITY_PRIVATE` with a generic public version; file names are hidden by default (setting).
 
 ---
@@ -811,15 +818,17 @@ Each item names the control and how it is verified. **[T]** = automated test, **
 ### 5.1 Secrets and identifiers in memory and on disk
 
 - [ ] Room key and session keys are memory-only. `RoomKey.close()` zero-fills on leave. Documented limitation: `SecretKeySpec` copies the key and cannot be wiped. **[R]**
-- [ ] No room IDs, keys, tokens, order/payment IDs, SDP/ICE or file names in logs. Release builds strip `android.util.Log` via R8 `-assumenosideeffects`. detekt forbids `println`, `Log.*`, `printStackTrace` outside `:testing`. **[R][T]** (a log-capture test greps for the room ID during a transfer)
+- [ ] No room IDs, keys, tokens, order/payment IDs, SDP/ICE or file names in logs. Release builds strip `android.util.Log` via R8 `-assumenosideeffects`. `checkForbiddenApis` forbids `println`, `Log.*`, `printStackTrace` in main code. **[R][T]** (a log-capture test greps for the room ID during a transfer)
 - [ ] Vault = AES-256-GCM blob under a non-exportable Keystore key (`setIsStrongBoxBacked` when available), AAD `"darkp2p-vault/v1"`, `AtomicFile`. Contents mirror the page's names: `darkp2p_token`, `darkp2p_pending_claim` (same JSON), which allows copy/paste export between web and app. The key does **not** require user authentication, because the background claim worker and auto-join need it. Biometric lock is a UI gate (5.5). **[T]**
 - [ ] `android:allowBackup="false"`, `dataExtractionRules` excluding all domains, `fullBackupContent="false"`. **[R]**
 - [ ] No room history by default. An optional "recent rooms" list stores the room ID only, never the key. **[R]**
 
 ### 5.2 WebRTC / ICE leaks
 
-- [ ] Hide-IP: `iceTransportsType = RELAY`; **and** `CandidatePolicy` drops any outbound candidate whose `typ ≠ relay` and rewrites a non-zero `raddr/rport` to `0.0.0.0 0` (defence in depth if libwebrtc ever stops blanking it); **and** SDP scrubbing (4.5). **[T]** unit + emulator (6.4): the browser peer records every `addIceCandidate` → all `typ relay`, all `raddr 0.0.0.0`.
-- [ ] Direct mode: `typ host` candidates are dropped by default (F12), so the exposure matches Chrome with mDNS. Opt-in "Allow LAN addresses" for local speed. **[T]**
+- [ ] Hide-IP with TURN: `iceTransportsType = RELAY`; **and** `CandidatePolicy` drops any outbound candidate whose `typ ≠ relay` and rewrites a non-zero `raddr/rport` to `0.0.0.0 0` (defence in depth if libwebrtc ever stops blanking it); **and** SDP scrubbing (4.5). **[T]** unit + emulator (6.4): the browser peer records every `addIceCandidate` → all `typ relay`, all `raddr 0.0.0.0`.
+- [ ] Direct mode signals host, srflx and relay candidates (§8 D6) and the UI says `IP EXPOSED` as soon as one is signaled. No mDNS obfuscation in v1. The direct-mode screen states that local and public addresses are visible to the peer and points to Hide My IP. **[T]**
+- [ ] Hide-IP without TURN (no Pro): no PeerConnection is created at all; the engine goes straight to the WS relay. **[T]** (`hideIp && !turnEnabled` + `ready` ⇒ zero `StartWebRtc` effects.)
+- [ ] A tunnel that fails after it was up never triggers automatic re-gathering: `Interrupted` until the user taps Reconnect or the peer requests the relay (§8 D5). **[T]**
 - [ ] `IpExposure` is sticky `EXPOSED` once any exposing candidate was signaled or a direct pair was selected (port of `localIpSignaled`), across re-pairings. **[T]**
 - [ ] Tor mode: `TransportFactory.webRtc == null` (type-level). Native WebRTC library is not even loaded. **[T]** (`Tor` profile + `ready` ⇒ zero `StartWebRtc` effects; instrumented check that `libjingle_peerconnection_so` is not in `/proc/self/maps`).
 - [ ] Candidate cap 150/pairing, `GATHER_ONCE` (server kills at 200). **[T]**
@@ -827,7 +836,7 @@ Each item names the control and how it is verified. **[T]** = automated test, **
 ### 5.3 Network, DNS and Tor
 
 - [ ] Tor profile: `TorDns` never calls a resolver; `Socks5hSocketFactory` always sends ATYP 0x03. **[T]** JVM test with a fake SOCKS server asserts ATYP and hostname bytes, plus a `Dns` spy that fails on any call. **[M]** Tier-3 capture: no UDP/53 or TCP/853 from the app's UID during an onion transfer (`tcpdump` on emulator).
-- [ ] Forbidden APIs in all modules: `java.net.URL.openConnection`, `HttpURLConnection`, `InetAddress.getByName/getAllByName` (outside `ClearnetDns`), `WebView`, and Custom Tabs launch outside `CheckoutLauncher`. **[R]** detekt `ForbiddenMethodCall`.
+- [ ] Forbidden APIs in all modules: `java.net.URL.openConnection`, `HttpURLConnection`, `InetAddress.getByName/getAllByName` (outside `ClearnetDns`), `WebView`, and Custom Tabs launch outside `CheckoutLauncher`. **[R]** `checkForbiddenApis`.
 - [ ] Custom Tabs are clearnet only. Tor mode routes checkout to Tor Browser or displays the URL. **[T]**
 - [ ] Cleartext only to `*.onion` (network security config). **[T]** (OkHttp refuses `http://example.com`).
 - [ ] `Origin` header always equals the link's origin, never a value from the network. A link from a non-default host requires an explicit "Connect to <host>?" confirmation before any connection (otherwise a crafted intent could make the app reveal its IP to an arbitrary server). **[T]**
@@ -838,7 +847,7 @@ Each item names the control and how it is verified. **[T]** = automated test, **
 
 - [ ] Exported components: `MainActivity` (launcher + App Link), `ShareActivity` (`ACTION_SEND`, `ACTION_SEND_MULTIPLE`, `*/*`). Service, receivers and the WorkManager provider are not exported. **[R]**
 - [ ] Link intake runs `RoomLink.parse` (strict regexes) on `intent.data`; the fragment is removed from the Activity's stored intent after parsing (`setIntent(Intent(...))`) so it is not resurrected in recents or crash dumps. **[T]**
-- [ ] App Links: `autoVerify="true"` for `https://darkp2p.com/` in `full`. Needs `/.well-known/assetlinks.json` on the server (§8 S-1). Note: verification makes the **system** fetch `darkp2p.com` over clearnet at install time; the `libre` flavor ships without `autoVerify` for users who consider that a leak. **[R]**
+- [ ] App Links: `autoVerify="true"` for `https://darkp2p.com/` in `full` **release** builds only, once `assetlinks.json` exists (§8 D1). Debug builds use the "Open with" chooser, paste and QR. Note: verification makes the **system** fetch `darkp2p.com` over clearnet at install time; the `libre` flavor ships without `autoVerify` for users who consider that a leak. **[R]**
 - [ ] Clipboard: share link copied with `ClipDescription.EXTRA_IS_SENSITIVE` (API 33+) and auto-cleared after 60 s (`clearPrimaryClip`) if still ours. **[T]**
 - [ ] `FLAG_SECURE` on by default for room/QR/token screens (setting to disable), `setRecentsScreenshotEnabled(false)` (API 33+). **[T]**
 - [ ] Token/payment-ID inputs: `KeyboardOptions(autoCorrectEnabled = false, keyboardType = Password)` + `IME_FLAG_NO_PERSONALIZED_LEARNING`. **[R]**
@@ -878,7 +887,7 @@ The Android project lives in this repository under `android/`, so vectors, the s
 android/                      Gradle root (settings.gradle.kts, the 5 modules, :testing, :interop-cli)
 test/vectors/export.mjs       Node exporter (built-ins only, RULES.md §5)
 test/vectors/v3.json          committed vectors (Node → Kotlin)
-test/vectors/android-v3.json  committed vectors (Kotlin → Node)
+test/vectors/android-v3.json  committed vectors (Kotlin → Node; Phase 1)
 test/vectors.test.mjs         drift gate + reverse-direction decode
 test/interop/peer.mjs         browser-peer driver for JVM/emulator interop
 ```
@@ -888,7 +897,7 @@ test/interop/peer.mjs         browser-peer driver for JVM/emulator interop
 **Exporter (`test/vectors/export.mjs`).** It extracts the `darkp2p-framing` block exactly as `test/framing.test.mjs` does, and evaluates it with a **deterministic `crypto` shim** passed as a parameter, which shadows the global inside the block:
 
 ```js
-const drbg = hmacDrbg(seedFromArgv);                          // node:crypto HMAC-SHA256 counter DRBG
+const drbg = hmacDrbg(FIXED_SEED);                            // node:crypto HMAC-SHA256 counter DRBG
 const shim = { subtle: globalThis.crypto.subtle, getRandomValues: (a) => drbg.fill(a) };
 const F = new Function('crypto', `${block}\nreturn { encodeFrame, decodeFrame, deriveHelloKey,
   deriveTransferKey, createTransferKeyCache, RxStateMachine, TxWindow, RelayBudget,
@@ -901,17 +910,18 @@ Raw key bytes: the block's keys are non-extractable, so the exporter recomputes 
 
 | Group | Content | Kotlin assertion |
 |---|---|---|
-| `links` | valid/invalid fragments (case, 15/65 hex, 42/43/44-char keys, padding, `+/`, non-canonical trailing bits, extra `:`) | `RoomLink.parse` accept/reject and bytes |
+| `links` | valid/invalid fragments (case, 15/65 hex, 42/43/44-char keys, extra `:`). The page **accepts** `=` padding, the standard `+/` alphabet and non-zero trailing bits, so Kotlin must too | `RoomLink.parse` accept/reject and bytes |
 | `hkdf` | ikm, salt, info, okm (hello + transfer), plus RFC 5869 A.1–A.3 | `Hkdf.sha256` |
 | `aad` | inputs → 25 B hex | `FrameCodec.aad` |
 | `frames` | type, role, transferId, seq, iv, payload (hex and, for CTRL, the exact JSON bytes the page produces) → frame hex | `encode` byte-equality and `decode` round-trip |
-| `frames_bad` | every single-bit header flip, tag flip, truncation at 0…48 B, legacy types, unknown type, reflected role | exact `FrameError` subtype (`code`) |
-| `ctrl` | page-produced JSON for every message; edge inputs (`v: 3.0`, `name: 0`, `name: ""`, `done: false`, huge numbers) | `CtrlCodec.decode` equivalence or the same `ProtocolError` reason |
-| `rx_traces` / `tx_traces` | seeded random + scripted op sequences run on the JS classes: `[{op, args, now?, expect | expectError{reason}}]` | replay against `RxStateMachine`/`TxWindow` step by step |
-| `budget` | `(cap, remaining, charges[], size)` → `wireBytes`, `fits`, `remaining` | `RelayBudget` |
-| `backoff` | `(attempt, rand)` → ms, incl. negatives, non-integers, 17+, `rand ∉ [0,1)` | `Backoff.reconnectDelay` |
+| `framesBad` | every single-bit flip of a whole frame, every truncation, legacy types, unknown types, reflected role, wrong room key, swapped nonces | exact `FrameError` subtype (`code`) |
+| `meta` | `parseMeta` on JSON text: edge inputs (`3.0`, `3e0`, `name: 0`, `name: ""`, duplicate keys, huge numbers). Every control message as the page serializes it is in `frames` (`json`); bad `ack`/reply shapes are in `txTraces` | the same normalized meta or the same abort reason |
+| `rxTraces` / `txTraces` | seeded random + scripted op sequences run on the JS classes: `[{op, args, ret | error, state}]` | replay against `RxStateMachine`/`TxWindow` step by step |
+| `relayBudget` | `wireBytes` table; scripted `charge`/`fits` runs; constructor rejections | `RelayBudget` |
+| `reconnectDelay` | `(attempt, rand)` → ms, incl. negatives, non-integers, 17+, `rand ∉ [0,1)` | `Backoff.reconnectDelay` |
 | `candidates` | browser- and libwebrtc-shaped lines → `exposesIp` | `CandidatePolicy.exposesIp` |
-| `lru` | transferId access sequence → eviction order for size 8; seen(64)/ended(16) FIFO | caches |
+| `transferKeyCache` | access sequences → which lookups are cache hits (sizes 8, 1, 3) | `TransferKeyCache` |
+| `constants` | every numeric/list constant of the page | `WireConstants` (already enforced) |
 
 Gates:
 * `test/vectors.test.mjs` (Node, server CI) regenerates `v3.json` from a fixed seed and fails on any diff. **Any wire change to the page fails CI until vectors are regenerated and the Kotlin side passes.**
@@ -954,7 +964,9 @@ Command: `cd android && ./gradlew :protocol:test :transport:testDebugUnitTest -P
 `reactivecircus/android-emulator-runner` (API 29, 34, 36). `peer.mjs` runs on the host; the app reaches the server at `10.0.2.2`. The instrumented tests in `:service` (`androidTest`) cover:
 
 * **Direct DataChannel**: 200 MB both ways; DataChannel `bufferedAmount` never exceeds 1 MiB + one frame (sampled); app heap growth < 16 MB (`Debug.getNativeHeapAllocatedSize` + `Runtime`).
-* **Hide My IP**: coturn from `docker-compose.yml` (with `TURN_SECRET`), Pro token, `iceTransportsType=RELAY`. The browser hooks `RTCPeerConnection.prototype.addIceCandidate` and reports every candidate: assert 100 % `typ relay` and `raddr 0.0.0.0`. The selected pair is relay on both ends.
+* **Hide My IP without Pro**: no token ⇒ no PeerConnection, WS relay, `hideIpViaRelay == true`.
+* **Failed tunnel**: UDP blocked after the tunnel is up ⇒ `Interrupted(canReconnect)`, no candidates signaled until Reconnect; with a Chromium peer, its `ws-fallback` moves both to the relay.
+* **Hide My IP (TURN)**: coturn from `docker-compose.yml` (with `TURN_SECRET`), Pro token, `iceTransportsType=RELAY`. The browser hooks `RTCPeerConnection.prototype.addIceCandidate` and reports every candidate: assert 100 % `typ relay` and `raddr 0.0.0.0`. The selected pair is relay on both ends.
 * **Fallback**: block UDP on the emulator (`iptables` via `adb root`) ⇒ 12 s ⇒ WS relay, transfer succeeds.
 * **MediaStore/SAF**: commit only after `done`; abort leaves no row; `am kill` ⇒ cleanup on next start.
 * **FGS**: Doze force-idle during a transfer; API 35 FGS timeout path.
@@ -971,13 +983,13 @@ Each phase ends with a gate that must pass in CI (or be signed off for **[M]** i
 
 ### Phase 0 — Contract freeze & scaffolding (server repo side)
 * Write `test/vectors/export.mjs`, commit `v3.json`, add `test/vectors.test.mjs` (Node built-ins only).
-* Scaffold `android/` with the 5 modules + `:testing`, version catalog, dependency verification, detekt forbidden-API rules, module-graph assert, the `^import android` check for `:protocol`.
-* Decide §8 S-1 (assetlinks) and S-2 (payment return).
-* **Gate:** `npm run check && npm test` green including the vector drift test; `./gradlew help` with dependency verification on; CI fails on a deliberately added Android import in `:protocol`.
+* Scaffold `android/` with the 5 modules + `:testing`, version catalog, dependency verification, and the `checkStructure` tasks (module graph, `:protocol` purity, forbidden APIs, pinned versions).
+* **Gate:** `npm run check && npm test` green including the vector drift test; `./gradlew check` plus one APK per flavor with dependency verification on; a deliberately added Android import in `:protocol` fails the build.
+* **Status: done.** `:interop-cli` and the reverse vectors (`android-v3.json`) start with the code they exercise, in Phases 2 and 1.
 
 ### Phase 1 — `:protocol` (pure JVM)
 * `Hkdf`, `FrameCodec`, `TransferKeyCache`, `CtrlCodec`, `RxStateMachine`, `TxWindow`, `RelayBudget`, `Backoff`, `RoomLink`, `CandidatePolicy`, LRU sets, then `RoomMachine` + `toRoomState()`.
-* **Gate:** 100 % of `v3.json` vectors (including `rx_traces`/`tx_traces`) pass; reverse vectors decode in Node; sticky-state invariant tests (§3.4 table) pass; Kover line coverage ≥ 90 % on `:protocol`; Jazzer 10 min on `decode`/`parse` with no findings.
+* **Gate:** 100 % of `v3.json` vectors (including `rxTraces`/`txTraces`) pass; reverse vectors decode in Node; sticky-state invariant tests (§3.4 table) pass; Kover line coverage ≥ 90 % on `:protocol`; Jazzer 10 min on `decode`/`parse` with no findings.
 
 ### Phase 2 — `:transport` WebSocket signaling + relay + Tor
 * `OkHttpSignalingClient` (Origin, ping policy, close-cause mapping), `WsRelayChannel` (queue-size gating, budget charging), `ServerApi`, `Socks5hSocketFactory`/`TorDns`, Orbot integration, `network_security_config`.
@@ -993,30 +1005,34 @@ Each phase ends with a gate that must pass in CI (or be signed off for **[M]** i
 * **Gate:** 4 GB transfer emulator↔Chromium with heap growth < 16 MB and equal hashes; `am kill` mid-receive leaves no visible file after relaunch; Doze force-idle transfer completes **[M]**; FGS timeout aborts with `timeout`; vault round-trip survives reboot and fails closed when the Keystore key is removed; claim worker re-enqueues at ≥ 5 min and stops at 48 h (`TestDriver`).
 
 ### Phase 5 — `:app` (Compose)
-* Room screen (state-driven from `RoomState`), offer sheet with Downloads/"Save as…" (`ACTION_CREATE_DOCUMENT`), share targets (single + multiple → queue), App Links + manual paste + QR generate/scan, settings (Force WS, Hide IP, Tor/Orbot/embedded, allow LAN candidates, show names in notifications, FLAG_SECURE), Pro screen (checkout via Custom Tab or Tor Browser, payment-ID paste, token import/export), biometric lock.
+* Room screen (state-driven from `RoomState`), offer sheet with Downloads/"Save as…" (`ACTION_CREATE_DOCUMENT`), share targets (single + multiple → queue), App Links + manual paste + QR generate/scan, settings (Force WS, Hide IP, Tor/Orbot/embedded, show names in notifications, FLAG_SECURE), Pro screen (checkout via Custom Tab or Tor Browser, payment-ID paste, token import/export), biometric lock.
 * **Gate:** Compose UI tests for every `RoomState` (screenshot tests); TalkBack and font-scale 200 % pass **[M]**; link-intake fuzz (intent extras) never crashes and never connects to a non-default host without confirmation; full §5 checklist walked on a physical device **[M]**.
 
 ### Phase 6 — Hardening & distribution
-* Reproducible build pipeline (two-container diffoscope), from-source libwebrtc for `libre`, F-Droid metadata, release signing; external review of `:protocol` + `:transport` against this document; Tier-3 Tor suite promoted to required.
+* Reproducible build pipeline (two-container diffoscope), from-source libwebrtc for `libre`, F-Droid metadata, release signing; `public/.well-known/assetlinks.json` added to the server as a static file with the final key fingerprint, and `autoVerify` switched on (§8 D1); external review of `:protocol` + `:transport` against this document; Tier-3 Tor suite promoted to required.
 * **Gate:** byte-identical unsigned APKs from two independent builds; F-Droid build-server dry run passes; external review findings closed or accepted in writing; Tier 1–3 green for 7 consecutive nightlies.
 
 ---
 
-## 8. Open questions & proposed (optional) server additions
+## 8. v1 decisions
 
-None of these are needed for wire compatibility. Each is backwards-compatible with the current page.
+Locked for v1. `server.js` stays untouched; the wire contract in §1 is unchanged by all of them.
 
-**S-1 `/.well-known/assetlinks.json` (recommended).** It is needed for verified App Links (`autoVerify`). Serve it from memory like `ASSET_FILES`, built from an env var `ANDROID_CERT_SHA256` (comma-separated fingerprints) plus the package name. Absent env ⇒ 404 as today. Without it, links still open the app through the disambiguation dialog, paste or QR.
+| # | Topic | Decision | Where it lands |
+|---|---|---|---|
+| D1 | App Links (`/.well-known/assetlinks.json`) | Deferred during development. Added as a **static file** once the release signing key is final; `autoVerify` is enabled in the same release. Dev builds rely on the "Open with" chooser, paste and QR. | §5.4, Phase 6 |
+| D2 | Payment return (`client` field on `/api/checkout`) | Not in v1. Claims are polled in the background with `{invoiceId, orderId}`, plus a "paste payment ID" field. From the release with D1, the existing `https://<domain>/?NP_id=…` redirect opens the app and adds the payment ID automatically. | §0.3 F5, §3.6 |
+| D3 | Hide My IP without Pro | Fall back to the encrypted WebSocket relay (free cap from `ready`, 50 MB by default) instead of blocking. Inline note: Pro unlocks TURN (no relay cap) and the 500 MB relay. | §0.3 F3, §1.8, §3.4 |
+| D4 | Idle room | The Foreground Service stops after 10 minutes of inactivity and leaves a quiet status notification. `WakeLock`/`WifiLock` are released as soon as bytes stop moving. | §4.7 |
+| D5 | ICE restart on network change | None in v1. libwebrtc rides out `disconnected`; a tunnel that `failed` after being up goes to `Interrupted` with a manual Reconnect (clean rejoin). | §1.8, §3.4, §4.5 |
+| D6 | Local addresses in Direct P2P | Signaled (fast LAN transfers). mDNS obfuscation only if libwebrtc offers it cleanly; the Java API does not today, so v1 has none. Hide My IP (TURN `RELAY` policy, or the WS relay) is the single switch that hides local and public addresses. | §0.3 F12, §4.5, §5.2 |
 
-**S-2 Payment return to the app (recommended).** `success_url` is fixed to `https://${DOMAIN}/`, so whether `?NP_id=` reaches the app depends on Chrome handing a verified-link redirect from a Custom Tab to the app, which is not guaranteed. Options:
-(a) accept an optional `"client":"android"` in `/api/checkout` and set `success_url` to `https://${DOMAIN}/?app=1`, which the page ignores and the app's intent filter can match more specifically;
-(b) no server change: rely on invoiceId polling (fails if the server restarts before the IPN is claimed) plus a mandatory "paste payment ID" field.
-v1 ships (b) and adopts (a) when available.
+Notes on how the decisions meet the existing clients:
 
-**S-3 Relay budget push (nice to have).** The client mirrors the budget from `ready` plus its own counting. A periodic `{"type":"relay-budget","remaining":n}` from the server would make the mirror exact. Older clients ignore unknown types, but RULES.md §3 still requires review.
+* **D1 and "static file".** `server.js` serves a fixed list of paths from memory and answers 404 for anything else, so `public/.well-known/assetlinks.json` is not picked up by dropping it in. At release it needs either a small `server.js` route (the `ASSET_FILES` pattern) or a `handle /.well-known/assetlinks.json` block in the `Caddyfile`, which keeps `server.js` untouched. The Caddy route is the default plan.
+* **D2 and server restarts.** An invoice-ID claim is answered only from the IPN record in server RAM. If the server restarts between payment and claim and the buyer never returns through the redirect, only the pasted payment ID can recover the token. The Pro screen says so next to the paste field.
+* **D3 on the wire.** `hideIp && !turnEnabled` takes the same path as Force-WS: `ws-fallback` on `ready`, no PeerConnection. A web peer follows as it does for any `ws-fallback`. If the relay budget is spent, the state is `RelayExhausted`, never a silent switch to direct.
+* **D5 and a web peer.** The page reacts to its own `failed` by sending `ws-fallback`. Android honours an incoming `ws-fallback` in `Interrupted` (the relay exposes no address), so with a web peer the room usually recovers onto the relay by itself; with two Android peers it waits for a manual Reconnect. Failures **before** the tunnel first opens (12 s ICE timer, `failed` during negotiation) still fall back to the relay automatically, as the page does. Without that, a peer behind a UDP-blocking network could never connect.
+* **D6 and the candidate cap.** Signaling host candidates raises the count on multi-interface devices; the 150-per-pairing cap (server limit 200) stays.
 
-**Open questions for the maintainers**
-1. Should Hide-IP without Pro fall back automatically to the WS relay (which also masks the IP), or keep the page's hard block? (Proposed: offer it as an explicit one-tap choice.)
-2. Is a 10-minute idle-room FGS shutdown acceptable, or should an idle room stay joined as long as the app is visible?
-3. Should the Android client ever do an ICE restart on network change? It would need the page to handle a mid-session `offer`; today `handleSignal('offer')` would call `setRemoteDescription` on the existing `pc`. That likely works but is untested, so v1 does not do it.
-4. Default for "drop host candidates" in direct mode: on (privacy parity with Chrome, proposed) or off (LAN throughput)?
+Deferred beyond v1: the optional `client` field on `/api/checkout`; a server push of the remaining relay budget; ICE restart.
