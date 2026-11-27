@@ -170,4 +170,31 @@ class AppLogicTest {
         assertEquals(R.string.tor_setting_needs_orbot, RoomTexts.orbotMissing(onionRoom = false))
         assertNotEquals(RoomTexts.orbotMissing(onionRoom = true), RoomTexts.orbotMissing(onionRoom = false))
     }
+
+    @Test
+    fun `flipping a privacy switch in an open room says so when it does not simply apply`() {
+        fun ready(transport: Transport, ip: IpExposure) = RoomState.Ready(transport, ip, 50, 40, false, false, false)
+        val exposedRelay = ready(Transport.WS_RELAY, IpExposure.EXPOSED)
+        val maskedRelay = ready(Transport.WS_RELAY, IpExposure.MASKED)
+        val direct = ready(Transport.DIRECT, IpExposure.EXPOSED)
+
+        // Hiding the address after it was seen cannot take that back.
+        assertEquals(R.string.room_hide_ip_late, RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), exposedRelay))
+        assertEquals(R.string.room_hide_ip_late, RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), direct))
+        assertNull(RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), maskedRelay))
+
+        // Dropping the last reason to stay on the relay pairs again for a direct connection.
+        assertEquals(R.string.room_reconnect_direct, RoomTexts.policyNotice(Prefs(forceRelay = true), Prefs(), maskedRelay))
+        assertEquals(R.string.room_reconnect_direct, RoomTexts.policyNotice(Prefs(hideIp = true), Prefs(), maskedRelay))
+        assertNull(RoomTexts.policyNotice(Prefs(forceRelay = true, hideIp = true), Prefs(hideIp = true), maskedRelay))
+        assertNull(RoomTexts.policyNotice(Prefs(forceRelay = true, hideIp = true), Prefs(forceRelay = true), maskedRelay))
+        // On the relay only because WebRTC failed: nothing was holding it there.
+        assertNull(RoomTexts.policyNotice(Prefs(), Prefs(chat = false), exposedRelay))
+
+        // Turning the relay on, any change outside a ready room, and Tor mode need no words.
+        assertNull(RoomTexts.policyNotice(Prefs(), Prefs(forceRelay = true), direct))
+        assertNull(RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), RoomState.WaitingForPeer))
+        assertNull(RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), null))
+        assertNull(RoomTexts.policyNotice(Prefs(forceRelay = true), Prefs(tor = true), maskedRelay))
+    }
 }

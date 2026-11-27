@@ -252,8 +252,12 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Applies changed settings to the open room. */
     fun applyPrefs(change: (Prefs) -> Prefs) {
+        val before = graph.settings.prefs.value
         graph.settings.update(change)
-        _controller.value?.setPolicy(graph.settings.prefs.value.policy)
+        val after = graph.settings.prefs.value
+        val room = _controller.value ?: return
+        RoomTexts.policyNotice(before, after, room.room.value.state)?.let { message = it }
+        room.setPolicy(after.policy)
     }
 
     // ---- Pro ----

@@ -25,15 +25,24 @@ class MainActivity : FragmentActivity() {
     /** True until the user has passed the screen lock (when the app lock is on). */
     private var locked by mutableStateOf(false)
 
+    /** Whether the device has a screen lock to ask for. It can be set or removed while the app is in the background. */
+    private var lockAvailable by mutableStateOf(false)
+
+    override fun onResume() {
+        super.onResume()
+        lockAvailable = canLock()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lockAvailable = canLock()
         locked = vm.graph.settings.prefs.value.lock
         lifecycleScope.launch {
             vm.graph.settings.prefs.collect { applySecure(it.secure) }
         }
         setContent {
             val prefs by vm.graph.settings.prefs.collectAsState()
-            AppUi(vm, prefs, locked = locked && prefs.lock, onUnlock = ::unlock, canLock = canLock())
+            AppUi(vm, prefs, locked = locked && prefs.lock, onUnlock = ::unlock, canLock = lockAvailable)
         }
         if (savedInstanceState == null) handle(intent)
         if (locked) unlock()

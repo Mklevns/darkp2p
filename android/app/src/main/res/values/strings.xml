@@ -50,6 +50,8 @@
     <string name="room_reconnect">Reconnect</string>
     <string name="room_force_relay">Always use the encrypted relay</string>
     <string name="room_hide_ip">Hide my IP from the other device</string>
+    <string name="room_hide_ip_late">The other device has already seen your IP address in this room. Hiding it applies from the next connection.</string>
+    <string name="room_reconnect_direct">Reconnecting to try a direct connection. A direct connection shows your IP address to the other device.</string>
     <string name="room_hide_ip_relay_note">Hiding your IP through the relay (50 MB per room). Pro adds a faster private route with no size limit and a 500 MB relay.</string>
     <string name="room_relay_left">Relay: %1$s of %2$s left in this room</string>
 
