@@ -2,13 +2,58 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Only to scan a room's QR code, asked for when the scanner is opened. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- Needed since Android 11 to hand a checkout to Tor Browser in Tor mode. -->
+    <queries>
+        <package android:name="org.torproject.torbrowser" />
+    </queries>
+
     <!-- No backups of any kind: tokens and pending claims never leave the device. -->
     <application
+        android:name=".DarkP2PApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
-        android:label="DarkP2P"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
         android:supportsRtl="true"
-        tools:ignore="MissingApplicationIcon" />
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              Room links and the payment return: https://darkp2p.com/#<room>:<key> and /?NP_id=...
+              Not verified yet (no autoVerify): that needs the server's assetlinks.json with the
+              release key's fingerprint. Until then, on Android 12 and later a tapped link opens
+              in the browser unless the user turns on "Open supported links" for this app in the
+              system settings; pasting the link or scanning its QR code always works.
+            -->
+            <intent-filter tools:ignore="AppLinkWarning">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="darkp2p.com" android:path="/" />
+            </intent-filter>
+
+            <!-- Files shared from other apps. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+    </application>
 
 </manifest>

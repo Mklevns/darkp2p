@@ -13,6 +13,7 @@ webrtc-java = "1.0.1"
 
 minSdk = "29"
 compileSdk = "37"
+compileSdkMinor = "2"
 targetSdk = "37"
 
 # Planned (docs/android/TECHNICAL_DESIGN.md §2.2); wired in by the phase that first uses them.
@@ -25,6 +26,9 @@ work = "2.12.0"
 camerax = "1.7.0"
 browser = "1.10.0"
 biometric = "1.1.0"
+activity = "1.13.0"
+core-ktx = "1.19.1"
+lifecycle = "2.11.1"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -43,6 +47,15 @@ webrtc = { module = "io.github.webrtc-sdk:android", version.ref = "webrtc" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 tor-android = { module = "info.guardianproject:tor-android", version.ref = "tor-android" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-foundation = { module = "androidx.compose.foundation:foundation" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
+activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity" }
+lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
+camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
+camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
 work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 camerax-core = { module = "androidx.camera:camera-core", version.ref = "camerax" }
 browser = { module = "androidx.browser:browser", version.ref = "browser" }
@@ -52,5 +65,6 @@ biometric = { module = "androidx.biometric:biometric", version.ref = "biometric"
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
