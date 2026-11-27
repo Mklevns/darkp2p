@@ -10,6 +10,8 @@ android {
 
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()
+        // On-device tests: what differs between a desktop JVM and Android.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // Same dimension as :app. `full` carries the prebuilt libwebrtc; `libre`
@@ -72,6 +74,9 @@ dependencies {
     testImplementation(libs.webrtc.java)
     testRuntimeOnly(variantOf(libs.webrtc.java) { classifier("linux-x86_64") })
     testImplementation(libs.kotlinx.coroutines.test)
+
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }
 
 // The unit tests run on the host JVM against a real server.js and the real page
