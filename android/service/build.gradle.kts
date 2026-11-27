@@ -8,6 +8,9 @@ android {
 
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()
+        // :transport differs per distribution; this module is the same in both and
+        // compiles against what both have in common.
+        missingDimensionStrategy("distribution", "libre")
     }
 
     compileOptions {

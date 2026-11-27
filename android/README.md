@@ -3,10 +3,13 @@
 Native Kotlin client for the `darkp2p/v3` protocol. Design, wire contract and
 roadmap: [`docs/android/TECHNICAL_DESIGN.md`](../docs/android/TECHNICAL_DESIGN.md).
 
-Status: **Phase 2** done. `:protocol` is complete, and `:transport` connects it
-to a real server over the WebSocket relay, directly or through a Tor SOCKS
-proxy. Its tests exchange files with the unmodified `server.js` and page.
-WebRTC is Phase 3; `:storage`, `:service` and `:app` are still empty.
+Status: **Phase 3** code complete, not yet run on a device. `:protocol` is
+complete; `:transport` connects it to a real server over the WebSocket relay
+(directly or through Tor) and over a WebRTC DataChannel. Its tests exchange
+files with the unmodified `server.js` and page, including real Chromium over
+WebRTC, using a desktop build of libwebrtc. The Android libwebrtc adapter
+(`full` flavor) compiles but has never run. `:storage`, `:service` and `:app`
+are still empty.
 
 ## Modules
 
@@ -64,14 +67,17 @@ which runs the real `server.js` and real copies of the page. They need Node 22
 and `npm ci` in the repository root.
 
 ```bash
-./gradlew :transport:testDebugUnitTest
+./gradlew :transport:testFullDebugUnitTest
 ```
 
+The WebRTC tests use a desktop build of libwebrtc and run on Linux x86-64
+only; elsewhere they are reported as skipped.
+
 With Playwright and its Chromium installed, the page can also run in a real
-headless browser:
+headless browser, over the relay and over WebRTC:
 
 ```bash
-DARKP2P_CHROMIUM=1 ./gradlew :transport:testDebugUnitTest --tests '*Chromium*'
+DARKP2P_CHROMIUM=1 ./gradlew :transport:testFullDebugUnitTest --tests '*Chromium*'
 ```
 
 ## Dependencies

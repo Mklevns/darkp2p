@@ -5,12 +5,14 @@ import com.darkp2p.protocol.ChannelRef
 import com.darkp2p.protocol.ChatFailure
 import com.darkp2p.protocol.CloseCause
 import com.darkp2p.protocol.LocalPolicy
+import com.darkp2p.protocol.PcState
 import com.darkp2p.protocol.RoomEffect
 import com.darkp2p.protocol.RoomEvent
 import com.darkp2p.protocol.RoomInput
 import com.darkp2p.protocol.RoomLink
 import com.darkp2p.protocol.RoomMachine
 import com.darkp2p.protocol.RoomState
+import com.darkp2p.protocol.SdpKind
 import com.darkp2p.protocol.ServerMessage
 import com.darkp2p.protocol.TimerId
 import com.darkp2p.protocol.TransferProgress
@@ -66,9 +68,8 @@ public sealed interface ChatEvent {
  * machine's effects are carried out in the order it returns them. This is the
  * only code that touches the machine.
  *
- * Phase 2: the WebSocket relay is the only transport, so the machine is told
- * WebRTC is unavailable whatever [policy] says.
- *
+ * @param webRtc null in Tor mode (and wherever WebRTC must not run): the machine
+ *   is then told WebRTC is unavailable whatever [policy] says, and uses the relay.
  * @param beforeJoin runs after the socket opens and before the room is joined
  *   (the app waits here, briefly, for a pending Pro token claim).
  */
@@ -81,6 +82,7 @@ public class RoomSession(
     token: String = "",
     private val beforeJoin: suspend () -> Unit = {},
     random: SecureRandom = SecureRandom(),
+    private val webRtc: WebRtcFactory? = null,
 ) {
     private sealed interface Msg {
         class Input(val input: RoomInput) : Msg
@@ -92,10 +94,12 @@ public class RoomSession(
 
     private class Socket(val ws: WebSocket, val outbound: Channel<OutFrame>, val sender: Job)
 
+    private class Tunnel(val peer: WebRtcPeer, val outbound: Channel<OutFrame>, val sender: Job)
+
     private val endpoint = ServerEndpoint(link.origin)
     private val machine = RoomMachine(
         link.roomId, link.key, clock = { System.nanoTime() / 1_000_000 }, random = random,
-        policy = policy.copy(webRtcAvailable = false), token = token,
+        policy = policy.copy(webRtcAvailable = policy.webRtcAvailable && webRtc != null), token = token,
     )
 
     // One coroutine at a time: the machine is not thread-safe and does not need to be.
@@ -107,6 +111,7 @@ public class RoomSession(
     private val ioTasks = Channel<suspend () -> RoomInput?>(Channel.UNLIMITED)
 
     private val sockets = HashMap<Int, Socket>()
+    private val tunnels = HashMap<Int, Tunnel>()
     private val timers = HashMap<TimerId, Job>()
     private val timerGeneration = HashMap<TimerId, Int>()
 
@@ -123,7 +128,9 @@ public class RoomSession(
 
     /** Joins the room. Call once. */
     public fun start() {
-        require(endpoint.allows(profileOf(client))) { "an onion server is reached through Tor only" }
+        val profile = profileOf(client)
+        require(endpoint.allows(profile)) { "an onion server is reached through Tor only" }
+        require(webRtc == null || profile == NetworkProfile.Clearnet) { "WebRTC must not exist in Tor mode" }
         scope.launch {
             for (msg in inbox) {
                 val effects = when (msg) {
@@ -141,15 +148,20 @@ public class RoomSession(
         scope.launch { inbox.send(Msg.Start) }
     }
 
-    /** A user action. Safe from any thread. */
+    /**
+     * A user action. Safe from any thread. A policy that asks for WebRTC where
+     * this room has none (Tor mode) is corrected, not obeyed.
+     */
     public fun post(input: RoomInput) {
-        scope.launch { inbox.send(Msg.Input(input)) }
+        val safe = if (input is RoomInput.SetPolicy && webRtc == null) RoomInput.SetPolicy(input.policy.copy(webRtcAvailable = false)) else input
+        scope.launch { inbox.send(Msg.Input(safe)) }
     }
 
     /** Leaves the room and releases everything. */
     public fun close() {
         // By now `sockets` is only read: closing a WebSocket is safe from any thread.
         for (socket in sockets.values.toList()) socket.ws.close(1000, null)
+        for (tunnel in tunnels.values.toList()) tunnel.peer.close()
         scope.cancel()
         inbox.close()
         ioTasks.close()
@@ -165,10 +177,10 @@ public class RoomSession(
                 it.ws.close(1000, null)
             }
             is RoomEffect.SendSignal -> sockets[effect.socket]?.ws?.send(effect.msg.toJson())
-            is RoomEffect.SendFrame ->
-                if (effect.channel.kind == ChannelKind.WS_RELAY) {
-                    sockets[effect.channel.id]?.outbound?.send(OutFrame(effect.bytes, effect.notifyToken))
-                }
+            is RoomEffect.SendFrame -> {
+                val outbound = if (effect.channel.kind == ChannelKind.WS_RELAY) sockets[effect.channel.id]?.outbound else tunnels[effect.channel.id]?.outbound
+                outbound?.send(OutFrame(effect.bytes, effect.notifyToken))
+            }
             is RoomEffect.ArmTimer -> {
                 timers.remove(effect.id)?.cancel()
                 val generation = (timerGeneration[effect.id] ?: 0) + 1
@@ -214,9 +226,57 @@ public class RoomSession(
             is RoomEffect.ChatReceived -> _chat.emit(ChatEvent.Received(effect.text))
             is RoomEffect.ChatDelivered -> _chat.emit(ChatEvent.Delivered(effect.localId))
             is RoomEffect.ChatFailed -> _chat.emit(ChatEvent.Failed(effect.localId, effect.reason))
-            // WebRTC arrives in Phase 3. The machine was told it is unavailable, so none of these occur.
-            is RoomEffect.StartWebRtc, is RoomEffect.ApplyRemoteSdp, is RoomEffect.AddRemoteCandidate, is RoomEffect.CloseWebRtc -> Unit
+            // Without a factory the machine was told WebRTC is unavailable and never asks for it.
+            is RoomEffect.StartWebRtc -> webRtc?.let { startWebRtc(it, effect) }
+            is RoomEffect.ApplyRemoteSdp -> tunnels[effect.pc]?.peer?.applyRemoteSdp(effect.kind, effect.sdp)
+            is RoomEffect.AddRemoteCandidate -> tunnels[effect.pc]?.peer?.addRemoteCandidate(effect.candidate, effect.sdpMid, effect.sdpMLineIndex)
+            is RoomEffect.CloseWebRtc -> tunnels.remove(effect.pc)?.let {
+                it.sender.cancel()
+                it.peer.close()
+            }
         }
+    }
+
+    private fun startWebRtc(factory: WebRtcFactory, effect: RoomEffect.StartWebRtc) {
+        val id = effect.pc
+        val events = object : WebRtcEvents {
+            override fun onLocalSdp(kind: SdpKind, sdp: String) = postBlocking(RoomInput.LocalSdp(id, kind, sdp))
+
+            override fun onLocalCandidate(candidate: String, sdpMid: String?, sdpMLineIndex: Int?) =
+                postBlocking(RoomInput.LocalCandidate(id, candidate, sdpMid, sdpMLineIndex))
+
+            override fun onState(state: PcState) = postBlocking(RoomInput.PeerConnectionState(id, state))
+
+            override fun onDataChannelOpen() = postBlocking(RoomInput.DataChannelOpened(id))
+
+            override fun onDataChannelClosed() = postBlocking(RoomInput.DataChannelClosed(id))
+
+            override fun onFrame(bytes: ByteArray) = postBlocking(RoomInput.Frame(ChannelRef(ChannelKind.DATA_CHANNEL, id), bytes))
+
+            override fun onRoute(relay: Boolean?) = postBlocking(RoomInput.SelectedRoute(id, relay))
+
+            override fun onFailed() = postBlocking(RoomInput.WebRtcFailed(id))
+        }
+        val peer = try {
+            factory.create(effect.initiator, effect.iceServers, effect.mode, events)
+        } catch (e: Exception) {
+            // No WebRTC on this device after all: the machine falls back to the relay.
+            scope.launch { inbox.send(Msg.Input(RoomInput.WebRtcFailed(id))) }
+            return
+        }
+        val outbound = Channel<OutFrame>(Channel.UNLIMITED)
+        // As the page does: above the high-water mark, wait until the channel has
+        // drained to half of it, so the file is read no faster than it is sent.
+        val sender = scope.launch {
+            for (frame in outbound) {
+                if (peer.bufferedAmount > WireConstants.HIGH_WATER) {
+                    while (peer.bufferedAmount > WireConstants.HIGH_WATER / 2) delay(SEND_POLL_MS)
+                }
+                if (!peer.send(frame.bytes)) break
+                frame.notifyToken?.let { inbox.send(Msg.Input(RoomInput.FrameSent(it))) }
+            }
+        }
+        tunnels[id] = Tunnel(peer, outbound, sender)
     }
 
     private fun openSignaling(id: Int) {

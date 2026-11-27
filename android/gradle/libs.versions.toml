@@ -8,6 +8,8 @@ serialization = "1.13.0"
 kover = "0.9.11"
 junit = "5.10.1"
 junit-platform = "1.10.1"
+# Desktop libwebrtc, for host-JVM tests of the WebRTC path only. Never shipped.
+webrtc-java = "1.0.1"
 
 minSdk = "29"
 compileSdk = "37"
@@ -32,6 +34,8 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 kotlin-test-junit5 = { module = "org.jetbrains.kotlin:kotlin-test-junit5", version.ref = "kotlin" }
 junit-jupiter-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-platform" }
+
+webrtc-java = { module = "dev.onvoid.webrtc:webrtc-java", version.ref = "webrtc-java" }
 
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 webrtc = { module = "io.github.webrtc-sdk:android", version.ref = "webrtc" }
