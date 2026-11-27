@@ -202,7 +202,7 @@ private fun QrImage(text: String) {
     }
     Image(
         bitmap = bitmap,
-        contentDescription = stringResource(R.string.room_show_qr),
+        contentDescription = stringResource(R.string.room_qr_label),
         // One pixel per module, scaled without smoothing so the edges stay sharp.
         filterQuality = FilterQuality.None,
         modifier = Modifier.size(260.dp).background(Color.White).padding(8.dp),

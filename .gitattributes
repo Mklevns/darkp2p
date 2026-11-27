@@ -1,0 +1,6 @@
+# Files that must keep LF on every platform, whatever core.autocrlf says.
+# The vector files are compared byte for byte by the tests; shell scripts and
+# the Gradle wrapper do not run with CRLF.
+test/vectors/* text eol=lf
+*.sh           text eol=lf
+android/gradlew text eol=lf

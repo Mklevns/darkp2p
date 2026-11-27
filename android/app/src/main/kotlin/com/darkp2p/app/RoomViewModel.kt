@@ -135,7 +135,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun resolveProfile(target: RoomLink): NetworkProfile? {
         if (!graph.settings.prefs.value.tor && !target.isOnion) return NetworkProfile.Clearnet
         if (!Orbot.isInstalled(context)) {
-            message = R.string.tor_needs_orbot
+            message = RoomTexts.orbotMissing(onionRoom = target.isOnion)
             return null
         }
         Orbot.requestStart(context)
@@ -252,8 +252,12 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Applies changed settings to the open room. */
     fun applyPrefs(change: (Prefs) -> Prefs) {
+        val before = graph.settings.prefs.value
         graph.settings.update(change)
-        _controller.value?.setPolicy(graph.settings.prefs.value.policy)
+        val after = graph.settings.prefs.value
+        val room = _controller.value ?: return
+        RoomTexts.policyNotice(before, after, room.room.value.state)?.let { message = it }
+        room.setPolicy(after.policy)
     }
 
     // ---- Pro ----
@@ -293,9 +297,22 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun saveToken(token: String) {
+        if (!RoomTexts.isTokenShaped(token)) {
+            message = R.string.pro_token_bad
+            return
+        }
         viewModelScope.launch {
             graph.vault.setToken(proOrigin, token)
             _controller.value?.setToken(token.trim())
+            refreshPro()
+        }
+    }
+
+    /** Forgets the token saved for [proOrigin]; an open room stops offering it. */
+    fun removeToken() {
+        viewModelScope.launch {
+            graph.vault.setToken(proOrigin, null)
+            _controller.value?.setToken("")
             refreshPro()
         }
     }

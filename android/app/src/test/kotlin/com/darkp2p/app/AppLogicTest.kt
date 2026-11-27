@@ -149,4 +149,52 @@ class AppLogicTest {
         // A picture with no code in it reads as nothing.
         assertNull(QrCodes.decode(RGBLuminanceSource(64, 64, IntArray(64 * 64) { 0xFFFFFFFF.toInt() })))
     }
+
+    @Test
+    fun `only text in the form the server issues is taken as a Pro token`() {
+        val sig = "0123456789abcdef".repeat(4)
+        assertTrue(RoomTexts.isTokenShaped("1800000000.$sig"))
+        assertTrue(RoomTexts.isTokenShaped("  1800000000.${sig.uppercase()}\n"))
+        assertEquals(1_800_000_000L, RoomTexts.tokenExpiry("1800000000.$sig"))
+        for (bad in listOf(
+            "", " ", "not-a-real-token", sig, "1800000000", "1800000000.", ".$sig", "1800000000.${sig.dropLast(1)}",
+            "1800000000.${sig}0", "1800000000.${"g".repeat(64)}", "1234567890123.$sig", "1800000000.$sig.$sig", "18000 00000.$sig",
+        )) {
+            assertFalse(RoomTexts.isTokenShaped(bad), bad)
+        }
+    }
+
+    @Test
+    fun `a missing Orbot is explained by what made Tor necessary`() {
+        assertEquals(R.string.tor_needs_orbot, RoomTexts.orbotMissing(onionRoom = true))
+        assertEquals(R.string.tor_setting_needs_orbot, RoomTexts.orbotMissing(onionRoom = false))
+        assertNotEquals(RoomTexts.orbotMissing(onionRoom = true), RoomTexts.orbotMissing(onionRoom = false))
+    }
+
+    @Test
+    fun `flipping a privacy switch in an open room says so when it does not simply apply`() {
+        fun ready(transport: Transport, ip: IpExposure) = RoomState.Ready(transport, ip, 50, 40, false, false, false)
+        val exposedRelay = ready(Transport.WS_RELAY, IpExposure.EXPOSED)
+        val maskedRelay = ready(Transport.WS_RELAY, IpExposure.MASKED)
+        val direct = ready(Transport.DIRECT, IpExposure.EXPOSED)
+
+        // Hiding the address after it was seen cannot take that back.
+        assertEquals(R.string.room_hide_ip_late, RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), exposedRelay))
+        assertEquals(R.string.room_hide_ip_late, RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), direct))
+        assertNull(RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), maskedRelay))
+
+        // Dropping the last reason to stay on the relay pairs again for a direct connection.
+        assertEquals(R.string.room_reconnect_direct, RoomTexts.policyNotice(Prefs(forceRelay = true), Prefs(), maskedRelay))
+        assertEquals(R.string.room_reconnect_direct, RoomTexts.policyNotice(Prefs(hideIp = true), Prefs(), maskedRelay))
+        assertNull(RoomTexts.policyNotice(Prefs(forceRelay = true, hideIp = true), Prefs(hideIp = true), maskedRelay))
+        assertNull(RoomTexts.policyNotice(Prefs(forceRelay = true, hideIp = true), Prefs(forceRelay = true), maskedRelay))
+        // On the relay only because WebRTC failed: nothing was holding it there.
+        assertNull(RoomTexts.policyNotice(Prefs(), Prefs(chat = false), exposedRelay))
+
+        // Turning the relay on, any change outside a ready room, and Tor mode need no words.
+        assertNull(RoomTexts.policyNotice(Prefs(), Prefs(forceRelay = true), direct))
+        assertNull(RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), RoomState.WaitingForPeer))
+        assertNull(RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), null))
+        assertNull(RoomTexts.policyNotice(Prefs(forceRelay = true), Prefs(tor = true), maskedRelay))
+    }
 }

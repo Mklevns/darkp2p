@@ -66,6 +66,25 @@ object RoomTexts {
         else -> null
     }
 
+    /**
+     * What to tell the user when a privacy switch is flipped in an open room and the
+     * result is not what the switch alone suggests, or null when it simply applies.
+     *
+     *  - "Hide my IP" turned on after the other device has seen the address: nothing
+     *    takes that back, and the status line rightly keeps saying so.
+     *  - The last reason to stay on the relay turned off: the room pairs again to
+     *    try a direct connection (RoomMachine.setPolicy), which shows the address.
+     */
+    fun policyNotice(before: Prefs, after: Prefs, state: RoomState?): Int? {
+        if (state !is RoomState.Ready || after.tor) return null
+        return when {
+            after.hideIp && !before.hideIp && state.ip == IpExposure.EXPOSED -> R.string.room_hide_ip_late
+            state.transport == Transport.WS_RELAY && (before.forceRelay || before.hideIp) && !after.forceRelay && !after.hideIp ->
+                R.string.room_reconnect_direct
+            else -> null
+        }
+    }
+
     /** Sizes as people read them. */
     fun size(bytes: Long): String = when {
         bytes < 1024 -> "$bytes B"
@@ -76,4 +95,19 @@ object RoomTexts {
 
     /** When a Pro token expires (Unix seconds), from its `<expiry>.<signature>` form. Not a check of the signature. */
     fun tokenExpiry(token: String): Long? = token.substringBefore('.').takeIf { it.length in 1..12 && it.all(Char::isDigit) }?.toLongOrNull()
+
+    private val TOKEN_SHAPE = Regex("^\\d{1,12}\\.[a-fA-F0-9]{64}$")
+
+    /**
+     * True if [token] has the form the server issues and accepts (`verifyProToken` in
+     * server.js): `<expiry>.<64 hex digits>`. Only the server can tell whether the
+     * signature is good; this keeps text that can never be a token out of the vault.
+     */
+    fun isTokenShaped(token: String): Boolean = token.trim().let { it.length <= 128 && TOKEN_SHAPE.matches(it) }
+
+    /**
+     * What to say when a room needs Tor and Orbot is not installed: an onion room can
+     * only be reached that way, any other room needs it because the Tor setting is on.
+     */
+    fun orbotMissing(onionRoom: Boolean): Int = if (onionRoom) R.string.tor_needs_orbot else R.string.tor_setting_needs_orbot
 }

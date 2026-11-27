@@ -26,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -69,9 +70,12 @@ fun ScannerScreen(onResult: (String) -> Unit, onBack: () -> Unit, modifier: Modi
         }
         Text(stringResource(R.string.scan_title))
         AndroidView(
-            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+            modifier = Modifier.fillMaxWidth().aspectRatio(1f).clipToBounds(),
             factory = { ctx ->
                 PreviewView(ctx).also { view ->
+                    // The default draws on a separate surface, which is not cut to this
+                    // square: the camera picture spilled over the line of text above it.
+                    view.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                     val future = ProcessCameraProvider.getInstance(ctx)
                     future.addListener({
                         val provider = future.get()
