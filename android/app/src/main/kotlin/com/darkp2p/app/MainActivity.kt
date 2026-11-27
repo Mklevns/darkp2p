@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.activity.enableEdgeToEdge
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.runtime.collectAsState
@@ -35,6 +36,9 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The window's own theme is dark, so the status bar drew white icons over the
+        // light colours the UI uses by day. This picks the icon colour from day or night.
+        enableEdgeToEdge()
         lockAvailable = canLock()
         locked = vm.graph.settings.prefs.value.lock
         lifecycleScope.launch {

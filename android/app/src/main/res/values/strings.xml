@@ -34,6 +34,7 @@
     <string name="room_copied">Copied. The clipboard is cleared in one minute.</string>
     <string name="room_show_qr">Show QR code</string>
     <string name="room_hide_qr">Hide QR code</string>
+    <string name="room_qr_label">QR code of the room link</string>
     <string name="room_send">Send files</string>
     <string name="room_queue">Waiting to send: %1$s</string>
     <string name="room_sending">Sending %1$s</string>
