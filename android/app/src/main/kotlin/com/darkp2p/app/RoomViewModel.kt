@@ -35,7 +35,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.security.SecureRandom
 
-enum class Screen { HOME, ROOM, SETTINGS, PRO, SCANNER }
+enum class Screen { HOME, ROOM, SETTINGS, PRO, SCANNER, DROP }
 
 /** The app's state above any one screen: which room is open, what is waiting to be sent, what the Pro screen shows. */
 class RoomViewModel(app: Application) : AndroidViewModel(app) {
@@ -43,6 +43,9 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     private val context: Context get() = getApplication()
 
     var screen by mutableStateOf(Screen.HOME)
+
+    /** The onion file drop: one file under a throwaway .onion link. It ends with this object. */
+    val drop = OnionDrop(app, viewModelScope)
 
     /** A message for the user (a string resource), shown once. */
     var message by mutableStateOf<Int?>(null)
@@ -348,6 +351,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        drop.stop()
         // The room lives in the service and outlives this object; only the binding goes.
         connection?.let { runCatching { context.unbindService(it) } }
         connection = null

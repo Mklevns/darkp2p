@@ -229,7 +229,7 @@ fun SwitchRow(label: String, checked: Boolean, enabled: Boolean = true, onChange
 
 /** The link as a QR code: always dark on white, whatever the theme, so any scanner reads it. */
 @Composable
-private fun QrImage(text: String) {
+internal fun QrImage(text: String) {
     val bitmap = remember(text) {
         val matrix = QrCodes.encode(text)
         createBitmap(matrix.width, matrix.height).apply {
