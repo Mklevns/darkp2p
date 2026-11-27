@@ -3,6 +3,7 @@ package com.darkp2p.app
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.darkp2p.service.DropService
 import com.darkp2p.service.FileNames
 import com.darkp2p.transport.DropFile
 import com.darkp2p.transport.FileDropServer
@@ -63,6 +64,9 @@ class OnionDrop(private val context: Context, private val scope: CoroutineScope)
 
     fun start(uri: Uri) {
         if (active) return
+        // From here until the drop is over the app must stay awake and online, in front or
+        // not: the user leaves to send the link, and the receiver may take a while.
+        DropService.start(context, onStop = ::stop)
         job = scope.launch {
             var name = ""
             try {
@@ -89,7 +93,11 @@ class OnionDrop(private val context: Context, private val scope: CoroutineScope)
                         lingering = last
                         scope.launch {
                             delay(LINGER_MS)
-                            if (lingering === last) lingering = null
+                            if (lingering === last) {
+                                lingering = null
+                                // Unless another drop has started meanwhile, nothing is shared any more.
+                                if (!active) DropService.stop(context)
+                            }
                             last?.close()
                         }
                     }
@@ -131,6 +139,7 @@ class OnionDrop(private val context: Context, private val scope: CoroutineScope)
         host = null
         lingering?.close()
         lingering = null
+        DropService.stop(context)
     }
 
     private fun describe(uri: Uri): DropFile {
