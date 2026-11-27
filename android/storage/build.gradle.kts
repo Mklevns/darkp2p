@@ -13,6 +13,8 @@ android {
         // :transport differs per distribution; this module is the same in both and
         // compiles against what both have in common.
         missingDimensionStrategy("distribution", "libre")
+        // On-device tests: what only a real Android Keystore can show.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {
@@ -50,6 +52,10 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testRuntimeOnly(libs.junit.jupiter.engine)
     testRuntimeOnly(libs.junit.platform.launcher)
+
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }
 
 tasks.withType<Test>().configureEach {
