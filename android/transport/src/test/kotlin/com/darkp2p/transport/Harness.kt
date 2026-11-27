@@ -166,13 +166,14 @@ internal class AppPeer(
     policy: LocalPolicy = LocalPolicy(forceWsRelay = true),
     token: String = "",
     private val autoAccept: Boolean = true,
+    webRtc: WebRtcFactory? = null,
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val io = MemoryIo()
     val notices = CopyOnWriteArrayList<RoomEvent>()
     val chat = CopyOnWriteArrayList<ChatEvent>()
     val states = CopyOnWriteArrayList<RoomState>()
-    val session = RoomSession(link, client, io, scope, policy, token)
+    val session = RoomSession(link, client, io, scope, policy, token, webRtc = webRtc)
 
     init {
         scope.launch {

@@ -10,6 +10,14 @@ android {
         minSdk = libs.versions.minSdk.get().toInt()
     }
 
+    // Same dimension as :app. `full` carries the prebuilt libwebrtc; `libre`
+    // (F-Droid) has no prebuilt native code and therefore no WebRTC yet.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("full") { dimension = "distribution" }
+        create("libre") { dimension = "distribution" }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -24,9 +32,13 @@ android {
     }
 }
 
-// The interop tests take minutes and do not differ between build types: run them once.
+// The interop tests take minutes and do not differ between variants: run them once.
 androidComponents {
-    beforeVariants(selector().withBuildType("release")) { it.hostTests[com.android.build.api.variant.HostTestBuilder.UNIT_TEST_TYPE]?.enable = false }
+    beforeVariants { variant ->
+        if (variant.buildType == "release" || variant.flavorName == "libre") {
+            variant.hostTests[com.android.build.api.variant.HostTestBuilder.UNIT_TEST_TYPE]?.enable = false
+        }
+    }
 }
 
 kotlin {
@@ -40,10 +52,14 @@ dependencies {
     api(project(":protocol"))
     api(libs.okhttp)
     api(libs.kotlinx.coroutines.core)
+    "fullImplementation"(libs.webrtc)
 
     testImplementation(libs.kotlin.test.junit5)
     testRuntimeOnly(libs.junit.jupiter.engine)
     testRuntimeOnly(libs.junit.platform.launcher)
+    // A desktop build of libwebrtc: the tests that use it run on Linux x86-64 only.
+    testImplementation(libs.webrtc.java)
+    testRuntimeOnly(variantOf(libs.webrtc.java) { classifier("linux-x86_64") })
     testImplementation(libs.kotlinx.coroutines.test)
 }
 

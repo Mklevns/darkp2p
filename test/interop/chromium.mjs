@@ -3,7 +3,9 @@
 // tests do not need Playwright. Playwright is not a dependency of this
 // repository: it is used where the machine already has it.
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createRequire } from 'node:module';
 
 let browser = null;
@@ -66,7 +68,19 @@ export async function loadChromiumPage({ port, hash, forceWsRelay }) {
       };
     },
     async send({ name, bytes, mime }) {
-      await page.setInputFiles('#fileInput', { name, mimeType: mime, buffer: bytes });
+      // Playwright takes at most 50 MB as a buffer; larger files go through a temporary file.
+      if (bytes.length <= 40 * 1024 * 1024) {
+        await page.setInputFiles('#fileInput', { name, mimeType: mime, buffer: bytes });
+        return;
+      }
+      const dir = mkdtempSync(join(tmpdir(), 'darkp2p-interop-'));
+      try {
+        writeFileSync(join(dir, name), bytes);
+        await page.setInputFiles('#fileInput', join(dir, name));
+      } finally {
+        // The browser has the file open by now; the page reads it through that handle.
+        setTimeout(() => rmSync(dir, { recursive: true, force: true }), 120_000).unref();
+      }
     },
     async click(text, timeoutMs) {
       await button(text).click({ timeout: timeoutMs });

@@ -264,7 +264,7 @@ Rules, enforced by `./gradlew checkStructure` (part of `check`) in CI:
 | Coroutines | `kotlinx-coroutines` 1.11.0 | Single-threaded engine via `limitedParallelism(1)`. |
 | JSON | In-house strict parser and serializer in `:protocol` (`Json.kt`), vector-tested | F11; the same accept/reject decisions as `JSON.parse`, the same text as `JSON.stringify`. |
 | HTTP/WS | **OkHttp 5.5.1** | Custom `Dns`, `SocketFactory`, Origin header, `queueSize()`. |
-| WebRTC | `io.github.webrtc-sdk:android` 150.7871.09 (community-maintained Google libwebrtc build); `libre` flavor: same tag built from source (§5.7) | `org.webrtc:google-webrtc` is unmaintained since 2020. Only `DataChannel` is used; no audio/video tracks. |
+| WebRTC | `io.github.webrtc-sdk:android` 150.7871.09 (community-maintained Google libwebrtc build), `full` flavor only; host-JVM tests use `dev.onvoid.webrtc:webrtc-java` 1.0.1, never shipped; `libre` flavor: same tag built from source (§5.7) | `org.webrtc:google-webrtc` is unmaintained since 2020. Only `DataChannel` is used; no audio/video tracks. |
 | Crypto | JCA `AES/GCM/NoPadding` (Conscrypt/BoringSSL on device, SunJCE in JVM tests) + in-house RFC 5869 HKDF (~30 lines, vector-tested) | No BouncyCastle/Tink needed in `:protocol`; identical code on JVM and device. |
 | Keystore | Android Keystore AES-256-GCM key, StrongBox when available | Vault encryption (§3.6). Jetpack `security-crypto` is deprecated — not used. |
 | Persistence | `AtomicFile` blob (vault) — no SQLite | Two small records only. |
@@ -1040,6 +1040,14 @@ Each phase ends with a gate that must pass in CI (or be signed off for **[M]** i
 ### Phase 3 — `:transport` WebRTC + Hide My IP
 * `WebRtcProvider` (lazy factory, manifest stripping), `DataChannelPeerChannel` (copy-out, buffered-amount gating), SDP/candidate policy, ICE timer and fallback wiring, `IpExposure`.
 * **Gate:** Tier-2 Direct and Hide-IP scenarios green on API 29/34/36; every candidate seen by the browser in Hide-IP is `typ relay` with `raddr 0.0.0.0`; UDP-blocked fallback reaches the relay in ≤ 13 s; under the Tor profile `webRtc == null` and the native lib is not loaded.
+* **Status: the WebRTC path is built and proven against a real browser on the host JVM; nothing has run on Android yet.** No emulator or device was available, so the gate above (Tier 2) is open.
+  * **Built:** `WebRtcFactory`/`WebRtcPeer` (the seam), `RoomSession` wiring (DataChannel send gated at 1 MiB and drained to 512 KiB, as the page), `LibWebRtcFactory` on `io.github.webrtc-sdk:android` in the `full` flavor, `PlatformWebRtc` per flavor. `:transport` now has the `full`/`libre` flavors: the `libre` APK contains no native code and no WebRTC; the `full` APK's permissions are `INTERNET` and `ACCESS_NETWORK_STATE` only (checked on the built APKs).
+  * **How it was tested without Android:** the tests implement the same seam on a desktop build of libwebrtc (`dev.onvoid.webrtc:webrtc-java`, test-only, Linux x86-64). `DesktopWebRtcFactory` and `LibWebRtcFactory` are the same calls on two bindings of the same library. With it, on this machine's real network stack:
+    * two app peers open a direct DataChannel through the real `server.js` and move 80 MB plus a file the other way and chat;
+    * the app and the page in **real Chromium** open a DataChannel in both join orders (each side as initiator) and move 60 MB each way with equal hashes, more than the relay's free cap allows (opt-in, `DARKP2P_CHROMIUM=1`);
+    * Hide My IP with a TURN server that does not answer: libwebrtc gathered nothing that exposes an address, the 12 s timer moved both peers to the relay, `IpExposure` stayed `MASKED`;
+    * manual reconnect opens a new tunnel; force-relay on and off mid-session moves to the relay and back to a direct tunnel.
+  * **Not done:** anything on a device or emulator (`LibWebRtcFactory` compiles against the AAR and passes Lint, but has never run); Hide My IP with a TURN server that works (needs coturn: the relay-only candidate rewrite is tested on candidate lines, not on a live TURN allocation); a tunnel failing mid-transfer on a real network (D5 is tested in the state machine); the "native library not loaded in Tor mode" check; the merged-manifest permission check as an automated task.
 
 ### Phase 4 — `:service` + `:storage`
 * `DarkP2PService` (FGS dataSync, timeout handling, locks, notifications), `TransferController`, `ContentChunkSource` (fd opened at enqueue, encrypted spool), `MediaStoreSink`/`DocumentSink`, crash sweep, `Vault`, `ClaimScheduler` + `ClaimWorker`.
