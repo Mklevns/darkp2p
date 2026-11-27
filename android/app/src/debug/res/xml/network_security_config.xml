@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug builds only (this file replaces the one in :transport for the debug
+  build type): plain http is also allowed to this device itself, so the app can
+  be tested against a server.js on the development machine through
+  `adb reverse tcp:3000 tcp:3000`. Release builds keep TLS everywhere except .onion.
+-->
+<!-- Referenced from :transport's manifest, which Lint cannot see from here. -->
+<network-security-config xmlns:tools="http://schemas.android.com/tools" tools:ignore="UnusedResources">
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration">
+        <domain includeSubdomains="true">onion</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

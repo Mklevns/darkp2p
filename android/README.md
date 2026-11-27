@@ -3,13 +3,12 @@
 Native Kotlin client for the `darkp2p/v3` protocol. Design, wire contract and
 roadmap: [`docs/android/TECHNICAL_DESIGN.md`](../docs/android/TECHNICAL_DESIGN.md).
 
-Status: **Phase 3** code complete, not yet run on a device. `:protocol` is
-complete; `:transport` connects it to a real server over the WebSocket relay
-(directly or through Tor) and over a WebRTC DataChannel. Its tests exchange
-files with the unmodified `server.js` and page, including real Chromium over
-WebRTC, using a desktop build of libwebrtc. The Android libwebrtc adapter
-(`full` flavor) compiles but has never run. `:storage`, `:service` and `:app`
-are still empty.
+Status: **Phase 5** code complete; nothing has run on a device yet.
+All five modules are built. The logic is tested on the host JVM, including
+file transfers with the unmodified `server.js` and page (relay and WebRTC, real
+Chromium). Everything that touches Android itself, the whole UI included,
+compiles, passes Lint and builds release APKs, but has never been run or seen.
+The next step is a device or emulator session.
 
 ## Modules
 
@@ -59,6 +58,53 @@ Two committed files tie this client to the web client, one per direction:
 After a change to the wire format in `public/index.html`, run the first
 command from the repository root. `npm test` fails while a committed file is
 stale, and the Kotlin tests then show what the Android side must change.
+
+## Run on an emulator
+
+One-time setup on your own machine (Android Studio does all of it through its
+SDK Manager and Device Manager; these are the command-line equivalents):
+
+```bash
+sdkmanager "platform-tools" "emulator" "platforms;android-36" "system-images;android-36;google_apis;x86_64"
+```
+
+```bash
+avdmanager create avd -n darkp2p -k "system-images;android-36;google_apis;x86_64" -d pixel_7
+```
+
+On an Apple Silicon Mac use `arm64-v8a` in place of `x86_64` in both commands.
+
+Then, each time:
+
+```bash
+emulator -avd darkp2p
+```
+
+```bash
+android/scripts/dev-emulator.sh
+```
+
+On Windows, in PowerShell:
+
+```bash
+powershell -ExecutionPolicy Bypass -File android\scripts\dev-emulator.ps1
+```
+
+The script forwards port 3000 from the emulator to this machine
+(`adb reverse`), starts `server.js` there if it is not running, installs a
+debug build whose default server is `http://127.0.0.1:3000`, and starts the
+app. Open `http://127.0.0.1:3000/` in a desktop browser to be the other
+device: paste the app's room link into the browser, or the browser's link into
+the app.
+
+What makes this work, and why it cannot leak into a release:
+
+- `-Pdarkp2p.origin=...` changes the default server of **debug** builds only.
+- Debug builds allow plain http to `127.0.0.1` and `localhost`
+  (`app/src/debug/res/xml/network_security_config.xml`); release builds allow
+  it for `.onion` only.
+
+Neither script has been run yet; treat the first run as part of the test.
 
 ## Interop tests
 

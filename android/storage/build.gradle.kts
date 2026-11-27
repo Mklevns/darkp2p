@@ -4,7 +4,9 @@ plugins {
 
 android {
     namespace = "com.darkp2p.storage"
-    compileSdk = libs.versions.compileSdk.get().toInt()
+    compileSdk {
+        version = release(libs.versions.compileSdk.get().toInt()) { minorApiLevel = libs.versions.compileSdkMinor.get().toInt() }
+    }
 
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()
@@ -34,7 +36,23 @@ kotlin {
     explicitApi()
 }
 
+// Tests do not differ between build types: run them once.
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { it.hostTests[com.android.build.api.variant.HostTestBuilder.UNIT_TEST_TYPE]?.enable = false }
+}
+
 dependencies {
     api(project(":protocol"))
-    implementation(project(":transport"))
+    api(project(":transport"))
+    implementation(libs.work.runtime)
+
+    testImplementation(libs.kotlin.test.junit5)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testRuntimeOnly(libs.junit.jupiter.engine)
+    testRuntimeOnly(libs.junit.platform.launcher)
+}
+
+tasks.withType<Test>().configureEach {
+    useJUnitPlatform()
+    testLogging { events("failed") }
 }

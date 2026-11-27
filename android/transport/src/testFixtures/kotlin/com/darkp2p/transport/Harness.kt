@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /** The same bytes test/interop/peer.mjs generates for (seed, size). */
-internal fun fileBytes(seed: String, size: Int): ByteArray {
+public fun fileBytes(seed: String, size: Int): ByteArray {
     val out = ByteArray(size)
     var block = 0
     var off = 0
@@ -40,13 +40,13 @@ internal fun fileBytes(seed: String, size: Int): ByteArray {
     return out
 }
 
-internal fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+public fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
 /**
  * The web side: a Node process running the real server.js and, on request,
  * real copies of the page (test/interop/peer.mjs).
  */
-internal class WebSide(env: Map<String, String> = emptyMap()) : AutoCloseable {
+public class WebSide(env: Map<String, String> = emptyMap()) : AutoCloseable {
     private val repo = File(System.getProperty("darkp2p.repo") ?: error("darkp2p.repo is not set"))
     private val process = ProcessBuilder("node", "test/interop/peer.mjs").directory(repo).redirectError(ProcessBuilder.Redirect.INHERIT).start()
     private val writer = process.outputStream.bufferedWriter()
@@ -99,11 +99,11 @@ internal class WebSide(env: Map<String, String> = emptyMap()) : AutoCloseable {
     }
 }
 
-internal fun JsonValue.Obj.int(key: String): Int = fields.getValue(key).safeIntegerOrNull!!.toInt()
-internal fun JsonValue.Obj.str(key: String): String = (fields.getValue(key) as JsonValue.Str).value
-internal fun JsonValue.Obj.strings(key: String): List<String> = (fields.getValue(key) as JsonValue.Arr).items.map { (it as JsonValue.Str).value }
+public fun JsonValue.Obj.int(key: String): Int = fields.getValue(key).safeIntegerOrNull!!.toInt()
+public fun JsonValue.Obj.str(key: String): String = (fields.getValue(key) as JsonValue.Str).value
+public fun JsonValue.Obj.strings(key: String): List<String> = (fields.getValue(key) as JsonValue.Arr).items.map { (it as JsonValue.Str).value }
 
-internal class WebPage(private val web: WebSide, private val id: String) {
+public class WebPage(private val web: WebSide, private val id: String) {
     private val me = "id" to Json.str(id)
 
     fun waitLog(re: String, timeoutMs: Long = 10_000) = web.call("waitLog", me, "re" to Json.str(re), "timeout" to Json.num(timeoutMs))
@@ -135,7 +135,7 @@ internal class WebPage(private val web: WebSide, private val id: String) {
 }
 
 /** Files in memory: one being sent, any number received. */
-internal class MemoryIo : TransferIo {
+public class MemoryIo : TransferIo {
     @Volatile var source = ByteArray(0)
     private val partial = ConcurrentHashMap<Int, ByteArrayOutputStream>()
     val committed = CopyOnWriteArrayList<ByteArray>()
@@ -160,7 +160,7 @@ internal class MemoryIo : TransferIo {
 }
 
 /** The app side: a [RoomSession] with files in memory, driven as the app's service would drive it. */
-internal class AppPeer(
+public class AppPeer(
     link: RoomLink,
     client: OkHttpClient = HttpClients.create(NetworkProfile.Clearnet),
     policy: LocalPolicy = LocalPolicy(forceWsRelay = true),

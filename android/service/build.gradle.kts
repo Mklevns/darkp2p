@@ -4,7 +4,9 @@ plugins {
 
 android {
     namespace = "com.darkp2p.service"
-    compileSdk = libs.versions.compileSdk.get().toInt()
+    compileSdk {
+        version = release(libs.versions.compileSdk.get().toInt()) { minorApiLevel = libs.versions.compileSdkMinor.get().toInt() }
+    }
 
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()
@@ -34,8 +36,31 @@ kotlin {
     explicitApi()
 }
 
+// Tests do not differ between build types: run them once.
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { it.hostTests[com.android.build.api.variant.HostTestBuilder.UNIT_TEST_TYPE]?.enable = false }
+}
+
 dependencies {
     api(project(":protocol"))
-    implementation(project(":transport"))
-    implementation(project(":storage"))
+    api(project(":transport"))
+    api(project(":storage"))
+    // The service runs its bookkeeping on the main thread (Dispatchers.Main).
+    implementation(libs.kotlinx.coroutines.android)
+
+    testImplementation(testFixtures(project(":transport")))
+    testImplementation(libs.kotlin.test.junit5)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testRuntimeOnly(libs.junit.jupiter.engine)
+    testRuntimeOnly(libs.junit.platform.launcher)
+}
+
+// As in :transport: the tests use the real server.js and page through test/interop/peer.mjs.
+tasks.withType<Test>().configureEach {
+    useJUnitPlatform()
+    val repo = rootProject.layout.projectDirectory.dir("..")
+    systemProperty("darkp2p.repo", repo.asFile.absolutePath)
+    inputs.files(repo.file("server.js"), repo.file("public/index.html"), repo.file("test/interop/peer.mjs"), repo.file("test/helpers/page.mjs"))
+        .withPropertyName("webClient").withPathSensitivity(PathSensitivity.NONE)
+    testLogging { events("failed") }
 }

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="darkp2p_channel_room">Room</string>
+    <string name="darkp2p_channel_room_description">Shown while a room is open, with the progress of a transfer.</string>
+    <string name="darkp2p_channel_status">Status</string>
+    <string name="darkp2p_channel_status_description">Quiet notes, such as a room closed for being idle.</string>
+    <string name="darkp2p_notification_room_open">Room open</string>
+    <string name="darkp2p_notification_waiting">Waiting for the other device</string>
+    <string name="darkp2p_notification_connected">Connected</string>
+    <string name="darkp2p_notification_sending">Sending a file</string>
+    <string name="darkp2p_notification_receiving">Receiving a file</string>
+    <string name="darkp2p_notification_offer">A file is waiting for your answer</string>
+    <string name="darkp2p_notification_leave">Leave room</string>
+    <string name="darkp2p_notification_idle_title">Room closed</string>
+    <string name="darkp2p_notification_idle_text">Nothing happened for 10 minutes, so the room was closed.</string>
+    <string name="darkp2p_notification_timeout_text">Android limits background transfers to 6 hours a day. The room was closed.</string>
+</resources>

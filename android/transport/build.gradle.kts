@@ -4,7 +4,9 @@ plugins {
 
 android {
     namespace = "com.darkp2p.transport"
-    compileSdk = libs.versions.compileSdk.get().toInt()
+    compileSdk {
+        version = release(libs.versions.compileSdk.get().toInt()) { minorApiLevel = libs.versions.compileSdkMinor.get().toInt() }
+    }
 
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()
@@ -16,6 +18,11 @@ android {
     productFlavors {
         create("full") { dimension = "distribution" }
         create("libre") { dimension = "distribution" }
+    }
+
+    // The interop harness (a real server.js and page behind a few calls), shared with :service's tests.
+    testFixtures {
+        enable = true
     }
 
     compileOptions {
@@ -54,6 +61,7 @@ dependencies {
     api(libs.kotlinx.coroutines.core)
     "fullImplementation"(libs.webrtc)
 
+    testFixturesApi(libs.kotlinx.coroutines.core)
     testImplementation(libs.kotlin.test.junit5)
     testRuntimeOnly(libs.junit.jupiter.engine)
     testRuntimeOnly(libs.junit.platform.launcher)
@@ -72,4 +80,9 @@ tasks.withType<Test>().configureEach {
     inputs.files(repo.file("server.js"), repo.file("public/index.html"), repo.file("test/interop/peer.mjs"), repo.file("test/helpers/page.mjs"))
         .withPropertyName("webClient").withPathSensitivity(PathSensitivity.NONE)
     testLogging { events("failed") }
+}
+
+// Test helpers are not a published API: no explicit visibility required there.
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    if (name.contains("TestFixtures")) compilerOptions.freeCompilerArgs.add("-Xexplicit-api=disable")
 }

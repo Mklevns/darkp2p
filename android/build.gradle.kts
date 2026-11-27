@@ -7,6 +7,7 @@ plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.kover) apply false
+    alias(libs.plugins.kotlin.compose) apply false
 }
 
 // module -> the modules it may depend on.
@@ -149,7 +150,8 @@ val checkTests by tasks.registering {
     doLast {
         // JUnit 5 ignores a test method that returns a value. `= runBlocking { ... }`
         // returns whatever its last expression is, so the test would never run.
-        val risky = Regex("""\)\s*=\s*(runBlocking|runTest)\s*(\(|\{)""")
+        // (runTest is safe: it always returns the test result type, which JUnit accepts.)
+        val risky = Regex("""\)\s*=\s*runBlocking\s*(\(|\{)""")
         val problems = mutableListOf<String>()
         for ((_, dir) in dirs) {
             for (file in sourcesOf(dir, main = false)) {
