@@ -1,7 +1,8 @@
 # Runs the app on a running emulator (or a USB device) against a server.js on
 # this machine. Windows version of dev-emulator.sh.
 #
-# Needs: Node 22, JDK 17+, the Android SDK (ANDROID_HOME, or the default
+# Needs: Node 22, JDK 17+ (JAVA_HOME, java on PATH, or the one inside Android
+# Studio), the Android SDK (ANDROID_HOME, or the default
 # %LOCALAPPDATA%\Android\Sdk), and an emulator already started.
 #
 #   powershell -ExecutionPolicy Bypass -File android\scripts\dev-emulator.ps1
@@ -18,11 +19,24 @@ $Adb = Join-Path $Sdk 'platform-tools\adb.exe'
 if (-not (Test-Path $Adb)) { throw "adb not found at $Adb. Install the Android SDK platform-tools, or set ANDROID_HOME." }
 $env:ANDROID_HOME = $Sdk
 
-& $Adb get-state *> $null
-if ($LASTEXITCODE -ne 0) { throw 'No emulator or device is connected (adb devices).' }
+# Gradle needs a JDK. Android Studio ships one; use it when nothing else is set up.
+if (-not $env:JAVA_HOME -and -not (Get-Command java -ErrorAction SilentlyContinue)) {
+    $Jbr = Join-Path $env:ProgramFiles 'Android\Android Studio\jbr'
+    if (-not (Test-Path (Join-Path $Jbr 'bin\java.exe'))) { throw 'No JDK found. Install JDK 17 or newer, or set JAVA_HOME (Android Studio has one in its jbr folder).' }
+    $env:JAVA_HOME = $Jbr
+}
+
+# adb writes to stderr when nothing is connected; under 'Stop', Windows PowerShell
+# would turn that into its own error before the message below.
+$ErrorActionPreference = 'Continue'
+& $Adb get-state 2>$null | Out-Null
+$connected = $LASTEXITCODE -eq 0
+$ErrorActionPreference = 'Stop'
+if (-not $connected) { throw 'No emulator or device is connected (adb devices).' }
 
 # The emulator's own 127.0.0.1:Port now reaches this machine's Port.
 & $Adb reverse "tcp:$Port" "tcp:$Port" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "adb reverse tcp:$Port failed; the app could not reach $Origin." }
 
 function Test-Server {
     try { return (Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 "$Origin/health").StatusCode -eq 200 } catch { return $false }
@@ -41,8 +55,9 @@ if (-not (Test-Server)) {
     $server = Start-Process node -ArgumentList 'server.js' -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $log -RedirectStandardError "$log.err"
     Set-Content (Join-Path $env:TEMP 'darkp2p-dev-server.pid') $server.Id
-    Start-Sleep -Seconds 2
-    if (-not (Test-Server)) { throw "server.js did not start; see $log and $log.err" }
+    $up = $false
+    foreach ($i in 1..30) { Start-Sleep -Milliseconds 500; if (Test-Server) { $up = $true; break }; if ($server.HasExited) { break } }
+    if (-not $up) { throw "server.js did not start; see $log and $log.err" }
     Write-Host "Server log: $log   (stop it with: Stop-Process -Id $($server.Id))"
 }
 
@@ -61,5 +76,5 @@ The app is running. To test with the web page as the other device:
   2. Open the same link in a browser on this machine: $Origin/#<room>:<key>
 Or the other way round: open $Origin/ in a browser, copy its link, and paste it into the app.
 
-App output:  & '$Adb' logcat --pid=(& '$Adb' shell pidof com.darkp2p.app)
+App output:  & '$Adb' logcat "--pid=`$(& '$Adb' shell pidof com.darkp2p.app)"
 "@

@@ -3,12 +3,12 @@
 Native Kotlin client for the `darkp2p/v3` protocol. Design, wire contract and
 roadmap: [`docs/android/TECHNICAL_DESIGN.md`](../docs/android/TECHNICAL_DESIGN.md).
 
-Status: **Phase 5** code complete; nothing has run on a device yet.
+Status: **Phase 5** code complete; first emulator run done, no physical device yet.
 All five modules are built. The logic is tested on the host JVM, including
 file transfers with the unmodified `server.js` and page (relay and WebRTC, real
-Chromium). Everything that touches Android itself, the whole UI included,
-compiles, passes Lint and builds release APKs, but has never been run or seen.
-The next step is a device or emulator session.
+Chromium). On an API 37 emulator the app has created a room and exchanged a
+file each way with the page over the relay. Direct WebRTC on a device, joining
+by link or QR, Settings, Pro, the lock and Tor have not been run yet.
 
 ## Modules
 
@@ -65,14 +65,17 @@ One-time setup on your own machine (Android Studio does all of it through its
 SDK Manager and Device Manager; these are the command-line equivalents):
 
 ```bash
-sdkmanager "platform-tools" "emulator" "platforms;android-36" "system-images;android-36;google_apis;x86_64"
+sdkmanager "platform-tools" "emulator" "platforms;android-37.2" "system-images;android-37.0;google_apis_playstore;x86_64"
 ```
 
 ```bash
-avdmanager create avd -n darkp2p -k "system-images;android-36;google_apis;x86_64" -d pixel_7
+avdmanager create avd -n darkp2p -k "system-images;android-37.0;google_apis_playstore;x86_64" -d pixel_7
 ```
 
-On an Apple Silicon Mac use `arm64-v8a` in place of `x86_64` in both commands.
+`platforms;android-37.2` is what the build compiles against (Gradle fetches it
+itself when the SDK licences are accepted). The system image only has to be
+API 29 or newer; the one above is the one the app has been run on. On an Apple
+Silicon Mac use `arm64-v8a` in place of `x86_64` in both commands.
 
 Then, each time:
 
@@ -86,9 +89,12 @@ android/scripts/dev-emulator.sh
 
 On Windows, in PowerShell:
 
-```bash
+```powershell
 powershell -ExecutionPolicy Bypass -File android\scripts\dev-emulator.ps1
 ```
+
+The PowerShell script finds the SDK in `%LOCALAPPDATA%\Android\Sdk` and the JDK
+inside Android Studio when `ANDROID_HOME` and `JAVA_HOME` are not set.
 
 The script forwards port 3000 from the emulator to this machine
 (`adb reverse`), starts `server.js` there if it is not running, installs a
@@ -104,7 +110,10 @@ What makes this work, and why it cannot leak into a release:
   (`app/src/debug/res/xml/network_security_config.xml`); release builds allow
   it for `.onion` only.
 
-Neither script has been run yet; treat the first run as part of the test.
+The PowerShell script has been run on Windows 11 with an API 37 emulator; the
+`sh` script has not been run yet, so treat its first run as part of the test.
+On the emulator the direct WebRTC connection timed out and the transfer went
+over the relay; whether that is the emulator's network or the app is not known.
 
 ## Interop tests
 
