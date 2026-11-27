@@ -12,6 +12,12 @@
             android:name="com.darkp2p.service.DarkP2PService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Keeps an onion file drop reachable while the app is in the background. Reachable only from this app. -->
+        <service
+            android:name="com.darkp2p.service.DropService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

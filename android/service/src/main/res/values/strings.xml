@@ -4,6 +4,11 @@
     <string name="darkp2p_channel_room_description">Shown while a room is open, with the progress of a transfer.</string>
     <string name="darkp2p_channel_status">Status</string>
     <string name="darkp2p_channel_status_description">Quiet notes, such as a room closed for being idle.</string>
+    <string name="darkp2p_channel_drop">Onion link</string>
+    <string name="darkp2p_channel_drop_description">Shown while a file is shared by an onion link.</string>
+    <string name="darkp2p_notification_drop_title">Sharing by onion link</string>
+    <string name="darkp2p_notification_drop_text">The link works while this is shown.</string>
+    <string name="darkp2p_notification_drop_stop">Stop sharing</string>
     <string name="darkp2p_notification_room_open">Room open</string>
     <string name="darkp2p_notification_waiting">Waiting for the other device</string>
     <string name="darkp2p_notification_connected">Connected</string>

@@ -58,7 +58,7 @@
     <string name="drop_starting">Starting Tor for %1$s… %2$d%%</string>
     <string name="drop_publishing">Announcing the link for %1$s on the Tor network…</string>
     <string name="drop_ready">%1$s (%2$s) is ready</string>
-    <string name="drop_note">Send this link to the other person. They open it in Tor Browser. It can take a minute or two after it appears before the link answers. Keep DarkP2P open until the download has finished; leaving this screen takes the link down.</string>
+    <string name="drop_note">Send this link to the other person. They open it in Tor Browser. It can take a minute or two after it appears before the link answers. You can switch to another app to send it: DarkP2P keeps sharing in the background, with a notification. Going back from this screen takes the link down.</string>
     <string name="drop_stop">Stop sharing</string>
     <string name="drop_done">%1$s was downloaded. The link no longer works.</string>
     <string name="drop_again">Send another file</string>

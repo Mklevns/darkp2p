@@ -1,6 +1,9 @@
 package com.darkp2p.app.ui
 
+import android.Manifest
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.runtime.LaunchedEffect
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -43,6 +46,11 @@ fun DropScreen(vm: RoomViewModel, onBack: () -> Unit, modifier: Modifier = Modif
     val scope = rememberCoroutineScope()
     var showQr by remember { mutableStateOf(false) }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) vm.drop.start(uri) }
+    // The ongoing notification is how a drop stays visible, and stoppable, outside the app.
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(Unit) {
+        if (PlatformOnion.AVAILABLE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
 
     Column(modifier.verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         TextButton(onClick = onBack) { Text(stringResource(R.string.back)) }
