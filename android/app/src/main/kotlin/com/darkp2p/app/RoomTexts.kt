@@ -100,6 +100,30 @@ object RoomTexts {
     fun offersLocalNetwork(state: RoomState?, sdk: Int, granted: Boolean, transferring: Boolean): Boolean =
         state is RoomState.Ready && state.relayedOnSameNetwork && sdk >= LOCAL_NETWORK_ENFORCED_SDK && !granted && !transferring
 
+    /** What the room says under its status when it is on a relay for a reason the user can do something about. */
+    enum class RelayHint {
+        NONE,
+
+        /** A VPN is this app's network: point at its split-tunnel settings. A line of text, nothing to tap. */
+        VPN,
+
+        /** Same router, permission missing: the banner that asks for it. */
+        LOCAL_NETWORK,
+    }
+
+    /**
+     * Which hint a room on a relay shows. A VPN comes first: inside one, the
+     * local-network permission cannot make the connection direct, so it is not
+     * offered. No hint in Tor mode, in a build without WebRTC, or when the relay
+     * is what the user asked for ([Prefs.forceRelay], [Prefs.hideIp]).
+     */
+    fun relayHint(state: RoomState?, prefs: Prefs, webRtc: Boolean, vpn: Boolean, sdk: Int, granted: Boolean, transferring: Boolean): RelayHint {
+        if (state !is RoomState.Ready || state.transport == Transport.DIRECT) return RelayHint.NONE
+        if (prefs.tor || !webRtc || prefs.forceRelay || prefs.hideIp) return RelayHint.NONE
+        if (vpn) return RelayHint.VPN
+        return if (offersLocalNetwork(state, sdk, granted, transferring)) RelayHint.LOCAL_NETWORK else RelayHint.NONE
+    }
+
     /** Sizes as people read them. */
     fun size(bytes: Long): String = when {
         bytes < 1024 -> "$bytes B"

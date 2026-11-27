@@ -309,6 +309,15 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Whether a VPN is this app's network, as of the last look. */
+    var vpnActive by mutableStateOf(false)
+        private set
+
+    /** Looks again: when the app comes back to the front, and when a room settles on a transport. */
+    fun refreshNetwork() {
+        vpnActive = ActiveNetwork.isVpn(context)
+    }
+
     /** The user said no to the local-network permission in this room: say what that means instead of offering it again. */
     var localNetworkDenied by mutableStateOf(false)
         private set

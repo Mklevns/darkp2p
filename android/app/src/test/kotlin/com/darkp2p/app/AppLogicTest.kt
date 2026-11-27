@@ -219,4 +219,38 @@ class AppLogicTest {
         assertFalse(RoomTexts.offersLocalNetwork(RoomState.WaitingForPeer, sdk, granted = false, transferring = false))
         assertFalse(RoomTexts.offersLocalNetwork(null, sdk, granted = false, transferring = false))
     }
+
+    @Test
+    fun `on a relay an active VPN is named first, and the local-network banner only without one`() {
+        fun ready(transport: Transport, sameNetwork: Boolean = true) = RoomState.Ready(transport, IpExposure.EXPOSED, 50, 40, false, false, false, relayedOnSameNetwork = sameNetwork)
+        val relayed = ready(Transport.WS_RELAY)
+        val sdk = RoomTexts.LOCAL_NETWORK_ENFORCED_SDK
+        fun hint(state: RoomState?, prefs: Prefs = Prefs(), webRtc: Boolean = true, vpn: Boolean, granted: Boolean = false, transferring: Boolean = false) =
+            RoomTexts.relayHint(state, prefs, webRtc, vpn, sdk, granted, transferring)
+
+        // A VPN wins over the permission banner, whatever the permission's state, and even mid-transfer (it is only text).
+        assertEquals(RoomTexts.RelayHint.VPN, hint(relayed, vpn = true))
+        assertEquals(RoomTexts.RelayHint.VPN, hint(relayed, vpn = true, granted = true))
+        assertEquals(RoomTexts.RelayHint.VPN, hint(relayed, vpn = true, transferring = true))
+        assertEquals(RoomTexts.RelayHint.VPN, hint(ready(Transport.WS_RELAY, sameNetwork = false), vpn = true))
+        assertEquals(RoomTexts.RelayHint.VPN, hint(ready(Transport.TURN), vpn = true))
+
+        // Without one, exactly the existing local-network behaviour.
+        assertEquals(RoomTexts.RelayHint.LOCAL_NETWORK, hint(relayed, vpn = false))
+        assertEquals(RoomTexts.RelayHint.NONE, hint(relayed, vpn = false, granted = true))
+        assertEquals(RoomTexts.RelayHint.NONE, hint(relayed, vpn = false, transferring = true))
+        assertEquals(RoomTexts.RelayHint.NONE, hint(ready(Transport.WS_RELAY, sameNetwork = false), vpn = false))
+
+        // Nothing to say when connected directly, outside a ready room, in Tor mode, without WebRTC in the build,
+        // or when the relay is what the user asked for.
+        for (vpn in listOf(true, false)) {
+            assertEquals(RoomTexts.RelayHint.NONE, hint(ready(Transport.DIRECT), vpn = vpn))
+            assertEquals(RoomTexts.RelayHint.NONE, hint(RoomState.WaitingForPeer, vpn = vpn))
+            assertEquals(RoomTexts.RelayHint.NONE, hint(null, vpn = vpn))
+            assertEquals(RoomTexts.RelayHint.NONE, hint(relayed, Prefs(tor = true), vpn = vpn))
+            assertEquals(RoomTexts.RelayHint.NONE, hint(relayed, webRtc = false, vpn = vpn))
+            assertEquals(RoomTexts.RelayHint.NONE, hint(relayed, Prefs(forceRelay = true), vpn = vpn))
+            assertEquals(RoomTexts.RelayHint.NONE, hint(relayed, Prefs(hideIp = true), vpn = vpn))
+        }
+    }
 }
