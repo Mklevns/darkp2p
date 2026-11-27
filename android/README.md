@@ -137,6 +137,24 @@ headless browser, over the relay and over WebRTC:
 DARKP2P_CHROMIUM=1 ./gradlew :transport:testFullDebugUnitTest --tests '*Chromium*'
 ```
 
+## On-device tests
+
+What only Android can show lives in `src/androidTest` and runs on a connected
+device or a running emulator:
+
+```bash
+./gradlew :storage:connectedDebugAndroidTest :transport:connectedFullDebugAndroidTest
+```
+
+- `:storage`: the vault on the real Android Keystore (the key cannot be read
+  out, altered data is refused, and a vault whose key was removed reads as
+  empty and says so).
+- `:transport`: the onion file drop's server answers on `127.0.0.1`, where Tor
+  forwards (on Android "the loopback address" is `::1`).
+
+They are not part of `check`. CI runs them in the `android-device` job on
+emulators at API 29 and 34.
+
 ## Dependencies
 
 Versions live in `gradle/libs.versions.toml`, exact versions only. Every
