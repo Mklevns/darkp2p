@@ -32,6 +32,8 @@ class MainActivity : FragmentActivity() {
     override fun onResume() {
         super.onResume()
         lockAvailable = canLock()
+        // The user may have just changed the VPN or its split-tunnel list.
+        vm.refreshNetwork()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

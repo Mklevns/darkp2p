@@ -2,9 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- libwebrtc picks its routes with this. -->
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
     <!-- From Android 17, without this the system drops everything between the app and
          other devices on the same network, so two devices on one Wi-Fi cannot connect
          directly. It is never asked for up front: the room offers it only after a

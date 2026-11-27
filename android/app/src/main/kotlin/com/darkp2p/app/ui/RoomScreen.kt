@@ -53,6 +53,7 @@ import com.darkp2p.app.Screen
 import com.darkp2p.app.SensitiveClipboard
 import com.darkp2p.protocol.RoomState
 import com.darkp2p.service.RoomController
+import com.darkp2p.transport.PlatformWebRtc
 import com.darkp2p.service.SaveTarget
 
 @Composable
@@ -111,7 +112,18 @@ fun RoomScreen(vm: RoomViewModel, room: RoomController, prefs: Prefs, modifier: 
         // ---- Same Wi-Fi, but on the relay for want of a permission: offered here, never asked unprompted ----
         val lanGranted = ContextCompat.checkSelfPermission(context, RoomTexts.LOCAL_NETWORK_PERMISSION) == PackageManager.PERMISSION_GRANTED
         val transferring = snapshot.incoming != null || snapshot.outgoing != null
-        if (RoomTexts.offersLocalNetwork(state, Build.VERSION.SDK_INT, lanGranted, transferring)) {
+        // Which network the app is on can change between pairings: look when the transport settles.
+        val transport = (state as? RoomState.Ready)?.transport
+        LaunchedEffect(transport) { if (transport != null) vm.refreshNetwork() }
+        val hint = RoomTexts.relayHint(state, prefs, PlatformWebRtc.AVAILABLE, vm.vpnActive, Build.VERSION.SDK_INT, lanGranted, transferring)
+        if (hint == RoomTexts.RelayHint.VPN) {
+            val cap = (state as? RoomState.Ready)?.relayCap
+            Text(
+                if (cap != null) stringResource(R.string.room_vpn_hint_cap, RoomTexts.size(cap)) else stringResource(R.string.room_vpn_hint),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (hint == RoomTexts.RelayHint.LOCAL_NETWORK) {
             if (vm.localNetworkDenied) {
                 Text(stringResource(R.string.room_lan_denied), style = MaterialTheme.typography.bodySmall)
             } else {

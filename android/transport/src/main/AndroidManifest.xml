@@ -3,6 +3,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- libwebrtc picks its routes with this, and the room uses it to see whether a VPN
+         is the active network when a connection had to fall back to the relay. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- Needed since Android 11 to see whether Orbot is installed and to talk to it. -->
     <queries>
         <package android:name="org.torproject.android" />

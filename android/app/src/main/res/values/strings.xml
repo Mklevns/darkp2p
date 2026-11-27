@@ -51,6 +51,8 @@
     <string name="room_reconnect">Reconnect</string>
     <string name="room_force_relay">Always use the encrypted relay</string>
     <string name="room_hide_ip">Hide my IP from the other device</string>
+    <string name="room_vpn_hint_cap">Using the relay (%1$s per room). A VPN is active and may be blocking a direct connection: exclude DarkP2P in your VPN\'s split-tunnel settings to connect directly.</string>
+    <string name="room_vpn_hint">Using a relay. A VPN is active and may be blocking a direct connection: exclude DarkP2P in your VPN\'s split-tunnel settings to connect directly.</string>
     <string name="room_lan_offer_cap">Using the relay (%1$s per room). On the same Wi-Fi as the other device? Tap to connect directly.</string>
     <string name="room_lan_offer">Using a relay. On the same Wi-Fi as the other device? Tap to connect directly.</string>
     <string name="room_lan_denied">Without access to devices on your network, transfers on the same Wi-Fi keep using the relay.</string>
