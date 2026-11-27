@@ -52,7 +52,7 @@ Symbol references use the names in the source (grep for them; line numbers drift
 | F8 | — | OkHttp `WebSocket.send()` **gracefully closes the socket** if its queue would exceed 16 MiB. | All relay sends are gated on `queueSize() ≤ HIGH_WATER` (1 MiB) — mandatory, not an optimisation. |
 | F9 | — | The server **pauses reading** a relay sender for throttling (token bucket) and backpressure, up to `RELAY_STALL_MS` = 60 s. A client-side WS ping issued during a pause gets no pong. | OkHttp `pingInterval` must be **≥ 90 s** (we use 90 s). A 15–30 s ping interval kills legitimate relay transfers. |
 | F10 | — | Server closes a socket after **200 ICE candidates per pairing** (`too-many-candidates`) and after **120 JSON messages / 10 s**. | `GATHER_ONCE`, client-side cap of 150 candidates, never `GATHER_CONTINUALLY`. |
-| F11 | — | `ack` messages must **not** carry `"done": false`: `TxWindow.onReply` rejects any `done` that is not exactly `true` or absent. | Kotlin JSON encoder: `explicitNulls = false`, no default `done` field. |
+| F11 | — | `ack` messages must **not** carry `"done": false`: `TxWindow.onReply` rejects any `done` that is not exactly `true` or absent. | `Ctrl.ack()` writes `done` only for the final ack; the page's own `TxWindow` checks this in `npm test`. |
 | F12 | — | Native libwebrtc does **not** obfuscate host candidates with mDNS (Chrome does). | Direct mode **signals host candidates** (fast LAN transfers) and shows `IP EXPOSED`. The Java API has no clean mDNS obfuscation, so none is used in v1. **Hide My IP** is the single switch that hides local and public addresses (§8 D6). |
 
 ---
@@ -193,6 +193,28 @@ Toggling Force-WS **off** while on the relay → `rejoinRoom()`: close the signa
 * `orderId` = `/^(pro-1d|pro-30d):[a-f0-9]{32}$/` is the claim secret; IDs `/^[1-9][0-9]{0,19}$/`.
 * Page poll schedule (`pollClaim`): first try 3 s, doubling to 30 s (with paymentId) or 5 min (invoice-only), honour `Retry-After` ≤ 10 min, each poll run ≤ 6 h, claim discarded 48 h after `startedAt`.
 
+### 1.10 Chat (Android ↔ Android extension)
+
+Not part of the page's protocol, and built so the page never sees any of it.
+
+**Offer.** The app's hello carries one more field: `{"type":"hello","v":3,"nonce":"…","caps":["chat"]}`. The page's `acceptHello` reads only `v` and `nonce`, so to the page this is an ordinary v3 hello (`test/caps.test.mjs` runs the real page against such a peer). The page's own hello has no `caps`. Chat is on only when **both** hellos of the current session list `"chat"`; with a web peer it is off, the chat box stays hidden, and no chat frame is ever sent. Unknown names in `caps` are ignored, and anything but a list of strings offers nothing.
+
+**Why it must never reach the page.** The page has no `chat` message: it answers one with `Unexpected control frame`, and if it is receiving a file at that moment it aborts that file. The gate is therefore in the state machine (`chatEnabled()`), not in the UI.
+
+**Frames.** Each side has one chat stream per session: a random 16-byte transfer ID with CTRL frames numbered 0, 1, 2, … under the session's transfer key (so chat is bound to both hello nonces like everything else). A frame is one of:
+
+```jsonc
+{"type":"chat","text":"…"}        // 1…8192 UTF-8 bytes
+{"type":"chat-ack","seq":n}       // receipt for the chat message in frame n of the OTHER side's stream
+```
+
+**Rules.**
+* The receiver accepts only the next frame number of the one stream the peer opened in this session. A replayed, reordered or forged frame is refused; if the relay drops a message, the stream stops instead of showing later messages out of sequence. A refused chat frame never ends a file transfer.
+* At most 8 messages may await their receipt (`ChatConstants.WINDOW`). The receiver holds at most 32 control frames while a chunk is written, so chat cannot overflow that queue during a transfer.
+* On the WebSocket relay every chat frame and receipt counts against the room budget like any binary frame. A message is refused locally when it would leave less than `RELAY_MIN_REMAINING` (4096 bytes), so chat cannot exhaust the room.
+* A new session (new hello on either side, relay pause/resume, reconnect) starts new streams. Messages still awaiting a receipt are reported as `SESSION_ENDED`: they may or may not have been read.
+* No timestamps, names or read receipts are sent. The text is never put in a log line, notice or `toString()`.
+
 ---
 
 ## 2. Module & dependency architecture
@@ -226,7 +248,7 @@ ASCII equivalent:
 
 Rules, enforced by `./gradlew checkStructure` (part of `check`) in CI:
 
-* `:protocol` is `kotlin("jvm")` with **zero** Android imports (`checkProtocolPurity`). Its only runtime dependencies are `kotlin-stdlib`, `kotlinx-coroutines-core`, `kotlinx-serialization-json`.
+* `:protocol` is `kotlin("jvm")` with **zero** Android imports (`checkProtocolPurity`). It has no runtime dependency beyond `kotlin-stdlib`.
 * `:transport` exposes interfaces + factories; libwebrtc types never leak past it (`api` vs `implementation`).
 * `:storage` depends on `:transport` only for `ServerApi` (the Tor-aware HTTP client) — it never touches WebRTC.
 * Test-only modules (not shipped): `:interop-cli` (JVM; §6.3) and `:testing` (fakes: `FakePeerChannel`, `FakeClock`, deterministic RNG).
@@ -240,7 +262,7 @@ Rules, enforced by `./gradlew checkStructure` (part of `check`) in CI:
 | JDK / AGP / Gradle | Java 17 bytecode, built with JDK 21 in CI; AGP 9.5.3 (built-in Kotlin); Gradle 9.9.2 wrapper with `distributionSha256Sum` | Reproducibility (§5.7). |
 | Kotlin | 2.4.21, explicit API mode in every library module, warnings as errors in `:protocol` | |
 | Coroutines | `kotlinx-coroutines` 1.11.0 | Single-threaded engine via `limitedParallelism(1)`. |
-| Serialization | `kotlinx-serialization-json` with `explicitNulls = false`, `encodeDefaults = false`, `ignoreUnknownKeys = true` | F11; unknown fields tolerated like `JSON.parse`. |
+| JSON | In-house strict parser and serializer in `:protocol` (`Json.kt`), vector-tested | F11; the same accept/reject decisions as `JSON.parse`, the same text as `JSON.stringify`. |
 | HTTP/WS | **OkHttp 5.5.1** | Custom `Dns`, `SocketFactory`, Origin header, `queueSize()`. |
 | WebRTC | `io.github.webrtc-sdk:android` 150.7871.09 (community-maintained Google libwebrtc build); `libre` flavor: same tag built from source (§5.7) | `org.webrtc:google-webrtc` is unmaintained since 2020. Only `DataChannel` is used; no audio/video tracks. |
 | Crypto | JCA `AES/GCM/NoPadding` (Conscrypt/BoringSSL on device, SunJCE in JVM tests) + in-house RFC 5869 HKDF (~30 lines, vector-tested) | No BouncyCastle/Tink needed in `:protocol`; identical code on JVM and device. |
@@ -252,6 +274,7 @@ Rules, enforced by `./gradlew checkStructure` (part of `check`) in CI:
 | Checkout | `androidx.browser` Custom Tabs (clearnet only) | §3.6, §5.3. |
 | Tor | Orbot via its public intents (default) or embedded `info.guardianproject:tor-android` + `jtorctl` (`full` flavor) | §4.6. |
 | Biometrics | `androidx.biometric` (`BIOMETRIC_STRONG or DEVICE_CREDENTIAL`) | |
+| Coverage | Kover 0.9.11 on `:protocol`, 90 % line minimum in `check` | |
 | Static analysis | `checkStructure` (source-scanning Gradle tasks in `android/build.gradle.kts`: module graph, `:protocol` purity, forbidden APIs, pinned versions) and Android Lint `warningsAsErrors`. No extra analysis plugin: the checks needed are simple patterns, and each plugin is more supply chain | |
 
 Build flavors: `full` (GitHub/Play: prebuilt libwebrtc AAR, embedded Tor option) and `libre` (F-Droid: from-source libwebrtc, Orbot only, no `autoVerify` App Links — §5.4).
@@ -273,6 +296,15 @@ Android reproduces this with:
 1. **One engine dispatcher** (`Dispatchers.Default.limitedParallelism(1)`) that owns all mutable protocol state (`RoomMachine`). Every callback (OkHttp reader thread, libwebrtc signaling thread, I/O completions, timers, UI intents) is converted into an `EngineInput` and posted to it. Nothing else mutates state.
 2. **One outbound queue** per channel (`Channel<OutFrame>(capacity = 64)`) drained by a single coroutine that does `awaitWritable() → trySend()`. Frames are encrypted on the engine dispatcher *before* enqueueing, which gives the same "keys captured at queue time" property as `sendCtrl(..., keys = session.keys)`.
 3. **One inbound queue** (`Channel<InFrame>` with separate DATA/CTRL counters capped at 256/32, `trySend` only). Overflow ⇒ one `abort{integrity}`, exactly as `enqueueIncomingBinary`.
+
+> **Implemented (Phase 1).** §3.2–3.4 are built in `android/protocol`, and the code is now authoritative for exact signatures. The listings below are the design sketch; the implementation differs in these ways:
+> - The reducer's types are `RoomInput` / `RoomEffect` (not `EngineInput` / `Effect`). Sockets, WebRTC sessions and transfers are identified by small integers the machine allocates, and inputs for a stale one are ignored.
+> - `seq` is a `Long` (0…2³²−1) and frame types/roles are enums with a `wire` value, not value classes.
+> - `:protocol` has **no dependencies at all**: JSON is read by its own strict RFC 8259 parser (`Json.kt`), because a general-purpose library does not promise the same accept/reject decisions as the page's `JSON.parse`.
+> - `Ctrl` decoding maps everything the page would refuse to values the state machines refuse (`Ctrl.Unknown`, `Ack.valid == false`), not to exceptions.
+> - Backpressure: the machine issues one `ReadChunk` at a time and waits for `FrameSent` (the frame left the local send buffer) before the next. Inbound frames wait inside the machine while a write is pending, which is where the 256/32 queue caps are enforced.
+> - Before accepting, the host opens the destination itself; the effects are `WriteChunk`, `CommitSink` and `DiscardSink` (no `OpenSink`).
+> - `RoomState.Ready` carries `relayCap`/`relayRemaining` directly; there is no `ProRequiredForHideIp` or `SetForceWs` (one `SetPolicy` input carries all three switches).
 
 ### 3.2 `:protocol` — framing & crypto
 
@@ -820,6 +852,7 @@ Each item names the control and how it is verified. **[T]** = automated test, **
 - [ ] Room key and session keys are memory-only. `RoomKey.close()` zero-fills on leave. Documented limitation: `SecretKeySpec` copies the key and cannot be wiped. **[R]**
 - [ ] No room IDs, keys, tokens, order/payment IDs, SDP/ICE or file names in logs. Release builds strip `android.util.Log` via R8 `-assumenosideeffects`. `checkForbiddenApis` forbids `println`, `Log.*`, `printStackTrace` in main code. **[R][T]** (a log-capture test greps for the room ID during a transfer)
 - [ ] Vault = AES-256-GCM blob under a non-exportable Keystore key (`setIsStrongBoxBacked` when available), AAD `"darkp2p-vault/v1"`, `AtomicFile`. Contents mirror the page's names: `darkp2p_token`, `darkp2p_pending_claim` (same JSON), which allows copy/paste export between web and app. The key does **not** require user authentication, because the background claim worker and auto-join need it. Biometric lock is a UI gate (5.5). **[T]**
+- [ ] Chat text exists only in memory, for the life of the room: never persisted, logged, or shown in a notification's public version; cleared when the room is left. **[T]**
 - [ ] `android:allowBackup="false"`, `dataExtractionRules` excluding all domains, `fullBackupContent="false"`. **[R]**
 - [ ] No room history by default. An optional "recent rooms" list stores the room ID only, never the key. **[R]**
 
@@ -930,7 +963,7 @@ Gates:
 
 ### 6.3 Automated JVM ↔ browser transfer test (Tier 1, every PR)
 
-**Driver.** A JUnit 5 suite in `:transport` (Android library *local unit tests* run on the host JVM, where OkHttp works unchanged) spawns `node test/interop/peer.mjs --scenario <name>` and talks to it over line-delimited JSON on stdout/stdin.
+**Driver (as built).** A JUnit 5 suite in `:transport` (Android library *local unit tests* run on the host JVM, where OkHttp works unchanged) spawns `node test/interop/peer.mjs --scenario <name>` and talks to it over line-delimited JSON on stdout/stdin.
 
 **`peer.mjs`.** It reuses `test/helpers/server.mjs` `startServer()` (env overrides per scenario) and starts the browser peer in one of two backends:
 * `--browser=chromium`: Playwright with the pre-installed Chromium (`chromium.launch()`, `--headless`), `page.goto('http://127.0.0.1:<port>/#<room>:<key>')`. `127.0.0.1` is a secure context, so Web Crypto and OPFS work. The page's same-origin rule accepts the JVM's `Origin: http://127.0.0.1:<port>`. File send uses `setInputFiles('#fileInput')`; receive captures the `download` event and hashes the file. Force-WS is ticked **before** the JVM peer joins (`initPeer` reads it on `ready`).
@@ -990,11 +1023,19 @@ Each phase ends with a gate that must pass in CI (or be signed off for **[M]** i
 ### Phase 1 — `:protocol` (pure JVM)
 * `Hkdf`, `FrameCodec`, `TransferKeyCache`, `CtrlCodec`, `RxStateMachine`, `TxWindow`, `RelayBudget`, `Backoff`, `RoomLink`, `CandidatePolicy`, LRU sets, then `RoomMachine` + `toRoomState()`.
 * **Gate:** 100 % of `v3.json` vectors (including `rxTraces`/`txTraces`) pass; reverse vectors decode in Node; sticky-state invariant tests (§3.4 table) pass; Kover line coverage ≥ 90 % on `:protocol`; Jazzer 10 min on `decode`/`parse` with no findings.
+* **Status: done, with one substitution.** 56 tests. Every vector group passes. `test/vectors/android-v3.json` (99 Kotlin-produced frames: handshake, a 70-chunk transfer, every decline/abort) is decrypted by the page's `decodeFrame` and accepted by its `RxStateMachine`/`TxWindow` in `npm test`. The room state machine is exercised by two machines against a fake server that follows `server.js` (pairing, relay switch, budget, `relay-busy`/`relay-idle`/limit, `full`, `peer-left`), including every sticky-state row of §3.4 and decisions D3, D5 and D6. Line coverage is 95.9 %, enforced at 90 % by `koverVerify` in `check`. **Jazzer was not run:** in its place `RobustnessTest` and the room tests feed about 500 000 seeded random and mutated inputs to the JSON parser, frame decoder, link parser, candidate policy and a live room. Coverage-guided fuzzing is still open and moves to Phase 6.
+* The fake server is a model of `server.js`, not `server.js`: agreement with the real server and page over a real socket is the Phase 2 gate.
 
 ### Phase 2 — `:transport` WebSocket signaling + relay + Tor
 * `OkHttpSignalingClient` (Origin, ping policy, close-cause mapping), `WsRelayChannel` (queue-size gating, budget charging), `ServerApi`, `Socks5hSocketFactory`/`TorDns`, Orbot integration, `network_security_config`.
 * JVM interop harness (§6.3) with the `glue` and `chromium` backends.
 * **Gate:** every Tier-1 relay/budget/busy/idle/stall/backoff/tor-dns/claim scenario green against the unmodified `server.js` and page; 40 MB JVM↔Chromium both ways with equal hashes; zero `Dns.SYSTEM` calls under the Tor profile.
+* **Status: done for the WebSocket relay path, with the gaps listed below.** `:transport` now has `RoomSession` (the machine on a real OkHttp WebSocket, timers and file access), `HttpClients`/`NetworkProfile`, `Socks5hSocketFactory` + `TorDns`, `ServerApi`, `Orbot`, and the cleartext rule (TLS everywhere except `.onion`). 22 tests run on the host JVM; `test/interop/peer.mjs` gives them a real `server.js` and real pages.
+  * **Against the unmodified server and page (passing):** files both ways at nine boundary sizes; the relay budget equal to the server's own count to the byte after a rejoin; budget exhausted on both sides with no reconnect or retry loop; key mismatch that outlives the hello timeout; `relay-busy` shown as busy and connected on the 30 s retry; `relay-idle` paused and resumed from either side; server killed and restarted (backoff, then files move again); Pro token raising the cap to 500 MB; declines and cancels in all four directions; chat never sent to the page and working between two app peers.
+  * **Real Chromium (passing here, opt-in):** 40 MB each way plus five boundary sizes with equal hashes, with the page in headless Chromium (`DARKP2P_CHROMIUM=1`). CI does not run it: Playwright is not a dependency of this repository.
+  * **Tor (passing):** an onion-named room carried through a recording SOCKS5 proxy with a file each way; every connection used address type 3 with the onion name and the isolation value; an address literal is refused before any connection; a refused or absent proxy is an error, never a direct connection.
+  * **Not done:** a run over the real Tor network (Tier 3 needs a tor daemon); Orbot on a device (the code compiles and passes Lint, and its port probe is tested, but its broadcasts are from memory of Orbot's interface and unverified); embedded Tor; the `relay-stall` and `full-after-drop` scenarios against the real server (both are covered only by the Phase 1 model); the full checkout→IPN→claim flow (`ServerApi` is tested against a scripted server for every answer shape and against the real server for "unknown claim" and "provider unreachable"); precise backoff timing over a socket (asserted loosely: 2–4 attempts in 4.5 s).
+  * `:interop-cli` was not needed: Android library unit tests already run on the host JVM, so the interop tests live in `:transport`.
 
 ### Phase 3 — `:transport` WebRTC + Hide My IP
 * `WebRtcProvider` (lazy factory, manifest stripping), `DataChannelPeerChannel` (copy-out, buffered-amount gating), SDP/candidate policy, ICE timer and fallback wiring, `IpExposure`.
@@ -1005,7 +1046,7 @@ Each phase ends with a gate that must pass in CI (or be signed off for **[M]** i
 * **Gate:** 4 GB transfer emulator↔Chromium with heap growth < 16 MB and equal hashes; `am kill` mid-receive leaves no visible file after relaunch; Doze force-idle transfer completes **[M]**; FGS timeout aborts with `timeout`; vault round-trip survives reboot and fails closed when the Keystore key is removed; claim worker re-enqueues at ≥ 5 min and stops at 48 h (`TestDriver`).
 
 ### Phase 5 — `:app` (Compose)
-* Room screen (state-driven from `RoomState`), offer sheet with Downloads/"Save as…" (`ACTION_CREATE_DOCUMENT`), share targets (single + multiple → queue), App Links + manual paste + QR generate/scan, settings (Force WS, Hide IP, Tor/Orbot/embedded, show names in notifications, FLAG_SECURE), Pro screen (checkout via Custom Tab or Tor Browser, payment-ID paste, token import/export), biometric lock.
+* Room screen (state-driven from `RoomState`), chat box shown only while `RoomState.Ready.chat` is true (history kept in memory for the life of the room, cleared on leave; message text hidden from lock-screen notifications), offer sheet with Downloads/"Save as…" (`ACTION_CREATE_DOCUMENT`), share targets (single + multiple → queue), App Links + manual paste + QR generate/scan, settings (Force WS, Hide IP, Tor/Orbot/embedded, show names in notifications, FLAG_SECURE), Pro screen (checkout via Custom Tab or Tor Browser, payment-ID paste, token import/export), biometric lock.
 * **Gate:** Compose UI tests for every `RoomState` (screenshot tests); TalkBack and font-scale 200 % pass **[M]**; link-intake fuzz (intent extras) never crashes and never connects to a non-default host without confirmation; full §5 checklist walked on a physical device **[M]**.
 
 ### Phase 6 — Hardening & distribution
@@ -1025,6 +1066,7 @@ Locked for v1. `server.js` stays untouched; the wire contract in §1 is unchange
 | D3 | Hide My IP without Pro | Fall back to the encrypted WebSocket relay (free cap from `ready`, 50 MB by default) instead of blocking. Inline note: Pro unlocks TURN (no relay cap) and the 500 MB relay. | §0.3 F3, §1.8, §3.4 |
 | D4 | Idle room | The Foreground Service stops after 10 minutes of inactivity and leaves a quiet status notification. `WakeLock`/`WifiLock` are released as soon as bytes stop moving. | §4.7 |
 | D5 | ICE restart on network change | None in v1. libwebrtc rides out `disconnected`; a tunnel that `failed` after being up goes to `Interrupted` with a manual Reconnect (clean rejoin). | §1.8, §3.4, §4.5 |
+| D7 | Chat | Android ↔ Android only, offered as `"caps":["chat"]` in the hello and used only when both sides offer it. No web change. Implemented in `:protocol`; the chat box is Phase 5. | §1.10 |
 | D6 | Local addresses in Direct P2P | Signaled (fast LAN transfers). mDNS obfuscation only if libwebrtc offers it cleanly; the Java API does not today, so v1 has none. Hide My IP (TURN `RELAY` policy, or the WS relay) is the single switch that hides local and public addresses. | §0.3 F12, §4.5, §5.2 |
 
 Notes on how the decisions meet the existing clients:

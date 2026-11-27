@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  TLS everywhere, with one exception: onion services. Their address already
+  authenticates and encrypts the connection end to end, and the server's onion
+  mirror speaks plain http/ws inside that tunnel.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">onion</domain>
+    </domain-config>
+</network-security-config>

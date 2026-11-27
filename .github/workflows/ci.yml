@@ -63,8 +63,19 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # :transport's tests run the real server.js and the real page script.
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install server dependencies
+        working-directory: .
+        run: npm ci
+
       # Structural checks (module graph, :protocol purity, forbidden APIs,
-      # pinned versions), unit tests and lint, then one APK per flavor.
+      # pinned versions), unit and interop tests and lint, then one APK per flavor.
       # Dependencies are verified against gradle/verification-metadata.xml.
       - name: Check and build
         run: ./gradlew --no-daemon check :app:assembleFullDebug :app:assembleLibreRelease

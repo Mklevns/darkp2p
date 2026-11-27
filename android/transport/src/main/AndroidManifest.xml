@@ -1,1 +1,13 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Needed since Android 11 to see whether Orbot is installed and to talk to it. -->
+    <queries>
+        <package android:name="org.torproject.android" />
+    </queries>
+
+    <application android:networkSecurityConfig="@xml/network_security_config" />
+
+</manifest>

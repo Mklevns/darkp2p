@@ -3,8 +3,10 @@
 Native Kotlin client for the `darkp2p/v3` protocol. Design, wire contract and
 roadmap: [`docs/android/TECHNICAL_DESIGN.md`](../docs/android/TECHNICAL_DESIGN.md).
 
-Status: **Phase 0** (scaffold). The modules build and the structural checks
-run. `:protocol` holds the wire constants; the rest is empty until its phase.
+Status: **Phase 2** done. `:protocol` is complete, and `:transport` connects it
+to a real server over the WebSocket relay, directly or through a Tor SOCKS
+proxy. Its tests exchange files with the unmodified `server.js` and page.
+WebRTC is Phase 3; `:storage`, `:service` and `:app` are still empty.
 
 ## Modules
 
@@ -32,7 +34,8 @@ cd android
 ./gradlew check :app:assembleFullDebug
 ```
 
-`check` runs the unit tests, Android Lint and `checkStructure`:
+`check` runs the unit tests, the `:protocol` coverage minimum (90 % of lines),
+Android Lint and `checkStructure`:
 
 | Task | Fails when |
 |---|---|
@@ -43,15 +46,33 @@ cd android
 
 ## Test vectors
 
-`:protocol` tests read `../test/vectors/v3.json`, generated from the web client:
+Two committed files tie this client to the web client, one per direction:
+
+| File | Produced by | Checked by |
+|---|---|---|
+| `test/vectors/v3.json` | the page's own code (`node test/vectors/export.mjs`) | `:protocol` tests: same keys, same frame bytes, same decisions |
+| `test/vectors/android-v3.json` | `:protocol` (`./gradlew :protocol:test -PwriteVectors`) | `npm test`: the page decrypts each frame and its state machines accept the transfer |
+
+After a change to the wire format in `public/index.html`, run the first
+command from the repository root. `npm test` fails while a committed file is
+stale, and the Kotlin tests then show what the Android side must change.
+
+## Interop tests
+
+`:transport`'s unit tests run on the host JVM and start `test/interop/peer.mjs`,
+which runs the real `server.js` and real copies of the page. They need Node 22
+and `npm ci` in the repository root.
 
 ```bash
-node test/vectors/export.mjs
+./gradlew :transport:testDebugUnitTest
 ```
 
-Run that from the repository root after any change to the wire format in
-`public/index.html`. `npm test` fails while the committed file is stale, and
-the Kotlin tests then show what the Android side must change.
+With Playwright and its Chromium installed, the page can also run in a real
+headless browser:
+
+```bash
+DARKP2P_CHROMIUM=1 ./gradlew :transport:testDebugUnitTest --tests '*Chromium*'
+```
 
 ## Dependencies
 
