@@ -5,6 +5,12 @@
     <!-- libwebrtc picks its routes with this. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- From Android 17, without this the system drops everything between the app and
+         other devices on the same network, so two devices on one Wi-Fi cannot connect
+         directly. It is never asked for up front: the room offers it only after a
+         connection fell back to the relay with both sides behind the same router. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
     <!-- Data channels only: whatever the WebRTC library's own manifest asks for, no audio or Bluetooth here.
          (The camera is not listed: the app itself asks for it, to scan QR codes.) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />

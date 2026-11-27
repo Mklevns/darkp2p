@@ -85,6 +85,21 @@ object RoomTexts {
         }
     }
 
+    /** Lets the app reach devices on the same network. A runtime permission; older releases do not have it. */
+    const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
+
+    /** The first Android release that keeps apps without [LOCAL_NETWORK_PERMISSION] off the local network (Android 17). */
+    const val LOCAL_NETWORK_ENFORCED_SDK = 37
+
+    /**
+     * Whether to offer the local-network permission in this room: only when it would
+     * help and is missing. The room is on a relay although both devices are behind
+     * the same router, this Android release enforces the permission, it is not
+     * granted, and nothing is being transferred (connecting again would end it).
+     */
+    fun offersLocalNetwork(state: RoomState?, sdk: Int, granted: Boolean, transferring: Boolean): Boolean =
+        state is RoomState.Ready && state.relayedOnSameNetwork && sdk >= LOCAL_NETWORK_ENFORCED_SDK && !granted && !transferring
+
     /** Sizes as people read them. */
     fun size(bytes: Long): String = when {
         bytes < 1024 -> "$bytes B"

@@ -334,6 +334,52 @@ class RoomMachineTest {
     }
 
     @Test
+    fun `a relay fallback between peers behind one router is told apart from any other`() {
+        fun srflx(public: String, n: Int) = "candidate:2 1 udp 1685987071 $public 4000$n typ srflx raddr 192.168.1.1$n rport 5000"
+        fun relayed(aPublic: String?, bPublic: String?, connects: Boolean = false): Pair<RoomState.Ready, RoomState.Ready> {
+            val (world, a, b) = pair { webRtcConnects = connects }
+            aPublic?.let { a.post(RoomInput.LocalCandidate(a.pc!!, srflx(it, 0), "0", 0)) }
+            bPublic?.let { b.post(RoomInput.LocalCandidate(b.pc!!, srflx(it, 1), "0", 0)) }
+            world.advance(RoomMachine.ICE_TIMEOUT_MS + 100)
+            val transport = if (connects) Transport.DIRECT else Transport.WS_RELAY
+            return assertReady(a, transport) to assertReady(b, transport)
+        }
+
+        // The same public address on both sides: one router. Both peers see it.
+        relayed("203.0.113.50", "203.0.113.50").let { (a, b) -> assertTrue(a.relayedOnSameNetwork && b.relayedOnSameNetwork) }
+        // Different routers, or an address missing on either side (Tor, a VPN, no STUN): nothing to offer.
+        relayed("203.0.113.50", "198.51.100.7").let { (a, b) -> assertFalse(a.relayedOnSameNetwork || b.relayedOnSameNetwork) }
+        relayed("203.0.113.50", null).let { (a, b) -> assertFalse(a.relayedOnSameNetwork || b.relayedOnSameNetwork) }
+        relayed(null, null).let { (a, b) -> assertFalse(a.relayedOnSameNetwork || b.relayedOnSameNetwork) }
+        // Connected directly: there is nothing to fix.
+        relayed("203.0.113.50", "203.0.113.50", connects = true).let { (a, b) -> assertFalse(a.relayedOnSameNetwork || b.relayedOnSameNetwork) }
+
+        // A new pairing starts from nothing: last time's addresses do not carry over.
+        val (world, a, b) = pair { webRtcConnects = false }
+        a.post(RoomInput.LocalCandidate(a.pc!!, srflx("203.0.113.50", 0), "0", 0))
+        b.post(RoomInput.LocalCandidate(b.pc!!, srflx("203.0.113.50", 1), "0", 0))
+        world.advance(RoomMachine.ICE_TIMEOUT_MS + 100)
+        assertTrue(assertReady(a, Transport.WS_RELAY).relayedOnSameNetwork)
+        a.post(RoomInput.Reconnect)
+        world.advance(RoomMachine.ICE_TIMEOUT_MS + 5_000)
+        assertFalse(assertReady(a, Transport.WS_RELAY).relayedOnSameNetwork)
+        assertFalse(assertReady(b, Transport.WS_RELAY).relayedOnSameNetwork)
+
+        // Only server-reflexive lines carry such an address, and a peer cannot make the set grow without bound.
+        assertEquals("203.0.113.50", CandidatePolicy.reflexiveAddress(srflx("203.0.113.50", 0)))
+        assertEquals("2001:db8::1", CandidatePolicy.reflexiveAddress("candidate:2 1 udp 1 2001:DB8::1 4000 typ srflx raddr :: rport 0"))
+        for (other in listOf("", "candidate:1 1 udp 1 192.168.1.2 5000 typ host", "candidate:3 1 udp 1 198.51.100.9 49200 typ relay raddr 203.0.113.7 rport 61000", "typ srflx", "candidate:2 1 udp 1 203.0.113.50 4000 typ")) {
+            assertEquals(null, CandidatePolicy.reflexiveAddress(other), other)
+        }
+        val (w2, c, d) = pair { webRtcConnects = false }
+        repeat(60) { c.post(RoomInput.LocalCandidate(c.pc!!, srflx("203.0.113.${it + 1}", 0), "0", 0)) }
+        d.post(RoomInput.LocalCandidate(d.pc!!, srflx("203.0.113.60", 1), "0", 0))
+        w2.advance(RoomMachine.ICE_TIMEOUT_MS + 100)
+        // The sixtieth address fell outside what is kept: no match, and no error.
+        assertFalse(assertReady(c, Transport.WS_RELAY).relayedOnSameNetwork)
+    }
+
+    @Test
     fun `tor mode never starts WebRTC and signals no candidate`() {
         val (world, a, b) = pair(a = LocalPolicy(webRtcAvailable = false))
         assertReady(a, Transport.WS_RELAY)

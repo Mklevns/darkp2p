@@ -1,6 +1,9 @@
 package com.darkp2p.app.ui
 
 import android.Manifest
+import android.content.pm.PackageManager
+import androidx.compose.material3.OutlinedCard
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.set
 import android.os.Build
@@ -71,6 +74,8 @@ fun RoomScreen(vm: RoomViewModel, room: RoomController, prefs: Prefs, modifier: 
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
+    // Launched only from the banner below, by the user's tap.
+    val askLocalNetwork = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission(), vm::onLocalNetworkPermission)
 
     Column(modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -100,6 +105,25 @@ fun RoomScreen(vm: RoomViewModel, room: RoomController, prefs: Prefs, modifier: 
                 }
                 if (state == RoomState.RelayIdle) Button(onClick = room::resumeRelay) { Text(stringResource(R.string.room_resume)) }
                 if (state is RoomState.Interrupted && state.canReconnect) Button(onClick = room::reconnect) { Text(stringResource(R.string.room_reconnect)) }
+            }
+        }
+
+        // ---- Same Wi-Fi, but on the relay for want of a permission: offered here, never asked unprompted ----
+        val lanGranted = ContextCompat.checkSelfPermission(context, RoomTexts.LOCAL_NETWORK_PERMISSION) == PackageManager.PERMISSION_GRANTED
+        val transferring = snapshot.incoming != null || snapshot.outgoing != null
+        if (RoomTexts.offersLocalNetwork(state, Build.VERSION.SDK_INT, lanGranted, transferring)) {
+            if (vm.localNetworkDenied) {
+                Text(stringResource(R.string.room_lan_denied), style = MaterialTheme.typography.bodySmall)
+            } else {
+                val cap = (state as? RoomState.Ready)?.relayCap
+                OutlinedCard(onClick = { askLocalNetwork.launch(RoomTexts.LOCAL_NETWORK_PERMISSION) }, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        if (cap != null) stringResource(R.string.room_lan_offer_cap, RoomTexts.size(cap)) else stringResource(R.string.room_lan_offer),
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
 
