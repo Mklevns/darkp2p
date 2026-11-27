@@ -84,6 +84,12 @@ emulator -avd darkp2p
 android/scripts/dev-emulator.sh
 ```
 
+On Windows, in PowerShell:
+
+```bash
+powershell -ExecutionPolicy Bypass -File android\scripts\dev-emulator.ps1
+```
+
 The script forwards port 3000 from the emulator to this machine
 (`adb reverse`), starts `server.js` there if it is not running, installs a
 debug build whose default server is `http://127.0.0.1:3000`, and starts the
@@ -98,7 +104,7 @@ What makes this work, and why it cannot leak into a release:
   (`app/src/debug/res/xml/network_security_config.xml`); release builds allow
   it for `.onion` only.
 
-The script has not been run yet; treat its first run as part of the test.
+Neither script has been run yet; treat the first run as part of the test.
 
 ## Interop tests
 
