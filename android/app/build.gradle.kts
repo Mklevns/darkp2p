@@ -15,6 +15,8 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = 1
         versionName = "0.1.0"
+        // The server new rooms are created on, and the only one joined without asking first.
+        buildConfigField("String", "DEFAULT_ORIGIN", "\"https://darkp2p.com\"")
     }
 
     // full: GitHub/Play (prebuilt libwebrtc, embedded Tor option).
@@ -26,6 +28,15 @@ android {
     }
 
     buildTypes {
+        debug {
+            // For testing against a server on the development machine:
+            //   ./gradlew :app:installFullDebug -Pdarkp2p.origin=http://127.0.0.1:3000
+            // (with `adb reverse tcp:3000 tcp:3000`). Debug builds only; a release always uses the real server.
+            providers.gradleProperty("darkp2p.origin").orNull?.let { origin ->
+                require(Regex("^https?://[a-z0-9.-]+(:\\d{1,5})?$").matches(origin)) { "darkp2p.origin must look like http://127.0.0.1:3000" }
+                buildConfigField("String", "DEFAULT_ORIGIN", "\"$origin\"")
+            }
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -35,6 +46,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {

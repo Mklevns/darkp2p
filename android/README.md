@@ -59,6 +59,47 @@ After a change to the wire format in `public/index.html`, run the first
 command from the repository root. `npm test` fails while a committed file is
 stale, and the Kotlin tests then show what the Android side must change.
 
+## Run on an emulator
+
+One-time setup on your own machine (Android Studio does all of it through its
+SDK Manager and Device Manager; these are the command-line equivalents):
+
+```bash
+sdkmanager "platform-tools" "emulator" "platforms;android-36" "system-images;android-36;google_apis;x86_64"
+```
+
+```bash
+avdmanager create avd -n darkp2p -k "system-images;android-36;google_apis;x86_64" -d pixel_7
+```
+
+On an Apple Silicon Mac use `arm64-v8a` in place of `x86_64` in both commands.
+
+Then, each time:
+
+```bash
+emulator -avd darkp2p
+```
+
+```bash
+android/scripts/dev-emulator.sh
+```
+
+The script forwards port 3000 from the emulator to this machine
+(`adb reverse`), starts `server.js` there if it is not running, installs a
+debug build whose default server is `http://127.0.0.1:3000`, and starts the
+app. Open `http://127.0.0.1:3000/` in a desktop browser to be the other
+device: paste the app's room link into the browser, or the browser's link into
+the app.
+
+What makes this work, and why it cannot leak into a release:
+
+- `-Pdarkp2p.origin=...` changes the default server of **debug** builds only.
+- Debug builds allow plain http to `127.0.0.1` and `localhost`
+  (`app/src/debug/res/xml/network_security_config.xml`); release builds allow
+  it for `.onion` only.
+
+The script has not been run yet; treat its first run as part of the test.
+
 ## Interop tests
 
 `:transport`'s unit tests run on the host JVM and start `test/interop/peer.mjs`,

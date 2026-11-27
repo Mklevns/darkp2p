@@ -19,12 +19,14 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class AppLogicTest {
-    private val link = RoomLink.generate(DEFAULT_ORIGIN, SecureRandom())
+    // The release server, whatever a debug build was pointed at.
+    private val home = "https://darkp2p.com"
+    private val link = RoomLink.generate(home, SecureRandom())
     private val onion = "http://${"a".repeat(56)}.onion"
 
-    private fun rooms(text: String?) = LinkIntake.parse(text).filterIsInstance<Intake.Room>()
+    private fun rooms(text: String?) = LinkIntake.parse(text, home).filterIsInstance<Intake.Room>()
 
-    private fun payments(text: String?) = LinkIntake.parse(text).filterIsInstance<Intake.PaymentReturn>()
+    private fun payments(text: String?) = LinkIntake.parse(text, home).filterIsInstance<Intake.PaymentReturn>()
 
     @Test
     fun `a default-server link is joined, any other server is asked about first`() {
@@ -57,7 +59,7 @@ class AppLogicTest {
     fun `a payment return is honoured only from the default server and only with a real payment ID`() {
         assertEquals("4000000001", payments("https://darkp2p.com/?NP_id=4000000001").single().paymentId)
         // Together with a room link: both are acted on.
-        val both = LinkIntake.parse("https://darkp2p.com/?NP_id=4000000001#${link.fragment}")
+        val both = LinkIntake.parse("https://darkp2p.com/?NP_id=4000000001#${link.fragment}", home)
         assertEquals(1, both.count { it is Intake.Room })
         assertEquals(1, both.count { it is Intake.PaymentReturn })
         assertEquals("7", payments("https://darkp2p.com/?x=1&NP_id=7&y=2").single().paymentId)

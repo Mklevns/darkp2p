@@ -28,8 +28,11 @@ import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
 
-/** The server rooms are created on, and the only one joined without asking first. */
-const val DEFAULT_ORIGIN = "https://darkp2p.com"
+/**
+ * The server rooms are created on, and the only one joined without asking first.
+ * Always `https://darkp2p.com` in a release; a debug build can point at a local server.
+ */
+const val DEFAULT_ORIGIN: String = BuildConfig.DEFAULT_ORIGIN
 
 /** The user's choices. None of them is a secret; secrets live in the vault. */
 data class Prefs(
