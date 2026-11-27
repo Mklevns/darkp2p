@@ -26,6 +26,9 @@ work = "2.12.0"
 camerax = "1.7.0"
 browser = "1.10.0"
 biometric = "1.1.0"
+# biometric 1.1.0 only asks for fragment 1.2.5, whose FragmentActivity rejects the
+# request codes that activity 1.13's ActivityResultRegistry uses (crash on any launcher).
+fragment = "1.9.1"
 activity = "1.13.0"
 core-ktx = "1.19.1"
 lifecycle = "2.11.1"
@@ -60,6 +63,7 @@ work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work"
 camerax-core = { module = "androidx.camera:camera-core", version.ref = "camerax" }
 browser = { module = "androidx.browser:browser", version.ref = "browser" }
 biometric = { module = "androidx.biometric:biometric", version.ref = "biometric" }
+fragment = { module = "androidx.fragment:fragment", version.ref = "fragment" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
