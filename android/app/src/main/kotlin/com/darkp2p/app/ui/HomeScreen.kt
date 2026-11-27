@@ -68,6 +68,7 @@ fun HomeScreen(vm: RoomViewModel, modifier: Modifier = Modifier) {
                 vm.refreshPro()
                 vm.screen = Screen.PRO
             }) { Text(stringResource(R.string.home_pro)) }
+            TextButton(onClick = { vm.screen = Screen.DROP }) { Text(stringResource(R.string.home_drop)) }
         }
     }
 }

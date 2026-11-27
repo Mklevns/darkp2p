@@ -60,6 +60,9 @@ dependencies {
     api(libs.okhttp)
     api(libs.kotlinx.coroutines.core)
     "fullImplementation"(libs.webrtc)
+    // Tor inside the app, for the onion file drop: Orbot offers other apps no way to
+    // publish an onion service. Prebuilt native code, so not in `libre`.
+    "fullImplementation"(libs.tor.android)
 
     testFixturesApi(libs.kotlinx.coroutines.core)
     testImplementation(libs.kotlin.test.junit5)

@@ -58,6 +58,7 @@ fun AppUi(vm: RoomViewModel, prefs: Prefs, locked: Boolean, onUnlock: () -> Unit
                 }
             }
             BackHandler(enabled = vm.screen != Screen.HOME && vm.screen != Screen.ROOM) {
+                if (vm.screen == Screen.DROP) vm.drop.stop()
                 vm.screen = if (vm.controller.value != null) Screen.ROOM else Screen.HOME
             }
 
@@ -65,11 +66,17 @@ fun AppUi(vm: RoomViewModel, prefs: Prefs, locked: Boolean, onUnlock: () -> Unit
                 val modifier = Modifier.padding(padding).fillMaxSize()
                 val room by vm.controller.collectAsState()
                 val back = { vm.screen = if (room != null) Screen.ROOM else Screen.HOME }
+                // Leaving the drop screen takes the link down: nothing is shared out of sight.
+                val leaveDrop = {
+                    vm.drop.stop()
+                    back()
+                }
                 when (vm.screen) {
                     Screen.HOME -> HomeScreen(vm, modifier)
                     Screen.ROOM -> room?.let { RoomScreen(vm, it, prefs, modifier) } ?: HomeScreen(vm, modifier)
                     Screen.SETTINGS -> SettingsScreen(vm, prefs, canLock, back, modifier)
                     Screen.PRO -> ProScreen(vm, back, modifier)
+                    Screen.DROP -> DropScreen(vm, leaveDrop, modifier)
                     Screen.SCANNER -> ScannerScreen(
                         onResult = { text ->
                             vm.screen = Screen.HOME

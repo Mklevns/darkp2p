@@ -253,4 +253,15 @@ class AppLogicTest {
             assertEquals(RoomTexts.RelayHint.NONE, hint(relayed, Prefs(hideIp = true), vpn = vpn))
         }
     }
+
+    @Test
+    fun `an onion drop's token is long, URL-safe, fresh every time and accepted by the server`() {
+        val tokens = List(50) { OnionDrop.newToken() }
+        assertEquals(50, tokens.toSet().size)
+        for (token in tokens) {
+            assertEquals(43, token.length) // 256 bits, base64url without padding
+            assertTrue(token.all { it.isLetterOrDigit() || it == '-' || it == '_' }, token)
+            assertTrue(token.length >= com.darkp2p.transport.FileDropServer.MIN_TOKEN_LENGTH)
+        }
+    }
 }
