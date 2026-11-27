@@ -51,6 +51,10 @@
     <string name="room_reconnect">Reconnect</string>
     <string name="room_force_relay">Always use the encrypted relay</string>
     <string name="room_hide_ip">Hide my IP from the other device</string>
+    <string name="room_lan_offer_cap">Using the relay (%1$s per room). On the same Wi-Fi as the other device? Tap to connect directly.</string>
+    <string name="room_lan_offer">Using a relay. On the same Wi-Fi as the other device? Tap to connect directly.</string>
+    <string name="room_lan_denied">Without access to devices on your network, transfers on the same Wi-Fi keep using the relay.</string>
+    <string name="room_lan_reconnecting">Connecting again to try a direct connection…</string>
     <string name="room_hide_ip_late">The other device has already seen your IP address in this room. Hiding it applies from the next connection.</string>
     <string name="room_reconnect_direct">Reconnecting to try a direct connection. A direct connection shows your IP address to the other device.</string>
     <string name="room_hide_ip_relay_note">Hiding your IP through the relay (50 MB per room). Pro adds a faster private route with no size limit and a 500 MB relay.</string>

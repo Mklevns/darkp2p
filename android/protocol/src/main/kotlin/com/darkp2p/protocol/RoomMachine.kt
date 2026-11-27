@@ -115,6 +115,12 @@ public class RoomMachine(
     private var candidatesSent = 0
     private var blocked: Blocked? = null
 
+    // Public addresses in this pairing's server-reflexive candidates, ours and the
+    // peer's. One in common means both are behind the same router. Bounded: the
+    // peer chooses what it sends.
+    private val localReflexive = HashSet<String>()
+    private val remoteReflexive = HashSet<String>()
+
     // True once we've signaled an ICE candidate that reveals one of our real IPs,
     // or connected directly. It stays true for the life of this machine, even if
     // TURN or the WS relay wins later and even across re-pairings.
@@ -236,6 +242,7 @@ public class RoomMachine(
                 return RoomState.Ready(
                     transport, ip, relayBudget?.cap.takeIf { onRelay }, relayBudget?.remaining.takeIf { onRelay },
                     peerSignalingAway = peerAway, hideIpViaRelay = hideIpViaRelay && onRelay, chat = chatEnabled(),
+                    relayedOnSameNetwork = transport != Transport.DIRECT && localReflexive.any { it in remoteReflexive },
                 )
             }
             if (handshake == Handshake.PENDING) return RoomState.Verifying(transport, sessionUnconfirmed)
@@ -652,7 +659,13 @@ public class RoomMachine(
         if (candidatesSent >= CandidatePolicy.MAX_CANDIDATES_PER_PAIRING) return
         candidatesSent += 1
         if (CandidatePolicy.exposesIp(line)) localIpSignaled = true
+        rememberReflexive(localReflexive, line)
         signal(ClientMessage.Candidate(line, c.sdpMid, c.sdpMLineIndex))
+    }
+
+    private fun rememberReflexive(into: MutableSet<String>, line: String) {
+        val address = CandidatePolicy.reflexiveAddress(line) ?: return
+        if (into.size < MAX_REFLEXIVE_ADDRESSES) into += address
     }
 
     private fun onPcState(state: PcState) {
@@ -816,6 +829,8 @@ public class RoomMachine(
                 blocked = null
                 tunnelFailed = false
                 candidatesSent = 0 // the server counts candidates per pairing
+                localReflexive.clear()
+                remoteReflexive.clear()
                 notify(Notice.PEER_DETECTED, if (turnEnabled) "turn" else "stun")
                 initPeer(msg.initiator)
             }
@@ -825,6 +840,7 @@ public class RoomMachine(
             is ServerMessage.Candidate ->
                 // Browsers mark the end of candidates with an empty one.
                 if (pcActive && msg.candidate.isNotBlank()) {
+                    rememberReflexive(remoteReflexive, msg.candidate)
                     out += RoomEffect.AddRemoteCandidate(pcCounter, msg.candidate, msg.sdpMid, msg.sdpMLineIndex)
                 }
         }
@@ -1304,5 +1320,7 @@ public class RoomMachine(
     public companion object {
         /** How long WebRTC may take to open the DataChannel before the relay is used instead. */
         public const val ICE_TIMEOUT_MS: Long = 12_000
+
+        private const val MAX_REFLEXIVE_ADDRESSES = 16
     }
 }

@@ -184,6 +184,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 link = target
                 _controller.value = room
                 activity.clear()
+                localNetworkDenied = false
                 screen = Screen.ROOM
                 roomJobs = viewModelScope.launch {
                     launch {
@@ -306,6 +307,26 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
             _controller.value?.setToken(token.trim())
             refreshPro()
         }
+    }
+
+    /** The user said no to the local-network permission in this room: say what that means instead of offering it again. */
+    var localNetworkDenied by mutableStateOf(false)
+        private set
+
+    /**
+     * The answer to the local-network permission the room offered. With it, the room
+     * pairs again in place so both sides try a direct connection once more (the
+     * signaling has no renegotiation of a running connection). Without it, the relay
+     * connection is left exactly as it is.
+     */
+    fun onLocalNetworkPermission(granted: Boolean) {
+        if (!granted) {
+            localNetworkDenied = true
+            return
+        }
+        localNetworkDenied = false
+        message = R.string.room_lan_reconnecting
+        _controller.value?.reconnect()
     }
 
     /** Forgets the token saved for [proOrigin]; an open room stops offering it. */

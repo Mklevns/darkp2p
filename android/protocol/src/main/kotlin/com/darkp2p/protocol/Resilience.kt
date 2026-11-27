@@ -104,6 +104,18 @@ public object CandidatePolicy {
     }
 
     /**
+     * The public address in a server-reflexive (`typ srflx`) candidate line: what a
+     * STUN server saw, which is the router's address. Null for any other line.
+     * Two peers that report the same one are behind the same router.
+     */
+    public fun reflexiveAddress(line: String): String? {
+        val tokens = line.trim().split(WHITESPACE)
+        val typ = tokens.indexOf("typ")
+        if (tokens.size < 6 || typ == -1 || typ + 1 >= tokens.size || tokens[typ + 1] != "srflx") return null
+        return tokens[4].lowercase()
+    }
+
+    /**
      * The candidate line to signal, or null to drop it.
      *
      * [IceMode.ALL] signals everything unchanged. [IceMode.RELAY] signals only

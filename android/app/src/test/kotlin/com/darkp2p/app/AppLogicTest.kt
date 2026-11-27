@@ -197,4 +197,26 @@ class AppLogicTest {
         assertNull(RoomTexts.policyNotice(Prefs(), Prefs(hideIp = true), null))
         assertNull(RoomTexts.policyNotice(Prefs(forceRelay = true), Prefs(tor = true), maskedRelay))
     }
+
+    @Test
+    fun `the local-network permission is offered only where it would turn a relay into a direct connection`() {
+        fun ready(transport: Transport, sameNetwork: Boolean) = RoomState.Ready(transport, IpExposure.EXPOSED, 50, 40, false, false, false, relayedOnSameNetwork = sameNetwork)
+        val stuck = ready(Transport.WS_RELAY, sameNetwork = true)
+        val sdk = RoomTexts.LOCAL_NETWORK_ENFORCED_SDK
+
+        assertTrue(RoomTexts.offersLocalNetwork(stuck, sdk, granted = false, transferring = false))
+        assertTrue(RoomTexts.offersLocalNetwork(ready(Transport.TURN, sameNetwork = true), sdk + 1, granted = false, transferring = false))
+        // Not on the same network (or it could not be told): the relay has another cause.
+        assertFalse(RoomTexts.offersLocalNetwork(ready(Transport.WS_RELAY, sameNetwork = false), sdk, granted = false, transferring = false))
+        // An Android release that does not enforce the permission never sees the offer.
+        assertFalse(RoomTexts.offersLocalNetwork(stuck, sdk - 1, granted = false, transferring = false))
+        assertFalse(RoomTexts.offersLocalNetwork(stuck, 29, granted = false, transferring = false))
+        // Already granted: asking again changes nothing.
+        assertFalse(RoomTexts.offersLocalNetwork(stuck, sdk, granted = true, transferring = false))
+        // Connecting again would end a transfer in progress.
+        assertFalse(RoomTexts.offersLocalNetwork(stuck, sdk, granted = false, transferring = true))
+        // Only a ready room.
+        assertFalse(RoomTexts.offersLocalNetwork(RoomState.WaitingForPeer, sdk, granted = false, transferring = false))
+        assertFalse(RoomTexts.offersLocalNetwork(null, sdk, granted = false, transferring = false))
+    }
 }

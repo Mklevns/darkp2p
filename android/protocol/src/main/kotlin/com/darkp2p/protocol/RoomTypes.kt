@@ -195,6 +195,12 @@ public sealed interface RoomState {
         val hideIpViaRelay: Boolean,
         /** Both peers offer chat. False with a web client: the chat box stays hidden. */
         val chat: Boolean,
+        /**
+         * Not connected directly although both peers reported the same public address,
+         * so they are behind the same router and only something local kept them apart
+         * (on Android, the permission to reach devices on the local network).
+         */
+        val relayedOnSameNetwork: Boolean = false,
     ) : RoomState
 
     /** [canReconnect]: the tunnel failed and only a manual reconnect (or the peer asking for the relay) restores it. */
