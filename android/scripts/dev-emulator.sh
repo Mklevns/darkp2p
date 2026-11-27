@@ -22,7 +22,8 @@ if ! curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
   (cd "$ROOT" && [ -d node_modules ] || npm ci)
   # DOMAIN is only used for links the server prints; the app and the page talk to 127.0.0.1.
   (cd "$ROOT" && PORT="$PORT" DOMAIN=localhost nohup node server.js >/tmp/darkp2p-dev-server.log 2>&1 & echo $! >/tmp/darkp2p-dev-server.pid)
-  sleep 1
+  i=0
+  until curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1 || [ "$i" -ge 15 ]; do i=$((i + 1)); sleep 1; done
   curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null || { echo "server.js did not start; see /tmp/darkp2p-dev-server.log" >&2; exit 1; }
 fi
 
