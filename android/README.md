@@ -3,13 +3,13 @@
 Native Kotlin client for the `darkp2p/v3` protocol. Design, wire contract and
 roadmap: [`docs/android/TECHNICAL_DESIGN.md`](../docs/android/TECHNICAL_DESIGN.md).
 
-Status: **Phase 3** code complete, not yet run on a device. `:protocol` is
-complete; `:transport` connects it to a real server over the WebSocket relay
-(directly or through Tor) and over a WebRTC DataChannel. Its tests exchange
-files with the unmodified `server.js` and page, including real Chromium over
-WebRTC, using a desktop build of libwebrtc. The Android libwebrtc adapter
-(`full` flavor) compiles but has never run. `:storage`, `:service` and `:app`
-are still empty.
+Status: **Phase 4** code complete; nothing has run on a device yet.
+`:protocol`, `:transport`, `:storage` and `:service` are built. Their logic is
+tested on the host JVM, including file transfers with the unmodified
+`server.js` and page (relay and WebRTC, real Chromium). The classes that talk
+to Android itself (libwebrtc adapter, Keystore, MediaStore, the foreground
+service, WorkManager) compile and pass Lint but have never run. `:app` (the
+UI) is still empty.
 
 ## Modules
 
