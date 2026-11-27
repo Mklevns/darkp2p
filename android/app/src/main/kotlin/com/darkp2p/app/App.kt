@@ -106,6 +106,10 @@ class DarkP2PApp : Application() {
         super.onCreate()
         graph = AppGraph(this)
         ClaimRuntime.claims = graph.claims
+        // A process that was killed mid-receive left a partial file behind. A new process has
+        // no transfer of its own yet, so anything unfinished is that: remove it now, not only
+        // when the next room is joined (which may be never).
+        graph.scope.launch { runCatching { graph.store.sweep() } }
         // A checkout from an earlier run may still be waiting for its token.
         graph.scope.launch {
             if (graph.vault.pendingClaim()?.claim?.claimable == true) ClaimWorker.schedule(this@DarkP2PApp)
