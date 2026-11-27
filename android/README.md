@@ -3,12 +3,14 @@
 Native Kotlin client for the `darkp2p/v3` protocol. Design, wire contract and
 roadmap: [`docs/android/TECHNICAL_DESIGN.md`](../docs/android/TECHNICAL_DESIGN.md).
 
-Status: **Phase 5** code complete; first emulator run done, no physical device yet.
-All five modules are built. The logic is tested on the host JVM, including
-file transfers with the unmodified `server.js` and page (relay and WebRTC, real
-Chromium). On an API 37 emulator the app has created a room and exchanged a
-file each way with the page over the relay. Direct WebRTC on a device, joining
-by link or QR, Settings, Pro, the lock and Tor have not been run yet.
+Status: **Phase 5** code complete and operated by hand on a Pixel 11 Pro
+(Android 17) and an API 37 emulator; the automated device tests of the Phase 3
+to 5 gates are not written yet. All five modules are built. The logic is tested
+on the host JVM, including file transfers with the unmodified `server.js` and
+page (relay and WebRTC, real Chromium). On the device the app has exchanged
+files with the page directly and over the relay, chatted with a second install,
+and sent a file by a throwaway `.onion` link. What has and has not been run is
+listed phase by phase in the design document, section 7.
 
 ## Modules
 

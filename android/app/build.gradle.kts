@@ -78,6 +78,64 @@ androidComponents {
     }
 }
 
+// Every permission a build asks for, written down. A library's manifest can add one
+// silently (libwebrtc's asks for the microphone, which :transport strips); with this,
+// that is a failed build with the name in it, not a surprise in a store listing.
+val common = setOf(
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_NETWORK_STATE", // which network is in use; a VPN on a relay fallback
+    "android.permission.CAMERA", // QR scanning, asked for on use
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+    "android.permission.POST_NOTIFICATIONS",
+    "android.permission.WAKE_LOCK",
+    "android.permission.USE_BIOMETRIC", // app lock
+    "android.permission.USE_FINGERPRINT", // the same, for androidx.biometric on old releases
+    "android.permission.RECEIVE_BOOT_COMPLETED", // WorkManager: claim polling after a restart
+    "com.darkp2p.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION", // androidx.core's own, signature-level
+)
+val allowedPermissions = mapOf(
+    // Direct connections on the same Wi-Fi (Android 17); only the flavor with WebRTC has any.
+    "full" to common + "android.permission.ACCESS_LOCAL_NETWORK",
+    "libre" to common,
+)
+
+abstract class CheckPermissions : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val manifest: RegularFileProperty
+
+    @get:Input
+    abstract val allowed: SetProperty<String>
+
+    @TaskAction
+    fun check() {
+        val asked = Regex("""<uses-permission(?:-sdk-\d+)?\s[^>]*?android:name="([^"]+)"""").findAll(manifest.get().asFile.readText()).map { it.groupValues[1] }.toSortedSet()
+        val extra = asked - allowed.get()
+        val gone = allowed.get() - asked
+        if (extra.isNotEmpty() || gone.isNotEmpty()) {
+            throw GradleException(
+                "The merged manifest's permissions differ from the list in app/build.gradle.kts.\n" +
+                    (if (extra.isNotEmpty()) "  asked for but not listed: ${extra.joinToString()}\n" else "") +
+                    (if (gone.isNotEmpty()) "  listed but not asked for: ${gone.sorted().joinToString()}\n" else "") +
+                    "Change the list only on purpose: it is what the app asks of its user.",
+            )
+        }
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        val task = tasks.register<CheckPermissions>("check${variant.name.replaceFirstChar(Char::uppercase)}Permissions") {
+            group = "verification"
+            description = "Fails if the ${variant.name} build asks for a permission that is not on the list, or no longer asks for one that is."
+            manifest.set(variant.artifacts.get(com.android.build.api.artifact.SingleArtifact.MERGED_MANIFEST))
+            allowed.set(allowedPermissions.getValue(variant.flavorName ?: error("no flavor")))
+        }
+        tasks.matching { it.name == "check" }.configureEach { dependsOn(task) }
+    }
+}
+
 dependencies {
     implementation(project(":service"))
     implementation(project(":storage"))
