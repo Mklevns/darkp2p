@@ -149,4 +149,25 @@ class AppLogicTest {
         // A picture with no code in it reads as nothing.
         assertNull(QrCodes.decode(RGBLuminanceSource(64, 64, IntArray(64 * 64) { 0xFFFFFFFF.toInt() })))
     }
+
+    @Test
+    fun `only text in the form the server issues is taken as a Pro token`() {
+        val sig = "0123456789abcdef".repeat(4)
+        assertTrue(RoomTexts.isTokenShaped("1800000000.$sig"))
+        assertTrue(RoomTexts.isTokenShaped("  1800000000.${sig.uppercase()}\n"))
+        assertEquals(1_800_000_000L, RoomTexts.tokenExpiry("1800000000.$sig"))
+        for (bad in listOf(
+            "", " ", "not-a-real-token", sig, "1800000000", "1800000000.", ".$sig", "1800000000.${sig.dropLast(1)}",
+            "1800000000.${sig}0", "1800000000.${"g".repeat(64)}", "1234567890123.$sig", "1800000000.$sig.$sig", "18000 00000.$sig",
+        )) {
+            assertFalse(RoomTexts.isTokenShaped(bad), bad)
+        }
+    }
+
+    @Test
+    fun `a missing Orbot is explained by what made Tor necessary`() {
+        assertEquals(R.string.tor_needs_orbot, RoomTexts.orbotMissing(onionRoom = true))
+        assertEquals(R.string.tor_setting_needs_orbot, RoomTexts.orbotMissing(onionRoom = false))
+        assertNotEquals(RoomTexts.orbotMissing(onionRoom = true), RoomTexts.orbotMissing(onionRoom = false))
+    }
 }

@@ -24,6 +24,7 @@
     <string name="cancel">Cancel</string>
     <string name="tor_unavailable">Tor is not running. Start Orbot and try again.</string>
     <string name="tor_needs_orbot">This is an onion room: it can only be reached through Tor. Install and start Orbot.</string>
+    <string name="tor_setting_needs_orbot">Connect through Tor is on, but Orbot is not installed. Install Orbot, or turn the setting off in Settings.</string>
 
     <!-- Room -->
     <string name="room_leave">Leave</string>
@@ -114,6 +115,7 @@
     <string name="settings_title">Settings</string>
     <string name="settings_tor">Connect through Tor (Orbot)</string>
     <string name="settings_tor_note">Everything goes through Tor, direct connections are off, and rooms use the encrypted relay.</string>
+    <string name="settings_tor_no_orbot">Orbot is not installed. Until it is, no room can be opened while this is on.</string>
     <string name="settings_chat">Offer chat to other app users</string>
     <string name="settings_secure">Block screenshots and hide the app in the recent-apps list</string>
     <string name="settings_lock">Require the screen lock to open the app</string>
@@ -148,4 +150,7 @@
     <string name="pro_token_active">A token is saved for this server (valid until %1$s).</string>
     <string name="pro_token_expired">The saved token has expired.</string>
     <string name="pro_token_none">No token saved for this server.</string>
+    <string name="pro_token_unusable">The saved token is not a valid Pro token. Remove it.</string>
+    <string name="pro_token_bad">That is not a Pro token. Copy the whole token from the page that showed it.</string>
+    <string name="pro_token_remove">Remove token</string>
 </resources>

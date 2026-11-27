@@ -9,12 +9,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.darkp2p.app.Prefs
 import com.darkp2p.app.R
 import com.darkp2p.app.RoomViewModel
+import com.darkp2p.transport.Orbot
 
 @Composable
 fun SettingsScreen(vm: RoomViewModel, prefs: Prefs, canLock: Boolean, onBack: () -> Unit, modifier: Modifier = Modifier) {
@@ -24,6 +27,11 @@ fun SettingsScreen(vm: RoomViewModel, prefs: Prefs, canLock: Boolean, onBack: ()
 
         SwitchRow(stringResource(R.string.settings_tor), prefs.tor) { on -> vm.applyPrefs { it.copy(tor = on) } }
         Text(stringResource(R.string.settings_tor_note), style = MaterialTheme.typography.bodySmall)
+        // Rooms fail closed without Orbot; say so here, where the switch is, not only when a room fails.
+        val context = LocalContext.current
+        if (prefs.tor && !remember(prefs.tor) { Orbot.isInstalled(context) }) {
+            Text(stringResource(R.string.settings_tor_no_orbot), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
 
         SwitchRow(stringResource(R.string.settings_chat), prefs.chat) { on -> vm.applyPrefs { it.copy(chat = on) } }
         SwitchRow(stringResource(R.string.settings_secure), prefs.secure) { on -> vm.applyPrefs { it.copy(secure = on) } }

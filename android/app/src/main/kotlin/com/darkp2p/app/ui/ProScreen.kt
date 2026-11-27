@@ -56,10 +56,12 @@ fun ProScreen(vm: RoomViewModel, onBack: () -> Unit, modifier: Modifier = Modifi
                 saved == null -> stringResource(R.string.pro_token_none)
                 expiry != null && expiry * 1000 <= System.currentTimeMillis() -> stringResource(R.string.pro_token_expired)
                 expiry != null -> stringResource(R.string.pro_token_active, DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(expiry * 1000)))
-                else -> stringResource(R.string.pro_token_active, "?")
+                // Saved by a version that took any text: it can never work.
+                else -> stringResource(R.string.pro_token_unusable)
             },
             style = MaterialTheme.typography.titleSmall,
         )
+        if (saved != null) OutlinedButton(onClick = vm::removeToken) { Text(stringResource(R.string.pro_token_remove)) }
 
         // ---- Buy ----
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -99,10 +101,14 @@ fun ProScreen(vm: RoomViewModel, onBack: () -> Unit, modifier: Modifier = Modifi
             label = { Text(stringResource(R.string.pro_token_hint)) },
             singleLine = true,
             keyboardOptions = secret,
+            isError = token.isNotBlank() && !RoomTexts.isTokenShaped(token),
+            supportingText = {
+                if (token.isNotBlank() && !RoomTexts.isTokenShaped(token)) Text(stringResource(R.string.pro_token_bad))
+            },
             modifier = Modifier.fillMaxWidth(),
         )
         Button(
-            enabled = token.isNotBlank(),
+            enabled = RoomTexts.isTokenShaped(token),
             onClick = {
                 vm.saveToken(token)
                 token = ""

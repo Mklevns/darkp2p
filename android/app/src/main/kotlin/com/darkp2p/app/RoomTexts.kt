@@ -76,4 +76,19 @@ object RoomTexts {
 
     /** When a Pro token expires (Unix seconds), from its `<expiry>.<signature>` form. Not a check of the signature. */
     fun tokenExpiry(token: String): Long? = token.substringBefore('.').takeIf { it.length in 1..12 && it.all(Char::isDigit) }?.toLongOrNull()
+
+    private val TOKEN_SHAPE = Regex("^\\d{1,12}\\.[a-fA-F0-9]{64}$")
+
+    /**
+     * True if [token] has the form the server issues and accepts (`verifyProToken` in
+     * server.js): `<expiry>.<64 hex digits>`. Only the server can tell whether the
+     * signature is good; this keeps text that can never be a token out of the vault.
+     */
+    fun isTokenShaped(token: String): Boolean = token.trim().let { it.length <= 128 && TOKEN_SHAPE.matches(it) }
+
+    /**
+     * What to say when a room needs Tor and Orbot is not installed: an onion room can
+     * only be reached that way, any other room needs it because the Tor setting is on.
+     */
+    fun orbotMissing(onionRoom: Boolean): Int = if (onionRoom) R.string.tor_needs_orbot else R.string.tor_setting_needs_orbot
 }
